@@ -10,7 +10,7 @@ uuid_re = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
 
 
 def mostrar_tab_registrar_gasto():
-    st.title(" registrar gasto")
+    st.title(" Registro de gastos en presupuestos ")
     st.session_state.setdefault("rg_resultados", None)
     st.session_state.setdefault("rg_doc_idx", 0)
 
