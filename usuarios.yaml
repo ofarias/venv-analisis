@@ -1,0 +1,23 @@
+cookie:
+  expiry_days: 3
+  key: firma_segura
+  name: auth_cookie
+credentials:
+  usernames:
+    admin:
+      email: admin@example.com
+      name: Oscar Admin
+      password: $2b$12$3F.mZIIFnusySiFFkmmKzOTbjCC1.R0HBFGYxD25zmMWXDp8fEKOe
+      role: Admin
+      status: Activo
+    desarrollo:
+      email: logistica@example.com
+      name: Usuario desarrollos
+      password: $2b$12$3F.mZIIFnusySiFFkmmKzOTbjCC1.R0HBFGYxD25zmMWXDp8fEKOe    
+      role: Desarrollo
+      status: Activo
+    ventas:
+      email: ventas@example.com
+      name: Usuario Ventas
+      password: $2b$12$5El5EH168gpDipijH.vZCeU6rPwzmARP49f1pSEv5q85w2nCbbSsu
+      role: Ventas

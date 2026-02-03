@@ -1,0 +1,40 @@
+# secretos / env
+.env
+.streamlit/secrets.toml
+
+# entornos virtuales (tu carpeta actual es un venv)
+venv/
+bin/
+include/
+lib/
+lib64/
+share/
+pyvenv.cfg
+
+# python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# logs / temporales
+logs/
+*.log
+*.tmp
+
+# ide
+.vscode/
+.idea/
+
+# sistema
+.DS_Store
+.streamlit/
+
+# documentos / uploads (no subir)
+#Media/
+#Documentos/
+
+# respaldos sql locales
+respaldo_*.sql
+tmp_*.sql
+estructura_documentos_*.sql
