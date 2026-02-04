@@ -141,4 +141,3 @@ def get_gastos_fiscales_por_usuario(username: str):
     Devuelve los gastos fiscales (CFDI) del usuario autenticado.
     """
     return obtener_gastos_fiscales_por_usuario(username)
-

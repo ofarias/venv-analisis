@@ -347,7 +347,6 @@ def get_detalle_prorrateo(idnumpon: int) -> pd.DataFrame:
 
 
 def update_detalle_prorrateo_rows(cambios: list[dict]) -> int:
-    
     if not cambios:
         return 0
 
@@ -356,18 +355,17 @@ def update_detalle_prorrateo_rows(cambios: list[dict]) -> int:
            set dsctacon = :dsctacon,
                idunineg = :idunineg,
                flporuni = :flporuni
-         where idnumpon = :idnumpon
-           and idunineg = :idunineg_orig
+         where id = :id
     """
 
     afectados = 0
     for row in cambios:
+        # row debe traer: id, dsctacon, idunineg, flporuni
         params = {
-            "idnumpon": row["idnumpon"],
-            "idunineg": row["idunineg"],
-            "idunineg_orig": row["idunineg_orig"],
-            "dsctacon": row["dsctacon"],
-            "flporuni": row["flporuni"],
+            "id": int(row["id"]),
+            "dsctacon": row.get("dsctacon"),
+            "idunineg": int(row["idunineg"]) if row.get("idunineg") is not None else None,
+            "flporuni": float(row.get("flporuni") or 0.0),
         }
         run_query("BIO", sql, params)
         afectados += 1

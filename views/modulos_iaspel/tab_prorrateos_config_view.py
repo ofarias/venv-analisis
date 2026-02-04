@@ -1,4 +1,4 @@
-#tab_prorrateos_config_view.py
+# tab_prorrateos_config_view.py
 
 import streamlit as st
 import pandas as pd
@@ -19,8 +19,10 @@ from controllers.dashboard_controller import (
     actualizar_concepto_prorrateo_ctrl,
 )
 
+
 def mostrar_tab_prorrateos_mysql():
     st.subheader("tabla prorrateos (mysql_bio)")
+
     # -------------------------
     # filtros (sin límite / offset)
     # -------------------------
@@ -36,74 +38,58 @@ def mostrar_tab_prorrateos_mysql():
     )
 
     c4, c5 = st.columns([2, 1])
-    concepto = c4.text_input(
-        "concepto sae (id)", value="", key="concepto_prorrateos"
-    )
+    concepto = c4.text_input("concepto sae (id)", value="", key="concepto_prorrateos")
     activo = c5.selectbox(
         "activo", options=["(todos)", "1", "0"], index=0, key="activo_prorrateos"
     )
 
     filtros: dict[str, str] = {}
 
-    # nombre del prorrateo
     if nombre_like.strip():
         filtros["nombre_like"] = nombre_like.strip()
 
-    # nombre del proveedor (búsqueda por nombre, contiene)
     if prov_nombre_like.strip():
-        # la clave del filtro es a nivel python; en el model tú decides
-        # cómo aplicarlo (ej. like sobre nombre_proveedor)
         filtros["nombre_proveedor_like"] = prov_nombre_like.strip()
 
-    # código de proveedor (cdcvepro exacto) normalizado
     if prov_codigo.strip():
         filtros["proveedor"] = prov_codigo.strip()
 
-    # concepto sae
     if concepto.strip():
         filtros["concepto"] = concepto.strip()
 
-    # activo / inactivo
     if activo in ("1", "0"):
         filtros["activo"] = activo
 
     # -------------------------
-    # consulta de prorrateos (sin mostrar limit/offset)
+    # consulta prorrateos
     # -------------------------
     df_pr = get_prorrateos_mysql_df(
-        limit=50000,  # valor alto fijo; límite ya no se expone en la ui
+        limit=50000,
         offset=0,
         filtros=filtros,
     )
 
     if df_pr.empty:
         st.warning(
-            "no se encontraron registros en la tabla prorrateos "
-            "con los filtros aplicados."
+            "no se encontraron registros en la tabla prorrateos con los filtros aplicados."
         )
         return
-    
+
     # -------------------------------------------------
-    # unir conceptos aspel (CONP01) -> descripcion_concepto
+    # unir conceptos aspel -> descripcion_concepto
     # -------------------------------------------------
     df_conp = get_conceptos_aspel_df()
 
     if not df_conp.empty and "cdnrocon" in df_pr.columns:
-        # por si acaso, normalizamos nombres (ya viene así desde el model)
         df_conp.columns = [str(c).lower() for c in df_conp.columns]
 
-        # nos quedamos con num_cpto y descr de aspel
         if "num_cpto" in df_conp.columns and "descr" in df_conp.columns:
-            # igualamos tipos para el join (por si uno es int y otro str)
             df_tmp_pr = df_pr.copy()
             df_tmp_pr["cdnrocon_join"] = df_tmp_pr["cdnrocon"].astype(str).str.strip()
 
             df_tmp_conp = df_conp[["num_cpto", "descr"]].copy()
-            df_tmp_conp["num_cpto_join"] = (
-                df_tmp_conp["num_cpto"].astype(str).str.strip()
-            )
+            df_tmp_conp["num_cpto_join"] = df_tmp_conp["num_cpto"].astype(str).str.strip()
 
-            # merge por NUM_CPTO (aspel) = cdnrocon (prorrateos)
             df_merged = df_tmp_pr.merge(
                 df_tmp_conp[["num_cpto_join", "descr"]],
                 how="left",
@@ -111,39 +97,24 @@ def mostrar_tab_prorrateos_mysql():
                 right_on="num_cpto_join",
             )
 
-            # renombramos la descripción del concepto
-            df_merged = df_merged.rename(
-                columns={"descr": "descripcion_concepto"}
-            )
-
-            # limpiamos columnas auxiliares de join
+            df_merged = df_merged.rename(columns={"descr": "descripcion_concepto"})
             df_merged = df_merged.drop(
                 columns=["cdnrocon_join", "num_cpto_join"], errors="ignore"
             )
-
             df_pr = df_merged
 
     # -------------------------------------------------
-    # enriquecer con nombre de proveedor desde sae (prov01)
-    # match: prov01.clave ↔ prorrateos.cdcvepro
+    # enriquecer con nombre de proveedor desde sae
     # -------------------------------------------------
     mapa_prov = get_prov_nombres_sae_dict()
 
     if mapa_prov and "cdcvepro" in df_pr.columns:
-        # normalizamos el código de proveedor: quitamos espacios
-        df_pr["cdcvepro_norm"] = (
-            df_pr["cdcvepro"].astype(str).str.strip()
-        )
-        # usamos el dict { clave -> nombre } para mapear
+        df_pr["cdcvepro_norm"] = df_pr["cdcvepro"].astype(str).str.strip()
         df_pr["nombre_proveedor_sae"] = df_pr["cdcvepro_norm"].map(mapa_prov)
-        # si quieres un nombre más corto:
-        # df_pr = df_pr.rename(columns={"nombre_proveedor_sae": "nombre_proveedor"})
-        # limpiamos la columna auxiliar
         df_pr = df_pr.drop(columns=["cdcvepro_norm"], errors="ignore")
 
-
     # -------------------------------------------------
-    # botón + formulario para crear NUEVO prorrateo (solo cabecera)
+    # formulario nuevo prorrateo (cabecera)
     # -------------------------------------------------
     if "mostrar_form_nuevo_prorrateo" not in st.session_state:
         st.session_state["mostrar_form_nuevo_prorrateo"] = False
@@ -153,26 +124,19 @@ def mostrar_tab_prorrateos_mysql():
         st.session_state["mostrar_form_nuevo_prorrateo"] = not st.session_state[
             "mostrar_form_nuevo_prorrateo"
         ]
-    
+
     if st.session_state["mostrar_form_nuevo_prorrateo"]:
         st.markdown("### alta de prorrateo (cabecera)")
 
-        # -----------------------------
-        # opciones de PROVEEDOR desde mapa_prov
-        # -----------------------------
         prov_labels: list[str] = []
         prov_label_to_clave: dict[str, str] = {}
 
         if mapa_prov:
-            # ordenamos por clave de proveedor
             for clave, nombre in sorted(mapa_prov.items(), key=lambda x: x[0]):
                 label = f"{clave} - {nombre}"
                 prov_labels.append(label)
                 prov_label_to_clave[label] = clave
 
-        # -----------------------------
-        # opciones de CONCEPTO desde df_conp (CONP01)
-        # -----------------------------
         conp_labels: list[str] = []
         conp_label_to_num: dict[str, int] = {}
 
@@ -199,9 +163,6 @@ def mostrar_tab_prorrateos_mysql():
                 conp_labels.append(label)
                 conp_label_to_num[label] = num_int
 
-        # -----------------------------
-        # formulario
-        # -----------------------------
         with st.form("form_nuevo_prorrateo"):
             dsnombre_new = st.text_input(
                 "nombre del prorrateo",
@@ -211,13 +172,12 @@ def mostrar_tab_prorrateos_mysql():
 
             c1_form, c2_form = st.columns(2)
 
-            # ----- proveedor (select) -----
             if prov_labels:
                 label_prov_sel = c1_form.selectbox(
                     "proveedor (cdcvepro)",
                     prov_labels,
                     key="nuevo_cdcvepro",
-                    help="selecciona la clave de proveedor desde SAE (PROV01.CLAVE)",
+                    help="selecciona la clave de proveedor desde sae (prov01.clave)",
                 )
                 cdcvepro_new = prov_label_to_clave.get(label_prov_sel, "").strip()
             else:
@@ -227,24 +187,22 @@ def mostrar_tab_prorrateos_mysql():
                     max_chars=30,
                 )
 
-            # ----- concepto (select) -----
             if conp_labels:
                 label_conp_sel = c2_form.selectbox(
-                    "concepto SAE (cdnrocon)",
+                    "concepto sae (cdnrocon)",
                     conp_labels,
                     key="nuevo_cdnrocon",
-                    help="número de concepto CONP01.NUM_CPTO",
+                    help="número de concepto conp01.num_cpto",
                 )
                 cdnrocon_new = conp_label_to_num.get(label_conp_sel, None)
             else:
                 cdnrocon_new = c2_form.number_input(
-                    "concepto SAE (cdnrocon)",
+                    "concepto sae (cdnrocon)",
                     min_value=1,
                     step=1,
                     key="nuevo_cdnrocon_fallback",
                 )
 
-            # ----- importe / moneda / variación -----
             c3_form, c4_form, c5_form = st.columns(3)
 
             importe_new = c3_form.number_input(
@@ -273,18 +231,13 @@ def mostrar_tab_prorrateos_mysql():
             )
 
             submitted_new = st.form_submit_button("guardar prorrateo")
-    
-    # -----------------------------
-    # finaliza formulario
-    # -----------------------------
 
         if submitted_new:
             errores = []
-
             if not dsnombre_new.strip():
                 errores.append("captura el nombre del prorrateo.")
             if cdnrocon_new is None or str(cdnrocon_new).strip() == "":
-                errores.append("selecciona el concepto SAE (cdnrocon).")
+                errores.append("selecciona el concepto sae (cdnrocon).")
             if not cdcvepro_new.strip():
                 errores.append("selecciona el proveedor (cdcvepro).")
 
@@ -300,28 +253,22 @@ def mostrar_tab_prorrateos_mysql():
                         importe=float(importe_new),
                         moneda=int(moneda_new),
                         variacion=float(variacion_new),
-                        idusuari=0,   # luego lo ligamos al usuario real
-                        estatus=1,    # se crea Activo
+                        idusuari=0,
+                        estatus=1,
                     )
                     st.success("prorrateo creado correctamente.")
                     st.session_state["mostrar_form_nuevo_prorrateo"] = False
                     st.rerun()
                 except Exception as ex:
                     st.error(f"error al crear el prorrateo: {ex}")
-    
 
     # -------------------------
-    # tabla principal con selección y estatus
+    # tabla principal
     # -------------------------
     df_view = df_pr.copy()
 
-    # mapeo de estatus → texto legible
     if "estatus" in df_view.columns:
-        df_view["estatus_desc"] = (
-            df_view["estatus"]
-            .map({1: "activo", 9: "baja"})
-            .fillna("otro")
-        )
+        df_view["estatus_desc"] = df_view["estatus"].map({1: "activo", 9: "baja"}).fillna("otro")
 
     if "sel" not in df_view.columns:
         df_view.insert(0, "sel", False)
@@ -332,23 +279,20 @@ def mostrar_tab_prorrateos_mysql():
         "sel",
         "idnumpon",
         "dsnombre",
-        "nombre",                  # nombre del prorrateo
+        "nombre",
         "cdcvepro",
-        "nombre_proveedor_sae",    # nombre proveedor desde SAE
+        "nombre_proveedor_sae",
         "cdnrocon",
-        "descripcion_concepto",    # CONP01.DESCR
+        "descripcion_concepto",
         "estatus_desc",
         "tmstmp",
         "estatus",
     ]
 
-    # agregamos el resto de columnas que existan pero no estén en la lista
-    column_order = [
-        col for col in orden_principal if col in df_view.columns
-    ] + [
+    column_order = [col for col in orden_principal if col in df_view.columns] + [
         col for col in df_view.columns if col not in orden_principal
     ]
-    
+
     tabla_editada = st.data_editor(
         df_view,
         use_container_width=True,
@@ -401,9 +345,8 @@ def mostrar_tab_prorrateos_mysql():
             else:
                 cambios = []
                 for _, fila in seleccionados.iterrows():
-                    est = fila["estatus"]
                     try:
-                        est_int = int(est)
+                        est_int = int(fila["estatus"])
                     except Exception:
                         continue
 
@@ -414,18 +357,10 @@ def mostrar_tab_prorrateos_mysql():
                     else:
                         continue
 
-                    cambios.append(
-                        {
-                            "idnumpon": int(fila["idnumpon"]),
-                            "estatus": nuevo,
-                        }
-                    )
+                    cambios.append({"idnumpon": int(fila["idnumpon"]), "estatus": nuevo})
 
                 if not cambios:
-                    st.info(
-                        "no hay filas con estatus 1 o 9 para cambiar. "
-                        "nada que actualizar."
-                    )
+                    st.info("no hay filas con estatus 1 o 9 para cambiar.")
                 else:
                     afectados = actualizar_estatus_prorrateos(cambios)
                     st.success(f"se actualizaron {afectados} prorrateos.")
@@ -434,10 +369,8 @@ def mostrar_tab_prorrateos_mysql():
     st.divider()
 
     # -------------------------
-    # a partir de aquí sigue igual: detalle en agrid + guardar cambios
-    # (no toco nada de esto)
+    # detalle
     # -------------------------
-
     if "detalle_version" not in st.session_state:
         st.session_state["detalle_version"] = 0
 
@@ -455,14 +388,11 @@ def mostrar_tab_prorrateos_mysql():
         fila = seleccionados.iloc[0]
 
         if "idnumpon" not in fila.index:
-            st.error(
-                "no se encontró la columna idnumpon en el prorrateo seleccionado."
-            )
+            st.error("no se encontró la columna idnumpon en el prorrateo seleccionado.")
             return
 
         idnumpon = int(fila["idnumpon"])
-        
-        # guardar cabecera del prorrateo para mostrar arriba del detalle
+
         st.session_state["prorrateo_header"] = {
             "idnumpon": idnumpon,
             "dsnombre": fila.get("dsnombre", ""),
@@ -474,9 +404,11 @@ def mostrar_tab_prorrateos_mysql():
 
         df_det = get_detalle_prorrateo_df(idnumpon)
 
-        if df_det.empty:
+        # seguro para df vacío + asegurar columna id
+        if df_det is None or df_det.empty:
             df_det = pd.DataFrame(
                 columns=[
+                    "id",
                     "idnumpon",
                     "dsctacon",
                     "idunineg",
@@ -486,6 +418,8 @@ def mostrar_tab_prorrateos_mysql():
                     "unidad",
                 ]
             )
+        elif "id" not in df_det.columns:
+            df_det["id"] = None
 
         if "idunineg" in df_det.columns and "idunineg_orig" not in df_det.columns:
             df_det["idunineg_orig"] = df_det["idunineg"]
@@ -498,29 +432,24 @@ def mostrar_tab_prorrateos_mysql():
         st.rerun()
 
     if "df_detalle_prorrateo" in st.session_state:
-
         st.markdown("### detalle del prorrateo (editable)")
 
         id_actual = st.session_state.get("idnumpon_detalle_actual", None)
         if id_actual is not None:
             st.write(f"idnumpon actual: {id_actual}")
 
-        # cabecera del prorrateo (si la guardamos cuando se selecciona)
         hdr = st.session_state.get("prorrateo_header", {})
         if hdr:
             st.write(
-                f"concepto de cuenta por pagar: "
-                f"{hdr.get('cdnrocon', '')} - {hdr.get('descripcion_concepto', '')}"
+                f"concepto de cuenta por pagar: {hdr.get('cdnrocon', '')} - {hdr.get('descripcion_concepto', '')}"
             )
-            st.write(
-                f"nombre: {hdr.get('dsnombre', '')}"
-            )
+            st.write(f"nombre: {hdr.get('dsnombre', '')}")
             st.write(
                 f"proveedor: {hdr.get('cdcvepro', '')} - {hdr.get('nombre_proveedor', '')}"
             )
 
         # -----------------------------
-        # cambiar concepto de la cabecera (cdnrocon)
+        # cambiar concepto de cabecera
         # -----------------------------
         st.markdown("#### cambiar concepto de cuenta por pagar")
 
@@ -547,7 +476,6 @@ def mostrar_tab_prorrateos_mysql():
                 label = f"{num} - {descr}"
                 opciones_conc.append(label)
                 label_to_num[label] = num
-
                 if cdnrocon_actual and str(num) == cdnrocon_actual:
                     idx_default = i
 
@@ -559,10 +487,7 @@ def mostrar_tab_prorrateos_mysql():
                     key="concepto_prorrateo_detalle",
                 )
 
-                if st.button(
-                    "guardar nuevo concepto",
-                    key="btn_cambiar_concepto_prorrateo",
-                ):
+                if st.button("guardar nuevo concepto", key="btn_cambiar_concepto_prorrateo"):
                     nuevo_cdnrocon = label_to_num.get(label_sel)
 
                     try:
@@ -581,7 +506,6 @@ def mostrar_tab_prorrateos_mysql():
                                 cdnrocon=int(nuevo_cdnrocon),
                             )
                             if afectados > 0:
-                                # actualiza cabecera en memoria
                                 hdr["cdnrocon"] = int(nuevo_cdnrocon)
                                 hdr["descripcion_concepto"] = label_sel.split(" - ", 1)[1]
                                 st.session_state["prorrateo_header"] = hdr
@@ -596,39 +520,33 @@ def mostrar_tab_prorrateos_mysql():
         else:
             st.info("no se pudieron cargar los conceptos de aspel para cambiar el concepto.")
 
-
         df_detalle = st.session_state["df_detalle_prorrateo"].copy()
 
-        # asegurar columna idunineg_orig
+        if "id" not in df_detalle.columns:
+            df_detalle["id"] = None
+
         if "idunineg" in df_detalle.columns and "idunineg_orig" not in df_detalle.columns:
             df_detalle["idunineg_orig"] = df_detalle["idunineg"]
 
-
         # ----------------------
-        # botón + formulario "agregar detalle"
+        # agregar detalle
         # ----------------------
         if "mostrar_form_detalle" not in st.session_state:
             st.session_state["mostrar_form_detalle"] = False
 
         c_btn_add, _ = st.columns([1, 5])
         if c_btn_add.button("agregar detalle", key="btn_mostrar_form_detalle", type="primary"):
-            st.session_state["mostrar_form_detalle"] = not st.session_state[
-                "mostrar_form_detalle"
-            ]
+            st.session_state["mostrar_form_detalle"] = not st.session_state["mostrar_form_detalle"]
 
         if st.session_state["mostrar_form_detalle"]:
             st.markdown("#### nuevo detalle de prorrateo")
 
-            # cargamos catálogo de cuentas contables y unidades
             df_ctas = get_cuentas_contables_coi_ctrl()
             df_unis = get_unidades_prorrateo_ctrl()
 
-            # opciones de cuentas contables (ajusta columnas según tu COI)
             opciones_ctas = []
             cuenta_from_label = {}
-
             if not df_ctas.empty:
-                # aquí supongo columnas 'cuenta' y 'nombre'; AJUSTA a las reales
                 for _, row in df_ctas.iterrows():
                     cta = str(row["cuenta"]).strip()
                     nom = str(row["nombre"]).strip()
@@ -638,7 +556,11 @@ def mostrar_tab_prorrateos_mysql():
 
             opciones_unis = []
             idunineg_from_label = {}
-            if not df_unis.empty and "idunineg" in df_unis.columns and "dsunineg" in df_unis.columns:
+            if (
+                not df_unis.empty
+                and "idunineg" in df_unis.columns
+                and "dsunineg" in df_unis.columns
+            ):
                 for _, row in df_unis.iterrows():
                     uid = int(row["idunineg"])
                     nomu = str(row["dsunineg"]).strip()
@@ -649,10 +571,9 @@ def mostrar_tab_prorrateos_mysql():
             with st.form("form_nuevo_detalle_prorrateo"):
                 c_f1, c_f2, c_f3 = st.columns([3, 2, 1])
 
-                # cuenta contable (dsctacon)
                 if opciones_ctas:
                     label_cta_sel = c_f1.selectbox(
-                        "cuenta contable (COI)",
+                        "cuenta contable (coi)",
                         opciones_ctas,
                         key="nuevo_det_cta",
                     )
@@ -663,7 +584,6 @@ def mostrar_tab_prorrateos_mysql():
                         key="nuevo_det_cta_fallback",
                     )
 
-                # unidad de prorrateo (idunineg)
                 if opciones_unis:
                     label_uni_sel = c_f2.selectbox(
                         "unidad de prorrateo",
@@ -679,7 +599,6 @@ def mostrar_tab_prorrateos_mysql():
                         key="nuevo_det_uni_fallback",
                     )
 
-                # porcentaje flporuni
                 flporuni_new = c_f3.number_input(
                     "porcentaje",
                     min_value=0.0,
@@ -692,45 +611,51 @@ def mostrar_tab_prorrateos_mysql():
 
             if btn_add_det:
                 errores = []
-                if not dsctacon_new.strip():
+                if not str(dsctacon_new or "").strip():
                     errores.append("captura o selecciona la cuenta contable (dsctacon).")
-                if idunineg_new is None or (isinstance(idunineg_new, float) and idunineg_new != idunineg_new):
+                if idunineg_new is None or (
+                    isinstance(idunineg_new, float) and idunineg_new != idunineg_new
+                ):
                     errores.append("captura o selecciona la unidad (idunineg).")
 
                 if errores:
                     for e in errores:
                         st.error(e)
                 else:
-                    # armamos la nueva fila en el dataframe en memoria
                     nueva_fila = {
+                        "id": None,
                         "idnumpon": id_actual,
-                        "dsctacon": dsctacon_new.strip(),
+                        "dsctacon": str(dsctacon_new).strip(),
                         "idunineg": int(idunineg_new),
                         "flporuni": float(flporuni_new),
-                        "tmstmp": None,     # se llenará en la BD
+                        "tmstmp": None,
                         "idnuevo": int(idunineg_new),
-                        "unidad": "",       # se llenará al recargar desde BD
+                        "unidad": "",
                         "idunineg_orig": None,
-                        "es_nuevo": True,   # bandera para futuro insert real
+                        "es_nuevo": True,
                     }
-                    df_detalle = pd.concat(
-                        [df_detalle, pd.DataFrame([nueva_fila])],
-                        ignore_index=True,
-                    )
+                    df_detalle = pd.concat([df_detalle, pd.DataFrame([nueva_fila])], ignore_index=True)
                     st.session_state["df_detalle_prorrateo"] = df_detalle
                     st.session_state["detalle_version"] += 1
-                    st.success("línea agregada al detalle (pendiente de guardar en BD).")
+                    st.success("línea agregada al detalle (pendiente de guardar en bd).")
                     st.rerun()
 
-    ####
-    ####  Se deja lo ultimo donde se ve la informacion de las partidas
-    #####
+        # ----------------------
+        # grid de detalle (corregido: gb se crea antes de usarlo)
+        # ----------------------
+        df_detalle = st.session_state["df_detalle_prorrateo"].copy()
+
+        if "id" not in df_detalle.columns:
+            df_detalle["id"] = None
 
         if "idunineg" in df_detalle.columns and "idunineg_orig" not in df_detalle.columns:
             df_detalle["idunineg_orig"] = df_detalle["idunineg"]
 
         gb = GridOptionsBuilder.from_dataframe(df_detalle)
         gb.configure_default_column(editable=False, resizable=True)
+
+        if "id" in df_detalle.columns:
+            gb.configure_column("id", hide=True, editable=False)
 
         if "idnumpon" in df_detalle.columns:
             gb.configure_column("idnumpon", headerName="id prorrateo")
@@ -769,6 +694,9 @@ def mostrar_tab_prorrateos_mysql():
         df_actual = pd.DataFrame(grid_response["data"])
         st.session_state["df_detalle_prorrateo"] = df_actual
 
+        # ----------------------
+        # validación y guardar
+        # ----------------------
         total_flporuni = None
         if "flporuni" in df_actual.columns:
             valores_decimal = []
@@ -783,7 +711,7 @@ def mostrar_tab_prorrateos_mysql():
             c_total, c_guardar, c_refresh = st.columns([2, 1, 1])
             c_total.write(f"total flporuni: {total_flporuni:.4f}")
 
-            puede_guardar = (total_flporuni == Decimal("1"))
+            puede_guardar = total_flporuni == Decimal("1")
 
             btn_guardar = c_guardar.button(
                 "guardar cambios",
@@ -800,11 +728,26 @@ def mostrar_tab_prorrateos_mysql():
 
             if btn_refrescar and id_actual is not None:
                 df_ref = get_detalle_prorrateo_df(id_actual)
-                if (
-                    "idunineg" in df_ref.columns
-                    and "idunineg_orig" not in df_ref.columns
-                ):
+
+                if df_ref is None or df_ref.empty:
+                    df_ref = pd.DataFrame(
+                        columns=[
+                            "id",
+                            "idnumpon",
+                            "dsctacon",
+                            "idunineg",
+                            "flporuni",
+                            "tmstmp",
+                            "idnuevo",
+                            "unidad",
+                        ]
+                    )
+                elif "id" not in df_ref.columns:
+                    df_ref["id"] = None
+
+                if "idunineg" in df_ref.columns and "idunineg_orig" not in df_ref.columns:
                     df_ref["idunineg_orig"] = df_ref["idunineg"]
+
                 st.session_state["df_detalle_original"] = df_ref.copy(deep=True)
                 st.session_state["df_detalle_prorrateo"] = df_ref.copy(deep=True)
                 st.session_state["detalle_version"] += 1
@@ -819,14 +762,13 @@ def mostrar_tab_prorrateos_mysql():
                     st.error("no se encontró el dataframe original para comparar.")
                     return
 
-                cambios = []       # updates
-                nuevos = []        # inserts
+                cambios = []
+                nuevos = []
 
                 for _, fila in df_edit.iterrows():
                     es_nuevo = bool(fila.get("es_nuevo", False))
 
                     if es_nuevo:
-                        # fila nueva → insert
                         if pd.isna(fila.get("idnumpon")) or pd.isna(fila.get("idunineg")):
                             continue
 
@@ -840,37 +782,28 @@ def mostrar_tab_prorrateos_mysql():
                             }
                         )
                     else:
-                        # fila existente → comparar contra df_orig y hacer update si cambió
+                        fila_id = fila.get("id", None)
+                        if pd.isna(fila_id) or fila_id is None:
+                            continue
+
                         try:
-                            orig = df_orig[
-                                (df_orig["idnumpon"] == fila["idnumpon"])
-                                & (df_orig["idunineg_orig"] == fila["idunineg_orig"])
-                            ].iloc[0]
-                        except IndexError:
+                            orig = df_orig[df_orig["id"] == fila_id].iloc[0]
+                        except Exception:
                             continue
 
                         campos = ["dsctacon", "idunineg", "flporuni"]
-                        modificado = any(
-                            str(fila.get(c)) != str(orig.get(c)) for c in campos
-                        )
+                        modificado = any(str(fila.get(c)) != str(orig.get(c)) for c in campos)
                         if not modificado:
                             continue
 
                         cambios.append(
                             {
+                                "id": int(fila_id),
                                 "idnumpon": int(fila["idnumpon"]),
-                                "idunineg": int(fila["idunineg"])
-                                if pd.notna(fila["idunineg"])
-                                else None,
-                                "idunineg_orig": int(fila["idunineg_orig"])
-                                if pd.notna(fila["idunineg_orig"])
-                                else None,
-                                "dsctacon": str(fila["dsctacon"])
-                                if pd.notna(fila["dsctacon"])
-                                else None,
-                                "flporuni": float(fila["flporuni"])
-                                if pd.notna(fila["flporuni"])
-                                else 0.0,
+                                "idunineg": int(fila["idunineg"]) if pd.notna(fila["idunineg"]) else None,
+                                "idunineg_orig": int(fila["idunineg_orig"]) if pd.notna(fila.get("idunineg_orig")) else None,
+                                "dsctacon": str(fila["dsctacon"]) if pd.notna(fila.get("dsctacon")) else None,
+                                "flporuni": float(fila["flporuni"]) if pd.notna(fila.get("flporuni")) else 0.0,
                             }
                         )
 
@@ -887,23 +820,32 @@ def mostrar_tab_prorrateos_mysql():
                         afectados_upd = guardar_detalle_prorrateo(cambios)
 
                     st.success(
-                        f"se guardaron {afectados_ins} filas nuevas y "
-                        f"se actualizaron {afectados_upd} filas existentes."
+                        f"se guardaron {afectados_ins} filas nuevas y se actualizaron {afectados_upd} filas existentes."
                     )
 
-                    # recargar desde bd para limpiar flags es_nuevo y tener tmstmp / unidad
                     if id_actual is not None:
                         df_ref = get_detalle_prorrateo_df(id_actual)
-                        if (
-                            "idunineg" in df_ref.columns
-                            and "idunineg_orig" not in df_ref.columns
-                        ):
+
+                        if df_ref is None or df_ref.empty:
+                            df_ref = pd.DataFrame(
+                                columns=[
+                                    "id",
+                                    "idnumpon",
+                                    "dsctacon",
+                                    "idunineg",
+                                    "flporuni",
+                                    "tmstmp",
+                                    "idnuevo",
+                                    "unidad",
+                                ]
+                            )
+                        elif "id" not in df_ref.columns:
+                            df_ref["id"] = None
+
+                        if "idunineg" in df_ref.columns and "idunineg_orig" not in df_ref.columns:
                             df_ref["idunineg_orig"] = df_ref["idunineg"]
-                        st.session_state["df_detalle_original"] = df_ref.copy(
-                            deep=True
-                        )
-                        st.session_state["df_detalle_prorrateo"] = df_ref.copy(
-                            deep=True
-                        )
+
+                        st.session_state["df_detalle_original"] = df_ref.copy(deep=True)
+                        st.session_state["df_detalle_prorrateo"] = df_ref.copy(deep=True)
                         st.session_state["detalle_version"] += 1
                         st.rerun()
