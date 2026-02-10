@@ -710,7 +710,6 @@ def obtener_costos_venta_por_fecha(fecha: date) -> pd.DataFrame:
         LEFT JOIN ALMACENES01 a   ON a.cve_alm    = pf.num_alm
         WHERE f.fecha_doc = ? 
             AND pf.cost > 0
-            AND f.TIP_DOC_ANT != 'R'
     """ 
     """
       and f.tip_doc_ant != 'R'
@@ -752,6 +751,7 @@ def obtener_costos_venta_por_fecha_remisiones(fecha: date) -> pd.DataFrame:
         LEFT JOIN ALMACENES01 a   ON a.cve_alm    = pf.num_alm
         WHERE f.fecha_doc = ? 
             AND pf.cost > 0
+            AND UPPER(f.cve_pedi) containing 'MUESTRA'
         ORDER BY f.cve_doc
     """
     rows = run_query_firebird("FIREBIRD_BIO_SAE", sql, (fecha,))
