@@ -67,7 +67,7 @@ def mostrar_login():
     # --- Paso 2: si no está autenticado, muestra botón de inicio ---
     # --- Hay que arreglarlo para que no lo abra en 2 pestañas del navegador ---
     if "usuario" not in st.session_state or st.session_state["usuario"] is None:
-        st.title("🔐 Inicia sesión en test")
+        st.title("🔐 Inicia sesión")
         login_url = get_login_url()
         st.link_button("Entrar con Microsoft", login_url)
         st.stop()

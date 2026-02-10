@@ -21,30 +21,76 @@ from views.modulos_iaspel.tab_contabilizados_view import mostrar_tab_contabiliza
 from views.modulos_iaspel.tab_reporte_cobranza_view import mostrar_tab_reporte_cobranza
 from views.modulos_iaspel.tab_rep_ventas_lotes_view import mostrar_tab_rep_ventas_lotes
 
+
+
 def pantalla_dashboard():
     st.title("Dashboard de Pólizas / Prorrateos")
 
-    
+    eje = 25
+    origen = "JAVA"
+
     tabs = st.tabs(
         [
-            "Pólizas por Tipo",
-            "Cobertura de Prorrateo",
-            "Usos por Prorrateo",
-            "Catálogo (ksae20t/21t)",
-            "Proveedor → Ponderaciones",
-            "Proveedores (resumen)",
-            "Tabla Prorrateos",
-            "Pendientes de Contabilizar",
             "Póliza ventas",
             "Póliza Costo Ventas",
+            "Pendientes de Contabilizar",
             "Documentos Contabilizados",
+            "Tabla Prorrateos",
+            "Catálogo (ksae20t/21t)",
             "Reporte de Cobranza",
-            "reporte ventas lotes",
+            "Reporte ventas lotes",
+            "Pólizas por Tipo",
+            "Usos por Prorrateo",
+            "Cobertura de Prorrateo",
+            "Proveedor → Ponderaciones",
+            "Proveedores (resumen)",
         ]
     )
 
-    # --- Tab 1: Pólizas por Tipo ---
     with tabs[0]:
+        mostrar_tab_poliza_ventas()
+    with tabs[1]:
+        mostrar_tab_poliza_costo_venta()
+    with tabs[2]:
+        mostrar_tab_pendientes_contabilizar()
+    with tabs[3]:
+        mostrar_tab_contabilizados()
+    with tabs[4]:
+        mostrar_tab_prorrateos_mysql()
+    with tabs[5]:
+        st.subheader("Catálogo de prorrateos (y su uso)")
+        lim4 = st.number_input(
+            "Límite catálogo", 1, 5000, value=200, step=50, key="lim4"
+        )
+        cat = get_catalogo_con_uso(eje, origen, int(lim4), 0)
+        if cat.empty:
+            st.warning("No se encontró catálogo (ksae20t/21t).")
+        else:
+            st.dataframe(cat, use_container_width=True)
+            chart4 = (
+                alt.Chart(cat)
+                .mark_bar()
+                .encode(
+                    x=alt.X("idnumpon:N", title="ID Regla"),
+                    y=alt.Y("polizas_uso:Q", title="Pólizas que usan la regla"),
+                    tooltip=[
+                        "idnumpon",
+                        "dsnombre",
+                        "proveedor",
+                        "concepto_sae",
+                        "unidades",
+                        "suma_pct_regla",
+                        "polizas_uso",
+                    ],
+                )
+                .properties(height=360)
+            )
+            st.altair_chart(chart4, use_container_width=True)
+    with tabs[6]:
+        mostrar_tab_reporte_cobranza()
+    with tabs[7]:
+        mostrar_tab_rep_ventas_lotes()
+    with tabs[8]:
         c1, c2 = st.columns(2)
         eje = c1.number_input("Eje (2 dígitos)", 0, 99, value=25, step=1)
         origen = c2.text_input("Origen", "JAVA")
@@ -83,8 +129,27 @@ def pantalla_dashboard():
                 det = get_detalle_polizas(eje, origen, int(lim), int(off))
                 st.dataframe(det, use_container_width=True)
 
-    # --- Tab 2: Cobertura de Prorrateo ---
-    with tabs[1]:
+    with tabs[9]:
+        st.subheader("Pólizas por prorrateo aplicado")
+        lim3 = st.number_input("Top N", 1, 2000, value=50, step=10, key="lim3")
+        usos = get_usos_prorrateo(eje, origen, int(lim3), 0)
+        if usos.empty:
+            st.info("Aún no hay pólizas con prorrateo aplicado.")
+        else:
+            st.dataframe(usos, use_container_width=True)
+            chart3 = (
+                alt.Chart(usos)
+                .mark_bar()
+                .encode(
+                    x=alt.X("regla_nombre:N", title="Prorrateo", sort="-y"),
+                    y=alt.Y("polizas_uso:Q", title="Pólizas"),
+                    tooltip=["regla_id", "regla_nombre", "polizas_uso"],
+                )
+                .properties(height=360)
+            )
+            st.altair_chart(chart3, use_container_width=True)
+
+    with tabs[10]:
         st.subheader("Cobertura (pólizas con/ sin regla aplicada)")
         dfc = get_cobertura(eje, origen)
         if dfc.empty:
@@ -105,61 +170,10 @@ def pantalla_dashboard():
             )
 
             st.altair_chart(pie, use_container_width=False)
+    
+    
 
-    # --- Tab 3: Usos por Prorrateo ---
-    with tabs[2]:
-        st.subheader("Pólizas por prorrateo aplicado")
-        lim3 = st.number_input("Top N", 1, 2000, value=50, step=10, key="lim3")
-        usos = get_usos_prorrateo(eje, origen, int(lim3), 0)
-        if usos.empty:
-            st.info("Aún no hay pólizas con prorrateo aplicado.")
-        else:
-            st.dataframe(usos, use_container_width=True)
-            chart3 = (
-                alt.Chart(usos)
-                .mark_bar()
-                .encode(
-                    x=alt.X("regla_nombre:N", title="Prorrateo", sort="-y"),
-                    y=alt.Y("polizas_uso:Q", title="Pólizas"),
-                    tooltip=["regla_id", "regla_nombre", "polizas_uso"],
-                )
-                .properties(height=360)
-            )
-            st.altair_chart(chart3, use_container_width=True)
-
-    # --- Tab 4: Catálogo ksae20t/21t con uso ---
-    with tabs[3]:
-        st.subheader("Catálogo de prorrateos (y su uso)")
-        lim4 = st.number_input(
-            "Límite catálogo", 1, 5000, value=200, step=50, key="lim4"
-        )
-        cat = get_catalogo_con_uso(eje, origen, int(lim4), 0)
-        if cat.empty:
-            st.warning("No se encontró catálogo (ksae20t/21t).")
-        else:
-            st.dataframe(cat, use_container_width=True)
-            chart4 = (
-                alt.Chart(cat)
-                .mark_bar()
-                .encode(
-                    x=alt.X("idnumpon:N", title="ID Regla"),
-                    y=alt.Y("polizas_uso:Q", title="Pólizas que usan la regla"),
-                    tooltip=[
-                        "idnumpon",
-                        "dsnombre",
-                        "proveedor",
-                        "concepto_sae",
-                        "unidades",
-                        "suma_pct_regla",
-                        "polizas_uso",
-                    ],
-                )
-                .properties(height=360)
-            )
-            st.altair_chart(chart4, use_container_width=True)
-
-    # --- Tab 5: Proveedor → Ponderaciones ---
-    with tabs[4]:
+    with tabs[11]   :
         st.subheader("Ponderaciones por Proveedor")
 
         provs = get_proveedores_df()
@@ -193,8 +207,7 @@ def pantalla_dashboard():
                     mime="text/csv",
                 )
 
-    # --- Tab 6: Resumen por Proveedor ---
-    with tabs[5]:
+    with tabs[12]:
         st.subheader("Resumen por Proveedor")
 
         # Checkbox para incluir/excluir proveedores sin pólizas
@@ -283,19 +296,5 @@ def pantalla_dashboard():
             else:
                 st.info("No hay datos para graficar con el filtro actual.")
 
-    # --- Tab 7: Tabla Prorrateos (MySQL) delegada a otra vista ---
-    with tabs[6]:
-        mostrar_tab_prorrateos_mysql()
-
-    with tabs[7]:
-        mostrar_tab_pendientes_contabilizar()
-    with tabs[8]:
-        mostrar_tab_poliza_ventas()
-    with tabs[9]:
-        mostrar_tab_poliza_costo_venta()
-    with tabs[10]:
-        mostrar_tab_contabilizados()
-    with tabs[11]:
-        mostrar_tab_reporte_cobranza()
-    with tabs[12]:
-        mostrar_tab_rep_ventas_lotes()
+    
+    

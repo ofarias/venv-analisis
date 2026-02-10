@@ -219,6 +219,47 @@ def mostrar_tab_pendientes_contabilizar():
                 lambda x: f"{float(x):,.2f}"
             )
 
+    def _pick(*names):
+        for n in names:
+            if n in df_vista_fmt.columns:
+                return n
+        return None
+
+    orden = [
+        _pick("cve_prov"),
+        _pick("nombre"),
+        _pick("rfc"),
+        _pick("num_cpto"),
+        _pick("descr"),
+        _pick("tiene_prorrateo"),
+        _pick("idnumpon_seleccionado"),
+        _pick("no_factura"),
+        _pick("refer"),
+        _pick("fecha_apli"),
+        _pick("fechaelab"),
+        _pick("moneda"),
+        _pick("subtotal"),
+        _pick("impuesto4"),
+        _pick("ret_isr"),
+        _pick("impuesto2"),
+        _pick("ret_iva"),
+        _pick("impuesto3"),
+        _pick("ieps"),
+        _pick("impuesto1"),
+        _pick("importe"),
+        _pick("tcambio"),
+        _pick("impmon_ext"),
+        _pick("app_uuid"),
+        _pick("idnumpon"),
+        _pick("tmstmp"),
+    ]
+
+    orden = [c for c in orden if c]
+    resto = [c for c in df_vista_fmt.columns if c not in orden]
+    df_vista_fmt = df_vista_fmt[orden + resto]
+    # ======= FIN OPCIÓN 1 =======
+
+    # 6) tabla con AgGrid
     # 6) tabla con AgGrid (readonly excepto selección)
     #gb = GridOptionsBuilder.from_dataframe(df_vista)
     gb = GridOptionsBuilder.from_dataframe(df_vista_fmt)
@@ -286,6 +327,8 @@ def mostrar_tab_pendientes_contabilizar():
     #    key="agrid_pendientes_prorrateo",
     #)
     
+
+
     grid_response = AgGrid(
         df_vista_fmt,
         gridOptions=grid_options,

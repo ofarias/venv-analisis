@@ -13,6 +13,19 @@ _CUENTAS_MM_CACHE: dict[str, bool] = {}
 
 _CUENTAS_MM_CACHE: dict[str, bool] = {}
 
+def obtener_cuenta_costo(cve_doc: str) -> str:
+    if not cve_doc:
+        return "6500-060-020"  # fallback conservador
+    cve = cve_doc.strip()
+    # factura: inicia con letra
+    if cve and cve[0].isalpha():
+        return "5000-001-001"
+    # remisión: inicia con 0000
+    if cve.startswith("0000"):
+        return "6500-060-020"
+    # default (por si llega algo raro)
+    return "6500-060-020"
+
 def _get_prorr_cache():
     """carga 1 vez todo el paquete de prorrateos (maestro, detalle, etc.)."""
     global _PRORRATEOS_CACHE
@@ -268,7 +281,7 @@ def _mk_partidas_venta(row: pd.Series) -> list[Dict[str, Any]]:
     factura = str(row.get("factura") or row.get("FACTURA") or "").strip()
     cveprov = str(row.get("cve_clpv") or row.get("CVE_CLPV") or "").strip()
     fecha = str(row.get("fecha_apli") or row.get("FECHA_APLI") or "").strip()
-    concepto = f"{nombre} {cveprov} Doc. {factura}"
+    concepto = f"{nombre} {cveprov} Doc. {factura}".upper()
     fecha_raw = row.get("fecha_apli") or row.get("FECHA_APLI")
     dt = pd.to_datetime(fecha_raw, errors="coerce")
     fecha_str = "" if pd.isna(dt) else dt.strftime("%d-%m-%Y")
@@ -328,7 +341,7 @@ def _mk_partidas_venta(row: pd.Series) -> list[Dict[str, Any]]:
     })
 
     # IVA retención si existe
-    concepto_iva_ret = f"Retencion IVA {nombre} - {cveprov} Doc. {factura}"
+    concepto_iva_ret = f"Retencion IVA {nombre} - {cveprov} Doc. {factura}".upper()
     if ret_iva > 0:
         partidas.append({
             "NUM_CTA": cta_iva_ret,
@@ -343,7 +356,7 @@ def _mk_partidas_venta(row: pd.Series) -> list[Dict[str, Any]]:
 
     # ------------ HABER ------------
     # Ventas (subtotal)
-    concepto_haber = f"DOC. {factura} {fecha_str} {nombre} "
+    concepto_haber = f"DOC. {factura} {fecha_str} {nombre} ".upper()
     partidas.append({
         "NUM_CTA": cta_ventas,
         "DEBE_HABER": "H",
@@ -356,7 +369,7 @@ def _mk_partidas_venta(row: pd.Series) -> list[Dict[str, Any]]:
     })
 
     # IVA 16% (solo si hay)
-    concepto_iva = f"IVA 16% Doc. {factura}"
+    concepto_iva = f"IVA 16% Doc. {factura}".upper()
     if abs(iva) > 0:
         partidas.append({
             "NUM_CTA": cta_iva,
@@ -402,7 +415,7 @@ def _mk_partidas_costo_venta(row: pd.Series) -> list[Dict[str, Any]]:
     #st.write("fecha:", fecha, type(fecha))
 
     concepto_almacen = (
-        f"DOC. {cve_doc} {fecha} {cve_art} - {articulo}"
+        f"DOC. {cve_doc} {fecha} {cve_art} - {articulo}".upper()
     )
     # cuenta inventario prod. terminado (de la consulta)
     cta_inv_masked = str(
@@ -414,7 +427,9 @@ def _mk_partidas_costo_venta(row: pd.Series) -> list[Dict[str, Any]]:
     cta_inv = _normalize_numcta_masked_to_21(cta_inv_masked)
 
     # cuenta de costo de ventas (ajusta a tu catálogo)
-    cta_costo_masked = "5000-001-001"
+    ## cta_costo_masked = "5000-001-001"
+    cta_costo_masked = obtener_cuenta_costo(cve_doc)
+
     cta_costo = _normalize_numcta_masked_to_21(cta_costo_masked)
 
     # tipo de cambio (si quisieras usar alguno después)
@@ -427,7 +442,7 @@ def _mk_partidas_costo_venta(row: pd.Series) -> list[Dict[str, Any]]:
 
     
     # DEBE: costo de ventas
-    concepto_costo = f"COSTO DE VENTAS DOC. {cve_doc} {fecha} {cve_clpv} - {nombre}"
+    concepto_costo = f"COSTO DE VENTAS DOC. {cve_doc} {fecha} {cve_clpv} - {nombre}".upper()
     partidas.append({
         "NUM_CTA": cta_costo,
         "DEBE_HABER": "D",
@@ -1399,7 +1414,7 @@ def inserta_poliza_ventas(data: Union[pd.DataFrame, pd.Series], secrets, debug: 
         # concepto general de la póliza diaria
         ## concepto = f"VENTAS DEL {fecha.date().isoformat()}"  cambio a formato dd-mm-yyyy
         
-        concepto = f"VENTAS DEL {fecha_str}"
+        concepto = f"VENTAS DEL {fecha_str}".upper()
 
         if debug:
             st.json({
@@ -1492,7 +1507,7 @@ def inserta_poliza_costo_venta(
         if not partidas:
             return {"ok": False, "msg": "No se generaron partidas de costo de venta."}
 
-        concepto = f"COSTO DE VENTA DEL {fecha_str}"
+        concepto = f"COSTO DE VENTA DEL {fecha_str}".upper()
 
         if debug:
             st.json({

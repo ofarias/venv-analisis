@@ -708,8 +708,9 @@ def obtener_costos_venta_por_fecha(fecha: date) -> pd.DataFrame:
         LEFT JOIN INVE_CLIB01 icl ON icl.cve_prod = pf.cve_art
         LEFT JOIN INVE01 i        ON i.cve_art    = pf.cve_art
         LEFT JOIN ALMACENES01 a   ON a.cve_alm    = pf.num_alm
-        WHERE f.fecha_doc = ? AND pf.cost > 0
-        
+        WHERE f.fecha_doc = ? 
+            AND pf.cost > 0
+            AND f.TIP_DOC_ANT != 'R'
     """ 
     """
       and f.tip_doc_ant != 'R'
@@ -727,24 +728,31 @@ def obtener_costos_venta_por_fecha_remisiones(fecha: date) -> pd.DataFrame:
         SELECT  pf.cve_doc,
                 cl.clave,
                 cl.nombre,
-                CASE f.num_moned
-                    WHEN 1 THEN '1150-003-001'
-                    WHEN 2 THEN '1150-003-002'
-                END AS cuenta_cliente,
+                f.status,
+                --CASE f.num_moned
+                --    WHEN 1 THEN '1150-003-001'
+                --    WHEN 2 THEN '1150-003-002'
+                --END AS cuenta_cliente,
                 pf.cve_art,
                 i.descr AS articulo,
                 pf.cant,
                 pf.cost,
                 pf.cant * pf.cost AS costo,
                 icl.camplib3 AS depto,
-                '1190-005-000' AS cuenta_prod_terminado,
-                f.fecha_doc
+                -- '1190-005-000' AS cuenta_prod_terminado,
+                f.fecha_doc, 
+                pf.num_alm as almacen,
+                a.descr as Nombre_Almacen,
+                a.cuen_cont as Cuenta_Almacen
         FROM FACTR01 f
         LEFT JOIN PAR_FACTR01 pf ON pf.cve_doc = f.cve_doc
         LEFT JOIN CLIE01 cl      ON cl.clave   = f.cve_clpv
         LEFT JOIN INVE_CLIB01 icl ON icl.cve_prod = pf.cve_art
         LEFT JOIN INVE01 i        ON i.cve_art    = pf.cve_art
-        WHERE f.fecha_doc = ? AND pf.cost > 0 and f.tip_doc_sig = ''
+        LEFT JOIN ALMACENES01 a   ON a.cve_alm    = pf.num_alm
+        WHERE f.fecha_doc = ? 
+            AND pf.cost > 0
+        ORDER BY f.cve_doc
     """
     rows = run_query_firebird("FIREBIRD_BIO_SAE", sql, (fecha,))
     if not rows:

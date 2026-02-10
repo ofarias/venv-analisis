@@ -75,6 +75,7 @@ else:
     menu_opciones = {}
 
     if "SuperAdmin" in roles:
+        menu_opciones["Solicitudes"] = "solicitudes"
         menu_opciones["Dashboard Auxiliar Contable"] = "auxconta"
         menu_opciones["Administracion de Presupuestos"] = "presupuestos"
         menu_opciones["💸 Registro de Gastos"] = "regGasto"
@@ -136,6 +137,12 @@ else:
     
     #st.write("roles:", roles, type(roles))
     #st.write(f"Usuario {nombre}")
+    if "Ventas" in roles:
+        menu_opciones["Solicitudes"] = "solicitudes"
+        menu_opciones["🧑🏻‍💻 Navegar"] = "navegar"
+        menu_opciones["Administracion de Presupuestos"] = "presupuestos"
+        menu_opciones["💸 Registro de Gastos"] = "regGasto"
+
 
     if menu_opciones:
         seleccion = st.sidebar.selectbox("Módulos disponibles", list(menu_opciones.keys()))
@@ -241,6 +248,9 @@ else:
         elif modulo =="auxconta":
             from views.modulo_auxiliar_contable.dashboard_aux_contable_view import pantalla_dashboard_aux_conta
             pantalla_dashboard_aux_conta()
+        elif modulo =="solicitudes":
+            from views.modulo_solicitudes.solicitudes_gastos_view import mostrar_modulo_solicitudes_gastos
+            mostrar_modulo_solicitudes_gastos()
 
     else:
         st.warning("⚠️ No tienes roles asignados para acceder a los módulos.")
