@@ -125,7 +125,8 @@ else:
     #    menu_opciones["Tablero CFDI"] = "tab_cfdi"
 
     if "Contabilidad" in roles:
-        menu_opciones["Tablero CFDI"] = "tab_cfdi"
+        menu_opciones["Dashboard Auxiliar Contable"] = "auxconta"
+        menu_opciones["Tablero CFDI"] = "tab_cfdi"        
         menu_opciones[" Dashboard Prorrateos"] = "dash_prorrateos"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
 
