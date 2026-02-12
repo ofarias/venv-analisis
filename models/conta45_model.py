@@ -957,100 +957,120 @@ def buscar_prorrateo_en_maestro(maestro, cve_prov=None, num_cpto=None):
 def _pick_col(df: pd.DataFrame, opciones: list[str]) -> Optional[str]:
     return next((c for c in opciones if c in df.columns), None)
 
-def _mk_partidas_desde_row(row: pd.Series, info) -> tuple[list[Dict[str, Any]], str, dict]:
+def _mk_partidas_desde_row(
+    row: pd.Series,
+    info,
+    prorrateo_id: int | None = None,
+) -> tuple[list[Dict[str, Any]], str, dict]:
     """
-    Genera partidas para el prorrateo:
-      - DEBE (gasto): prorrateo sobre SUBTOTAL = IMPORTE - (imp1+imp2+imp3+imp4)
-      - DEBE (impuestos): una línea por cada IMPUESTO>0 con su cuenta (IASPEL.KSAECIT)
-      - HABER (proveedor): por IMPORTE total
+    genera partidas:
+      - debe (gasto): prorrateo sobre subtotal
+      - debe/haber (impuestos): por impuesto con cuenta
+      - haber (proveedor): total
+
+    si prorrateo_id viene, se usa ese idnumpon (no se hace match por proveedor/concepto).
     """
+
     maestro = info.get("maestro")
     detalle = info.get("detalle")
 
+    def g(*keys, default=None):
+        for k in keys:
+            v = row.get(k, None)
+            if v is None:
+                continue
+            if isinstance(v, str) and v.strip() == "":
+                continue
+            return v
+        return default
+
+    def trunc6(v: float) -> float:
+        return int(float(v) * 1e6) / 1e6
+
+    # normaliza dataframes
     if not isinstance(maestro, pd.DataFrame) or maestro.empty:
         maestro = None
     if not isinstance(detalle, pd.DataFrame) or detalle.empty:
         detalle = None
 
-    cve_mov  = row.get("CVE_PROV")
-    cpto_mov = row.get("NUM_CPTO")
+    cve_mov = str(g("cve_prov", "CVE_PROV", default="") or "").strip()
+    cpto_mov = g("num_cpto", "NUM_CPTO", default=None)
     concepto = _mk_concepto(row)
 
-    # importe total SAE (PAGA_M01.IMPORTE)
-    imp_total = float(pd.to_numeric(str(row.get("IMPORTE", 0)).replace(",", ""), errors="coerce") or 0.0)
+    # total
+    imp_total = trunc6(
+        float(
+            pd.to_numeric(
+                str(g("importe", "IMPORTE", default=0)).replace(",", ""),
+                errors="coerce",
+            )
+            or 0.0
+        )
+    )
 
-    # traer impuestos por CVE_FOLIO y cuentas contables
-    #cve_folio = str(row.get("CVE_FOLIO", "")).strip()
-    #imp = _fetch_impuestos_y_cuentas_por_folio(cve_folio) if cve_folio else {
-    #    "IMPUESTO1": 0.0, "IMPUESTO2": 0.0, "IMPUESTO3": 0.0, "IMPUESTO4": 0.0,
-    #    "CTA_IMP1": None, "CTA_IMP2": None, "CTA_IMP3": None, "CTA_IMP4": None,
-    #}
-
-    # traer impuestos por CVE_FOLIO y cuentas contables --- nueva funcion desde dashboard_prorrateos.py
-    cve_folio = str(row.get("CVE_FOLIO") or "").strip()
-    # si viene vacío, intentamos inferirlo desde PAGA_M01
-    
+    # impuestos y cuentas por folio
+    cve_folio = str(g("cve_folio", "CVE_FOLIO", default="") or "").strip()
     if not cve_folio:
         cve_folio = _guess_cve_folio_from_row(row) or ""
+
     if cve_folio:
         imp = _fetch_impuestos_y_cuentas_por_folio(cve_folio)
     else:
         imp = {
-            "IMPUESTO1": 0.0, "IMPUESTO2": 0.0, "IMPUESTO3": 0.0, "IMPUESTO4": 0.0,
-            "CTA_IMP1": None, "CTA_IMP2": None, "CTA_IMP3": None, "CTA_IMP4": None,
+            "IMPUESTO1": 0.0,
+            "IMPUESTO2": 0.0,
+            "IMPUESTO3": 0.0,
+            "IMPUESTO4": 0.0,
+            "CTA_IMP1": None,
+            "CTA_IMP2": None,
+            "CTA_IMP3": None,
+            "CTA_IMP4": None,
         }
-    
-    imp1, imp2, imp3, imp4 = imp["IMPUESTO1"], imp["IMPUESTO2"], imp["IMPUESTO3"], imp["IMPUESTO4"]
 
-    imp1 = float(imp["IMPUESTO1"] or 0.0)
-    imp2 = float(imp["IMPUESTO2"] or 0.0)
-    imp3 = float(imp["IMPUESTO3"] or 0.0)
-    imp4 = float(imp["IMPUESTO4"] or 0.0)
+    imp1 = trunc6(float(imp.get("IMPUESTO1") or 0.0))
+    imp2 = trunc6(float(imp.get("IMPUESTO2") or 0.0))
+    imp3 = trunc6(float(imp.get("IMPUESTO3") or 0.0))
+    imp4 = trunc6(float(imp.get("IMPUESTO4") or 0.0))
 
-    ret_total = imp1 + imp2 + imp3        # retenciones
-    iva_normal = imp4                     # impuesto normal
+    ret_total = trunc6(imp1 + imp2 + imp3)
+    iva_normal = trunc6(imp4)
 
-    # imp_total = subtotal + iva_normal - ret_total  →  subtotal = imp_total - iva_normal + ret_total
-    subtotal = imp_total - iva_normal + ret_total
+    subtotal = trunc6(imp_total - iva_normal + ret_total)
     if subtotal < 0:
-        subtotal = 0.0  # blindaje
+        subtotal = 0.0
 
-    #subtotal = imp_total - (imp1 + imp2 + imp3 + imp4)
-    #if subtotal < 0:
-    #    subtotal = 0.0  # blindaje
-
-    # cuenta proveedores (ajusta a tu catálogo si es diferente)
-
-    #cta_prov = _normalize_numcta_masked_to_21("2110-003-001")
     cta_prov = fetch_cuenta_contable_proveedor(cve_mov)
 
-    # localizar prorrateo en maestro
-    pror_row, metodo, diag = buscar_prorrateo_en_maestro(maestro, cve_mov, cpto_mov)
-    tcambio = row.get("TCAMBIO" or 1)
-    def fallback(extra: dict) -> tuple[list[Dict[str, Any]], str, dict]:
-        # cuenta de gasto por concepto (CTA_CONT_CPTO) → normalizada a 21 dígitos
-        cta_gasto = _normalize_numcta_masked_to_21(str(row.get("CTA_CONT_CPTO", "")).strip())
-        partidas_fb = []
+    # tcambio (corregido)
+    tcambio = float(pd.to_numeric(g("tcambio", "TCAMBIO", default=1), errors="coerce") or 1.0)
 
-        # DEBE: gasto (SUBTOTAL)
+    def fallback(extra: dict) -> tuple[list[Dict[str, Any]], str, dict]:
+        cta_gasto = _normalize_numcta_masked_to_21(
+            str(g("cta_cont_cpto", "CTA_CONT_CPTO", default="") or "").strip()
+        )
+
+        partidas_fb: list[Dict[str, Any]] = []
+
+        # debe: gasto (subtotal)
         partidas_fb.append({
             "NUM_CTA": cta_gasto,
             "DEBE_HABER": "D",
             "MONTOMOV": subtotal,
             "CONCEP_PO": concepto,
-            "NUMDEPTO": 0, "TIPCAMBIO": tcambio, "CCOSTOS": 0, "CGRUPOS": 0,
+            "NUMDEPTO": 0,
+            "TIPCAMBIO": tcambio,
+            "CCOSTOS": 0,
+            "CGRUPOS": 0,
         })
-        # DEBE: impuestos individuales (si > 0 y con cuenta)
-        # impuestos:
-        #   cta_imp1, cta_imp2, cta_imp3 = retenciones → HABER
-        #   cta_imp4                     = impuesto normal → DEBE
+
+        # impuestos
         for monto, cta, es_ret in (
             (imp1, imp.get("CTA_IMP1"), True),
             (imp2, imp.get("CTA_IMP2"), True),
             (imp3, imp.get("CTA_IMP3"), True),
             (imp4, imp.get("CTA_IMP4"), False),
         ):
-            monto_r = round(float(monto or 0.0), 2)
+            monto_r = trunc6(round(float(monto or 0.0), 2))
             if monto_r != 0 and cta:
                 partidas_fb.append({
                     "NUM_CTA": cta,
@@ -1063,46 +1083,171 @@ def _mk_partidas_desde_row(row: pd.Series, info) -> tuple[list[Dict[str, Any]], 
                     "CGRUPOS": 0,
                 })
 
-        # HABER: proveedor por total
+        # haber: proveedor
         partidas_fb.append({
             "NUM_CTA": cta_prov,
             "DEBE_HABER": "H",
-            "MONTOMOV": imp_total,
+            "MONTOMOV": trunc6(imp_total),
             "CONCEP_PO": concepto,
-            "NUMDEPTO": 0, "TIPCAMBIO": tcambio, "CCOSTOS": 0, "CGRUPOS": 0,
+            "NUMDEPTO": 0,
+            "TIPCAMBIO": tcambio,
+            "CCOSTOS": 0,
+            "CGRUPOS": 0,
         })
 
-        return partidas_fb, metodo, {"fallback": True, **diag, **extra}
+        metodo_fb = extra.pop("_metodo", None) or "fallback"
+        diag_fb = extra.pop("_diag", None) or {}
+        return partidas_fb, metodo_fb, {"fallback": True, **diag_fb, **extra}
 
-    # Sin maestro/match o sin detalle → fallback
-    if (pror_row is None) or (metodo in ("sin_datos", "sin_match")) or (detalle is None):
-        return fallback({"razon": "sin_maestro_o_detalle"})
+    # sin detalle global -> fallback
+    if detalle is None:
+        return fallback({"_metodo": "sin_datos", "razon": "sin_detalle_global"})
 
-    # Detecta columnas id de relación
-    col_id_maestro = _pick_col(pror_row.to_frame().T, ["idnumpon", "id", "prorrateo_id", "ID", "IdProrrateo"])
-    col_id_detalle = _pick_col(detalle,            ["idnumpon", "prorrateo_id", "IdProrrateo", "id_prorrateo", "id"])
+    # ========= caso forzado por idnumpon =========
+    if prorrateo_id is not None:
+        det = detalle.copy()
+        # detecta columna id en detalle
+        col_id_detalle = _pick_col(det, ["idnumpon", "prorrateo_id", "IdProrrateo", "id_prorrateo", "id"])
+        if not col_id_detalle:
+            return fallback({
+                "_metodo": "por_id_forzado",
+                "razon": "sin_col_id_detalle",
+                "idnumpon": int(prorrateo_id),
+            })
+
+        det[col_id_detalle] = pd.to_numeric(det[col_id_detalle], errors="coerce")
+        det = det[det[col_id_detalle] == int(prorrateo_id)]
+        if det.empty:
+            return fallback({
+                "_metodo": "por_id_forzado",
+                "razon": "detalle_vacio_para_id",
+                "idnumpon": int(prorrateo_id),
+            })
+
+        col_cta = _pick_col(det, ["dsctacon", "cuenta", "NUM_CTA", "num_cta"])
+        col_depto = _pick_col(det, ["idnuevo", "NUMDEPTO", "numdepto", "departamento", "idunineg"])
+        col_pct = _pick_col(det, ["flporuni", "porcentaje", "porc", "factor"])
+
+        if not col_cta or not col_pct:
+            return fallback({
+                "_metodo": "por_id_forzado",
+                "razon": "sin_cols_detalle",
+                "idnumpon": int(prorrateo_id),
+                "col_cta": col_cta,
+                "col_pct": col_pct,
+            })
+
+        det["_cta"] = det[col_cta].astype(str).str.strip()
+        det["_pct"] = pd.to_numeric(det[col_pct], errors="coerce").fillna(0.0)
+
+        if col_depto:
+            det["_depto"] = pd.to_numeric(det[col_depto], errors="coerce").astype("Int64")
+        else:
+            det["_depto"] = pd.Series([pd.NA] * len(det), index=det.index, dtype="Int64")
+
+        partidas: list[Dict[str, Any]] = []
+
+        # debe: gasto prorrateado
+        for _, rdet in det.iterrows():
+            monto = trunc6(float(rdet["_pct"]) * float(subtotal))
+            if monto <= 0:
+                continue
+            numdepto_val = int(rdet["_depto"]) if pd.notna(rdet["_depto"]) else None
+            cta_norm = _normalize_numcta_masked_to_21(rdet["_cta"])
+            partidas.append({
+                "NUM_CTA": cta_norm,
+                "DEBE_HABER": "D",
+                "MONTOMOV": monto,
+                "CONCEP_PO": concepto,
+                "NUMDEPTO": numdepto_val,
+                "TIPCAMBIO": tcambio,
+                "CCOSTOS": 0,
+                "CGRUPOS": 0,
+            })
+
+        # impuestos
+        for monto, cta, es_ret in (
+            (imp1, imp.get("CTA_IMP1"), True),
+            (imp2, imp.get("CTA_IMP2"), True),
+            (imp3, imp.get("CTA_IMP3"), True),
+            (imp4, imp.get("CTA_IMP4"), False),
+        ):
+            monto_r = trunc6(round(float(monto or 0.0), 2))
+            if monto_r != 0 and cta:
+                partidas.append({
+                    "NUM_CTA": cta,
+                    "DEBE_HABER": "H" if es_ret else "D",
+                    "MONTOMOV": monto_r,
+                    "CONCEP_PO": concepto,
+                    "NUMDEPTO": 0,
+                    "TIPCAMBIO": tcambio,
+                    "CCOSTOS": 0,
+                    "CGRUPOS": 0,
+                })
+
+        # haber: proveedor
+        partidas.append({
+            "NUM_CTA": cta_prov,
+            "DEBE_HABER": "H",
+            "MONTOMOV": trunc6(imp_total),
+            "CONCEP_PO": concepto,
+            "NUMDEPTO": 0,
+            "TIPCAMBIO": tcambio,
+            "CCOSTOS": 0,
+            "CGRUPOS": 0,
+        })
+
+        return partidas, "por_id_forzado", {
+            "fallback": False,
+            "idnumpon": int(prorrateo_id),
+            "subtotal": subtotal,
+            "imp1": imp1, "imp2": imp2, "imp3": imp3, "imp4": imp4,
+        }
+
+    # ========= caso normal (por match) =========
+    if maestro is None:
+        return fallback({"_metodo": "sin_datos", "razon": "sin_maestro"})
+
+    pror_row, metodo, diag = buscar_prorrateo_en_maestro(maestro, cve_mov, cpto_mov)
+    if (pror_row is None) or (metodo in ("sin_datos", "sin_match")):
+        return fallback({"_metodo": metodo, "razon": "sin_match_prov_cpto", **(diag or {})})
+
+    try:
+        pr_df = pror_row.to_frame().T
+    except Exception:
+        pr_df = pd.DataFrame([dict(pror_row)])
+
+    col_id_maestro = _pick_col(pr_df, ["idnumpon", "id", "prorrateo_id", "ID", "IdProrrateo"])
+    col_id_detalle = _pick_col(detalle, ["idnumpon", "prorrateo_id", "IdProrrateo", "id_prorrateo", "id"])
 
     if not col_id_maestro or not col_id_detalle:
-        return fallback({"razon": "sin_cols_id", "col_id_maestro": col_id_maestro, "col_id_detalle": col_id_detalle})
+        return fallback({
+            "_metodo": metodo,
+            "razon": "sin_cols_id",
+            "col_id_maestro": col_id_maestro,
+            "col_id_detalle": col_id_detalle,
+        })
 
-    idnumpon = pror_row[col_id_maestro]
+    try:
+        idnumpon = int(pd.to_numeric(pr_df.iloc[0][col_id_maestro], errors="coerce"))
+    except Exception:
+        return fallback({"_metodo": metodo, "razon": "idnumpon_invalido"})
 
-    # filtra detalle del prorrateo
     det = detalle.copy()
+    det[col_id_detalle] = pd.to_numeric(det[col_id_detalle], errors="coerce")
     det = det[det[col_id_detalle] == idnumpon]
     if det.empty:
-        return fallback({"razon": "sin_detalle_filtrado", "idnumpon": idnumpon})
+        return fallback({"_metodo": metodo, "razon": "sin_detalle_filtrado", "idnumpon": idnumpon})
 
-    # columnas del detalle
-    col_cta   = _pick_col(det, ["dsctacon", "cuenta", "NUM_CTA", "num_cta"])
-    col_depto = _pick_col(det, ["idnuevo", "NUMDEPTO", "numdepto", "departamento"])
-    col_pct   = _pick_col(det, ["flporuni", "porcentaje", "porc", "factor"])
+    col_cta = _pick_col(det, ["dsctacon", "cuenta", "NUM_CTA", "num_cta"])
+    col_depto = _pick_col(det, ["idnuevo", "NUMDEPTO", "numdepto", "departamento", "idunineg"])
+    col_pct = _pick_col(det, ["flporuni", "porcentaje", "porc", "factor"])
     if not col_cta or not col_pct:
-        return fallback({"razon": "sin_cols_detalle", "idnumpon": idnumpon})
+        return fallback({"_metodo": metodo, "razon": "sin_cols_detalle", "idnumpon": idnumpon})
 
-    # normaliza valores
     det["_cta"] = det[col_cta].astype(str).str.strip()
     det["_pct"] = pd.to_numeric(det[col_pct], errors="coerce").fillna(0.0)
+
     if col_depto:
         det["_depto"] = pd.to_numeric(det[col_depto], errors="coerce").astype("Int64")
     else:
@@ -1110,10 +1255,8 @@ def _mk_partidas_desde_row(row: pd.Series, info) -> tuple[list[Dict[str, Any]], 
 
     partidas: list[Dict[str, Any]] = []
 
-    # 1) DEBE: gasto (SUBTOTAL) prorrateado
-    total_debe_gasto = 0.0
     for _, rdet in det.iterrows():
-        monto = float(rdet["_pct"] * subtotal)
+        monto = trunc6(float(rdet["_pct"]) * float(subtotal))
         if monto <= 0:
             continue
         numdepto_val = int(rdet["_depto"]) if pd.notna(rdet["_depto"]) else None
@@ -1128,19 +1271,14 @@ def _mk_partidas_desde_row(row: pd.Series, info) -> tuple[list[Dict[str, Any]], 
             "CCOSTOS": 0,
             "CGRUPOS": 0,
         })
-        total_debe_gasto += monto
 
-    # 2) DEBE: impuestos individuales
-    # 2) impuestos individuales
-    #   cta_imp1, cta_imp2, cta_imp3 = retenciones → HABER
-    #   cta_imp4                     = impuesto normal → DEBE
     for monto, cta, es_ret in (
         (imp1, imp.get("CTA_IMP1"), True),
         (imp2, imp.get("CTA_IMP2"), True),
         (imp3, imp.get("CTA_IMP3"), True),
         (imp4, imp.get("CTA_IMP4"), False),
     ):
-        monto_r = round(float(monto or 0.0), 2)
+        monto_r = trunc6(round(float(monto or 0.0), 2))
         if monto_r != 0 and cta:
             partidas.append({
                 "NUM_CTA": cta,
@@ -1153,21 +1291,23 @@ def _mk_partidas_desde_row(row: pd.Series, info) -> tuple[list[Dict[str, Any]], 
                 "CGRUPOS": 0,
             })
 
-    # 3) HABER: proveedor por el total del documento
     partidas.append({
         "NUM_CTA": cta_prov,
         "DEBE_HABER": "H",
-        "MONTOMOV": imp_total,
+        "MONTOMOV": trunc6(imp_total),
         "CONCEP_PO": concepto,
-        "NUMDEPTO": 0, 
-        "TIPCAMBIO": tcambio, 
-        "CCOSTOS": 0, 
+        "NUMDEPTO": 0,
+        "TIPCAMBIO": tcambio,
+        "CCOSTOS": 0,
         "CGRUPOS": 0,
     })
 
-    return partidas, metodo, {"fallback": False, "idnumpon": idnumpon,
-                              "imp1": imp1, "imp2": imp2, "imp3": imp3, "imp4": imp4,
-                              "subtotal": subtotal}
+    return partidas, metodo, {
+        "fallback": False,
+        "idnumpon": idnumpon,
+        "subtotal": subtotal,
+        "imp1": imp1, "imp2": imp2, "imp3": imp3, "imp4": imp4,
+    }
 
 def _insert_encabezado(cur,tipo: str,num_poliz: str,periodo: int,ejercicio: int,fecha: datetime,concepto: str,uuid: Optional[str],num_partidas: int) -> None:
     sufijo = str(ejercicio)[-2:]          # 2026 -> "26"
@@ -1235,6 +1375,9 @@ def _insert_partidas(cur, tipo: str, num_poliz: str, periodo: int, ejercicio: in
 def insertar_poliza_y_auxiliares(row: pd.Series, secrets, prorrateo_id: Optional[int] = None,debug: bool=True) -> Dict[str, Any]:
     #info = _get_prorr_cache(force_reload=True)
     info = _get_prorrateo_por_id(prorrateo_id)
+
+    st.write(f"[INFO] Generando póliza en COI para CVE_PROV={row.get('CVE_PROV')} NUM_CPTO={row.get('NUM_CPTO')} con prorrateo_id={prorrateo_id} (método={info.get('metodo')})")
+
     try:
         fecha = _as_date(row.get("FECHA_APLI"))
         periodo, ejercicio = _periodo_y_ejercicio(fecha)
@@ -1243,7 +1386,7 @@ def insertar_poliza_y_auxiliares(row: pd.Series, secrets, prorrateo_id: Optional
         concepto = _mk_concepto(row)
         uuid = str(row.get("APP_UUID") or "").strip() or None
         cve_folio = _guess_cve_folio_from_row(row)
-        partidas, metodo, diag = _mk_partidas_desde_row(row, info)
+        partidas, metodo, diag = _mk_partidas_desde_row(row, info, prorrateo_id=prorrateo_id)
         idnumpon = diag.get("idnumpon") if isinstance(diag, dict) else None
 
         if debug:
@@ -1316,10 +1459,13 @@ def insertar_poliza_y_auxiliares(row: pd.Series, secrets, prorrateo_id: Optional
                 run_query("BIO", sql_rel, params_rel)
 
             con.commit()
+            # calcula el sufijo de 2 dígitos (siempre con cero a la izquierda si hiciera falta)
+            suf = f"{int(ejercicio) % 100:02d}"
+            tabla_polizas = f"POLIZAS{suf}"
 
-            cur.execute("""
+            cur.execute(f"""
                 SELECT TIPO_POLI, NUM_POLIZ, PERIODO, EJERCICIO, FECHA_POL, CONCEP_PO
-                FROM POLIZAS25
+                FROM {tabla_polizas}
                 WHERE TIPO_POLI=? AND NUM_POLIZ=? AND PERIODO=? AND EJERCICIO=?
             """, (tipo, num_poliz, periodo, ejercicio))
             ver = cur.fetchone()

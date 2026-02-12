@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import streamlit as st
 from datetime import date
 from decimal import Decimal, ROUND_DOWN
-#from turtle import pu
 from typing import Any, Dict, List, Optional, Tuple
-
 
 from models.solicitudes_model import (
     get_usuarios_activos,
@@ -19,6 +18,9 @@ from models.solicitudes_model import (
     get_detalle_by_solicitud,
     upsert_detalle_rows,
     delete_detalle_ids,
+    get_conceptos_gasto_rows,
+    get_datoscfd_by_uuid,
+    uuid_ya_usado,
 )
 
 
@@ -39,16 +41,46 @@ def _trunc(x: Decimal, n: int = 6) -> Decimal:
 def calcular_totales_row(r: Dict[str, Any]) -> Dict[str, Any]:
     cantidad = _d(r.get("cantidad"), "1")
     pu = _d(r.get("precio_unitario"), "0")
-    # impuestos no los captura el usuario; se llenarán desde el xml al capturar uuid
-    iva = Decimal("0")
-    ieps = Decimal("0")
-    ret_iva = Decimal("0")
-    ret_isr = Decimal("0")
-    subtotal = cantidad * pu
+
+    importe = _d(r.get("importe"), "0")
+    imp1 = _d(r.get("impuesto1"), "0")
+    imp2 = _d(r.get("impuesto2"), "0")
+    imp3 = _d(r.get("impuesto3"), "0")
+    imp4 = _d(r.get("impuesto4"), "0")
+
+    subtotal_xml = _d(r.get("subtotal_xml"), "0")
+    iva_xml = _d(r.get("iva_xml"), "0")
+    total_xml = _d(r.get("total_xml"), "0")
+
+    # subtotal: usa el del xml si viene; si no, usa cantidad*pu o importe
+    if subtotal_xml != Decimal("0"):
+        subtotal = subtotal_xml
+    elif importe != Decimal("0"):
+        subtotal = importe
+    else:
+        subtotal = cantidad * pu
+
+    # mapeo a columnas
+    iva = imp4
+    ieps = imp3
+    ret_isr = imp1
+    ret_iva = imp2
+
     total = subtotal + iva + ieps - ret_iva - ret_isr
 
     r["cantidad"] = _trunc(cantidad)
     r["precio_unitario"] = _trunc(pu)
+
+    r["importe"] = _trunc(importe)
+    r["impuesto1"] = _trunc(imp1)
+    r["impuesto2"] = _trunc(imp2)
+    r["impuesto3"] = _trunc(imp3)
+    r["impuesto4"] = _trunc(imp4)
+
+    r["subtotal_xml"] = _trunc(subtotal_xml)
+    r["iva_xml"] = _trunc(iva_xml)
+    r["total_xml"] = _trunc(total_xml)
+
     r["subtotal"] = _trunc(subtotal)
     r["iva"] = _trunc(iva)
     r["ieps"] = _trunc(ieps)
@@ -74,7 +106,6 @@ def crear_solicitud_ctrl(
 ) -> Tuple[int, str]:
     anio = int(fecha_inicio.year)
 
-    # por concurrencia: si choca por unique (anio, consecutivo) reintenta
     for _ in range(5):
         consecutivo = obtener_siguiente_consecutivo(anio)
         folio = f"{anio}-{consecutivo:04d}"
@@ -129,7 +160,7 @@ def actualizar_cabecera_ctrl(
         hora_salida=hora_salida,
         hora_regreso=hora_regreso,
         objetivo=objetivo,
-        actualizado_por=usuario_id
+        actualizado_por=usuario_id,
     )
 
 
@@ -137,7 +168,7 @@ def cambiar_estatus_ctrl(solicitud_id: int, estatus: str, usuario_id: int) -> No
     actualizar_estatus_solicitud(
         solicitud_id=solicitud_id,
         estatus=estatus,
-        actualizado_por=usuario_id
+        actualizado_por=usuario_id,
     )
 
 
@@ -157,7 +188,7 @@ def listar_solicitudes_ctrl(
         estatus=estatus,
         anio=anio,
         empleado_id=empleado_id,
-        limit=limit
+        limit=limit,
     )
 
 
@@ -175,21 +206,38 @@ def guardar_detalle_ctrl(
     rows: List[Dict[str, Any]],
     deleted_ids: List[int],
     usuario_id: int
-) -> None:
-    # recalcular totales y normalizar
-    fixed: List[Dict[str, Any]] = []
-    for r in rows:
-        if not (r.get("tipo_gasto") or "").strip():
-            # no guardes renglones vacíos
-            continue
-        fixed.append(calcular_totales_row(r))
+) -> Dict[str, Any]:
+    try:
+        fixed: List[Dict[str, Any]] = []
+        for r in rows:
+            if not (r.get("concepto") or "").strip():
+                continue
+            fixed.append(calcular_totales_row(r))
 
-    if deleted_ids:
-        delete_detalle_ids(solicitud_id, deleted_ids)
+        if deleted_ids:
+            delete_detalle_ids(solicitud_id, deleted_ids)
 
-    if fixed:
-        upsert_detalle_rows(
-            solicitud_id=solicitud_id,
-            rows=fixed,
-            creado_por=usuario_id
-        )
+        if fixed:
+            upsert_detalle_rows(
+                solicitud_id=solicitud_id,
+                rows=fixed,
+                creado_por=usuario_id,
+            )
+
+        return {"ok": True, "msg": "detalle guardado"}
+    except ValueError as e:
+        return {"ok": False, "msg": str(e)}
+    except Exception as e:
+        return {"ok": False, "msg": f"error al guardar detalle: {e}"}
+
+
+def get_conceptos_gasto_ctrl(activo: int = 1):
+    return get_conceptos_gasto_rows(activo=activo)
+
+
+def get_datoscfd_by_uuid_ctrl(uuid: str) -> dict | None:
+    return get_datoscfd_by_uuid(uuid, secrets=st.secrets)
+
+
+def uuid_ya_usado_ctrl(uuid: str, exclude_solicitud_id: int | None = None) -> dict | None:
+    return uuid_ya_usado(uuid, exclude_solicitud_id=exclude_solicitud_id)

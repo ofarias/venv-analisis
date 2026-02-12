@@ -119,6 +119,9 @@ def contabilizar_pendiente_en_coi(row: pd.Series, prorrateo_id: int | None = Non
     envuelve insertar_poliza_y_auxiliares usando st.secrets
     y mapea columnas minúsculas → mayúsculas para compatibilidad.
     """
+
+    st.write(f"Contabilizando pendiente en COI... (prorrateo_id={prorrateo_id}, debug={debug})")
+    ##st.stop()
     if not isinstance(row, pd.Series):
         row = pd.Series(row)
 
@@ -179,3 +182,20 @@ def get_reporte_cobranza_df(fecha_corte, cliente: str | None = None, vendedor: s
 
 def get_rep_ventas_lotes_df(fecha_ini, fecha_fin) -> pd.DataFrame:
     return dashboard_model.get_rep_ventas_lotes_df(fecha_ini=fecha_ini, fecha_fin=fecha_fin)
+
+def copiar_detalle_prorrateo_ctrl(
+        idnumpon_origen: int,
+        idnumpon_destino: int,
+        sobrescribir: bool = False
+    ) -> dict:
+    try:
+        n = copiar_detalle_prorrateo(
+            idnumpon_origen=idnumpon_origen,
+            idnumpon_destino=idnumpon_destino,
+            sobrescribir=sobrescribir
+        )
+        return {"ok": True, "msg": f"detalle copiado: {n} filas", "filas": n}
+    except ValueError as e:
+        return {"ok": False, "msg": str(e)}
+    except Exception as e:
+        return {"ok": False, "msg": f"error al copiar detalle: {e}"}

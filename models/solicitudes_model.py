@@ -1,14 +1,14 @@
 # models/solicitudes_model.py
 
 from __future__ import annotations
-
+import fdb
+import streamlit as st
 from dataclasses import dataclass
 from datetime import date, time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
-
 from database.conexion import obtener_conexion
-
+from models.ada_model import obtener_datoscfd_por_uuid as obtener_datoscfd_por_uuid_ada
 
 @dataclass
 class SolicitudCabecera:
@@ -248,10 +248,44 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
     cur.execute("""
         select
           id, solicitud_id, renglon,
-          fecha_gasto, tipo_gasto, descripcion,
-          cantidad, precio_unitario, subtotal,
-          iva, ieps, ret_iva, ret_isr, total,
-          moneda, proveedor, uuid, referencia, archivo_url, notas,
+          fecha_gasto,
+          concepto,
+          descripcion,
+          cantidad,
+          precio_unitario,
+          importe,
+          impuesto1,
+          impuesto2,
+          impuesto3,
+          impuesto4,
+          subtotal,
+          iva,
+          ieps,
+          ret_iva,
+          ret_isr,
+          total,
+          moneda,
+          proveedor,
+          receptor,
+          serie,
+          folio,
+          version,
+          moneda_xml,
+          tipo_cambio,
+          estado_sat,
+          forma_pago,
+          metodo_pago,
+          tipo_comprobante,
+          uso_cfdi,
+          subtotal_xml,
+          iva_xml,
+          total_xml,
+          uuid,
+          referencia,
+          archivo_url,
+          notas,
+          presupuesto_id,
+          presupuesto_detalle_id,
           fecha_creacion
         from solicitudes_detalle
         where solicitud_id = %s
@@ -279,10 +313,27 @@ def delete_detalle_ids(solicitud_id: int, detalle_ids: List[int]) -> None:
     cur.close()
     conn.close()
 
+def get_conceptos_gasto_rows(activo: int = 1):
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        """
+        select id, concepto, cuenta
+        from solicitud_concepto_gasto
+        where (%s is null) or (activo = %s)
+        order by concepto
+        """,
+        (activo, activo),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    return rows
+
 
 def _is_nan(v) -> bool:
     try:
-        # pandas/numpy nan
         return v != v
     except Exception:
         return False
@@ -293,13 +344,40 @@ def _none_if_nan(v):
 
 
 def _next_renglon(cur, solicitud_id: int) -> int:
-    cur.execute("""
+    cur.execute(
+        """
         select coalesce(max(renglon), 0) + 1
         from solicitudes_detalle
         where solicitud_id = %s
-    """, (solicitud_id,))
+        """,
+        (solicitud_id,),
+    )
     row = cur.fetchone()
     return int(row[0] if row else 1)
+
+
+def get_datoscfd_by_uuid(uuid: str, secrets=None) -> dict | None:
+    uuid_norm = ("" if uuid is None else str(uuid)).strip().upper()
+    if not uuid_norm:
+        return None
+
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("select * from DATOSCFD where upper(UUID) = %s limit 1", (uuid_norm,))
+        row = cur.fetchone()
+        if row:
+            return row
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if secrets is None:
+        return None
+
+    return obtener_datoscfd_por_uuid_ada(secrets, uuid_norm)
 
 
 def upsert_detalle_rows(
@@ -311,113 +389,252 @@ def upsert_detalle_rows(
     conn = obtener_conexion()
     cur = conn.cursor()
 
-    for r in rows:
-        detalle_id = _none_if_nan(r.get("id"))
+    try:
+        for r in rows:
+            detalle_id = _none_if_nan(r.get("id"))
 
-        # normaliza nan -> None en todos los campos que puedan venir del editor
-        fecha_gasto = _none_if_nan(r.get("fecha_gasto"))
-        tipo_gasto = (_none_if_nan(r.get("tipo_gasto")) or "").strip()
-        descripcion = (_none_if_nan(r.get("descripcion")) or "").strip() or None
-        moneda = (_none_if_nan(r.get("moneda")) or "mxn").strip().lower()
-        proveedor = (_none_if_nan(r.get("proveedor")) or "").strip() or None
-        uuid = (_none_if_nan(r.get("uuid")) or "").strip() or None
-        referencia = (_none_if_nan(r.get("referencia")) or "").strip() or None
-        archivo_url = (_none_if_nan(r.get("archivo_url")) or "").strip() or None
-        notas = (_none_if_nan(r.get("notas")) or "").strip() or None
+            fecha_gasto = _none_if_nan(r.get("fecha_gasto"))
+            concepto = (_none_if_nan(r.get("concepto")) or "").strip()
+            descripcion = (_none_if_nan(r.get("descripcion")) or "").strip() or None
 
-        cantidad = _none_if_nan(r.get("cantidad"))
-        precio_unitario = _none_if_nan(r.get("precio_unitario"))
-        subtotal = _none_if_nan(r.get("subtotal"))
-        iva = _none_if_nan(r.get("iva"))
-        ieps = _none_if_nan(r.get("ieps"))
-        ret_iva = _none_if_nan(r.get("ret_iva"))
-        ret_isr = _none_if_nan(r.get("ret_isr"))
-        total = _none_if_nan(r.get("total"))
+            cantidad = _none_if_nan(r.get("cantidad"))
+            precio_unitario = _none_if_nan(r.get("precio_unitario"))
+            importe = _none_if_nan(r.get("importe"))
+            impuesto1 = _none_if_nan(r.get("impuesto1"))
+            impuesto2 = _none_if_nan(r.get("impuesto2"))
+            impuesto3 = _none_if_nan(r.get("impuesto3"))
+            impuesto4 = _none_if_nan(r.get("impuesto4"))
 
-        # si es nuevo, asignar renglon automático
-        if detalle_id is None:
-            renglon = _next_renglon(cur, solicitud_id)
+            subtotal = _none_if_nan(r.get("subtotal"))
+            iva = _none_if_nan(r.get("iva"))
+            ieps = _none_if_nan(r.get("ieps"))
+            ret_iva = _none_if_nan(r.get("ret_iva"))
+            ret_isr = _none_if_nan(r.get("ret_isr"))
+            total = _none_if_nan(r.get("total"))
 
-            cur.execute("""
-                insert into solicitudes_detalle
-                (solicitud_id, renglon, fecha_gasto, tipo_gasto, descripcion,
-                 cantidad, precio_unitario, subtotal,
-                 iva, ieps, ret_iva, ret_isr, total,
-                 moneda, proveedor, uuid, referencia, archivo_url, notas,
-                 creado_por)
-                values
-                (%s, %s, %s, %s, %s,
-                 %s, %s, %s,
-                 %s, %s, %s, %s, %s,
-                 %s, %s, %s, %s, %s, %s,
-                 %s)
-            """, (
-                solicitud_id,
-                renglon,
-                fecha_gasto,
-                tipo_gasto,
-                descripcion,
-                cantidad,
-                precio_unitario,
-                subtotal,
-                iva,
-                ieps,
-                ret_iva,
-                ret_isr,
-                total,
-                moneda,
-                proveedor,
-                uuid,
-                referencia,
-                archivo_url,
-                notas,
-                creado_por
-            ))
-        else:
-            # update: no tocar renglon
-            cur.execute("""
-                update solicitudes_detalle
-                set fecha_gasto = %s,
-                    tipo_gasto = %s,
-                    descripcion = %s,
-                    cantidad = %s,
-                    precio_unitario = %s,
-                    subtotal = %s,
-                    iva = %s,
-                    ieps = %s,
-                    ret_iva = %s,
-                    ret_isr = %s,
-                    total = %s,
-                    moneda = %s,
-                    proveedor = %s,
-                    uuid = %s,
-                    referencia = %s,
-                    archivo_url = %s,
-                    notas = %s
-                where id = %s
-                  and solicitud_id = %s
-            """, (
-                fecha_gasto,
-                tipo_gasto,
-                descripcion,
-                cantidad,
-                precio_unitario,
-                subtotal,
-                iva,
-                ieps,
-                ret_iva,
-                ret_isr,
-                total,
-                moneda,
-                proveedor,
-                uuid,
-                referencia,
-                archivo_url,
-                notas,
-                int(detalle_id),
-                int(solicitud_id)
-            ))
+            moneda = (_none_if_nan(r.get("moneda")) or "mxn").strip().lower()
+            proveedor = (_none_if_nan(r.get("proveedor")) or "").strip() or None
+            receptor = (_none_if_nan(r.get("receptor")) or "").strip() or None
 
-    conn.commit()
-    cur.close()
-    conn.close()
+            serie = (_none_if_nan(r.get("serie")) or "").strip() or None
+            folio = (_none_if_nan(r.get("folio")) or "").strip() or None
+            version = (_none_if_nan(r.get("version")) or "").strip() or None
+            moneda_xml = (_none_if_nan(r.get("moneda_xml")) or "").strip() or None
+            tipo_cambio = _none_if_nan(r.get("tipo_cambio"))
+            estado_sat = (_none_if_nan(r.get("estado_sat")) or "").strip() or None
+            forma_pago = (_none_if_nan(r.get("forma_pago")) or "").strip() or None
+            metodo_pago = (_none_if_nan(r.get("metodo_pago")) or "").strip() or None
+            tipo_comprobante = (_none_if_nan(r.get("tipo_comprobante")) or "").strip() or None
+            uso_cfdi = (_none_if_nan(r.get("uso_cfdi")) or "").strip() or None
+            subtotal_xml = _none_if_nan(r.get("subtotal_xml"))
+            iva_xml = _none_if_nan(r.get("iva_xml"))
+            total_xml = _none_if_nan(r.get("total_xml"))
+
+            uuid = (_none_if_nan(r.get("uuid")) or "").strip() or None
+            referencia = (_none_if_nan(r.get("referencia")) or "").strip() or None
+            archivo_url = (_none_if_nan(r.get("archivo_url")) or "").strip() or None
+            notas = (_none_if_nan(r.get("notas")) or "").strip() or None
+
+            presupuesto_id = _none_if_nan(r.get("presupuesto_id"))
+            presupuesto_detalle_id = _none_if_nan(r.get("presupuesto_detalle_id"))
+
+            if detalle_id is None:
+                renglon = _next_renglon(cur, solicitud_id)
+                cur.execute(
+                    """
+                    insert into solicitudes_detalle
+                    (
+                      solicitud_id, renglon,
+                      fecha_gasto, concepto, descripcion,
+                      cantidad, precio_unitario,
+                      importe, impuesto1, impuesto2, impuesto3, impuesto4,
+                      subtotal, iva, ieps, ret_iva, ret_isr, total,
+                      moneda, proveedor, receptor,
+                      serie, folio, version, moneda_xml, tipo_cambio, estado_sat,
+                      forma_pago, metodo_pago, tipo_comprobante, uso_cfdi,
+                      subtotal_xml, iva_xml, total_xml,
+                      uuid, referencia, archivo_url, notas,
+                      presupuesto_id, presupuesto_detalle_id,
+                      creado_por
+                    )
+                    values
+                    (
+                      %s, %s,
+                      %s, %s, %s,
+                      %s, %s,
+                      %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s,
+                      %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s,
+                      %s, %s, %s,
+                      %s, %s, %s, %s,
+                      %s, %s,
+                      %s
+                    )
+                    """,
+                    (
+                        solicitud_id, renglon,
+                        fecha_gasto, concepto, descripcion,
+                        cantidad, precio_unitario,
+                        importe, impuesto1, impuesto2, impuesto3, impuesto4,
+                        subtotal, iva, ieps, ret_iva, ret_isr, total,
+                        moneda, proveedor, receptor,
+                        serie, folio, version, moneda_xml, tipo_cambio, estado_sat,
+                        forma_pago, metodo_pago, tipo_comprobante, uso_cfdi,
+                        subtotal_xml, iva_xml, total_xml,
+                        uuid, referencia, archivo_url, notas,
+                        presupuesto_id, presupuesto_detalle_id,
+                        creado_por,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    update solicitudes_detalle
+                    set
+                      fecha_gasto = %s,
+                      concepto = %s,
+                      descripcion = %s,
+                      cantidad = %s,
+                      precio_unitario = %s,
+
+                      importe = %s,
+                      impuesto1 = %s,
+                      impuesto2 = %s,
+                      impuesto3 = %s,
+                      impuesto4 = %s,
+
+                      subtotal = %s,
+                      iva = %s,
+                      ieps = %s,
+                      ret_iva = %s,
+                      ret_isr = %s,
+                      total = %s,
+
+                      moneda = %s,
+                      proveedor = %s,
+                      receptor = %s,
+
+                      serie = %s,
+                      folio = %s,
+                      version = %s,
+                      moneda_xml = %s,
+                      tipo_cambio = %s,
+                      estado_sat = %s,
+                      forma_pago = %s,
+                      metodo_pago = %s,
+                      tipo_comprobante = %s,
+                      uso_cfdi = %s,
+                      subtotal_xml = %s,
+                      iva_xml = %s,
+                      total_xml = %s,
+
+                      uuid = %s,
+                      referencia = %s,
+                      archivo_url = %s,
+                      notas = %s,
+
+                      presupuesto_id = %s,
+                      presupuesto_detalle_id = %s
+                    where id = %s
+                      and solicitud_id = %s
+                    """,
+                    (
+                        fecha_gasto,
+                        concepto,
+                        descripcion,
+                        cantidad,
+                        precio_unitario,
+                        importe,
+                        impuesto1,
+                        impuesto2,
+                        impuesto3,
+                        impuesto4,
+                        subtotal,
+                        iva,
+                        ieps,
+                        ret_iva,
+                        ret_isr,
+                        total,
+                        moneda,
+                        proveedor,
+                        receptor,
+                        serie,
+                        folio,
+                        version,
+                        moneda_xml,
+                        tipo_cambio,
+                        estado_sat,
+                        forma_pago,
+                        metodo_pago,
+                        tipo_comprobante,
+                        uso_cfdi,
+                        subtotal_xml,
+                        iva_xml,
+                        total_xml,
+                        uuid,
+                        referencia,
+                        archivo_url,
+                        notas,
+                        presupuesto_id,
+                        presupuesto_detalle_id,
+                        int(detalle_id),
+                        int(solicitud_id),
+                    ),
+                )
+
+        conn.commit()
+
+    except Exception as e:
+        msg = str(e).lower()
+        if "duplicate" in msg and ("uk_solicitudes_detalle_uuid" in msg or "uuid" in msg):
+            raise ValueError("no se puede guardar: el uuid ya fue usado en otra solicitud.") from e
+        raise
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def uuid_ya_usado(uuid: str, exclude_solicitud_id: int | None = None) -> dict | None:
+    uuid_norm = ("" if uuid is None else str(uuid)).strip().upper()
+    if not uuid_norm:
+        return None
+
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+
+        sql = """
+            select
+              d.id as detalle_id,
+              d.solicitud_id,
+              s.folio,
+              s.empleado_nombre,
+              s.estatus,
+              d.fecha_creacion
+            from solicitudes_detalle d
+            join solicitudes s on s.id = d.solicitud_id
+            where upper(trim(d.uuid)) = %s
+        """
+        params = [uuid_norm]
+
+        if exclude_solicitud_id is not None:
+            sql += " and d.solicitud_id <> %s"
+            params.append(int(exclude_solicitud_id))
+
+        sql += " limit 1"
+
+        cur.execute(sql, tuple(params))
+        return cur.fetchone()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

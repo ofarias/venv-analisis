@@ -207,14 +207,11 @@ def mostrar_tab_pendientes_contabilizar():
     df_vista_fmt = df_vista.copy()
     for col in cols_montos:
         if col in df_vista_fmt.columns:
-            # guardamos qué valores no eran nulos originalmente
             mask_notnull = df_vista_fmt[col].notna()
-            # convertimos a número solo los que tienen dato
             df_vista_fmt.loc[mask_notnull, col] = pd.to_numeric(
                 df_vista_fmt.loc[mask_notnull, col],
                 errors="coerce",
             )
-            # formateamos con 2 decimales
             df_vista_fmt.loc[mask_notnull, col] = df_vista_fmt.loc[mask_notnull, col].map(
                 lambda x: f"{float(x):,.2f}"
             )
@@ -257,20 +254,12 @@ def mostrar_tab_pendientes_contabilizar():
     orden = [c for c in orden if c]
     resto = [c for c in df_vista_fmt.columns if c not in orden]
     df_vista_fmt = df_vista_fmt[orden + resto]
-    # ======= FIN OPCIÓN 1 =======
 
     # 6) tabla con AgGrid
-    # 6) tabla con AgGrid (readonly excepto selección)
-    #gb = GridOptionsBuilder.from_dataframe(df_vista)
     gb = GridOptionsBuilder.from_dataframe(df_vista_fmt)
-
-    # columnas por defecto: solo lectura
     gb.configure_default_column(editable=False, resizable=True)
-
-    # seleccionamos una fila a la vez
     gb.configure_selection("single", use_checkbox=True)
 
-    # ocultamos columnas técnicas / llaves internas, pero las mantenemos en datos
     for col in [
         "cve_prov_key",
         "num_cpto_key",
@@ -285,15 +274,14 @@ def mostrar_tab_pendientes_contabilizar():
 
     def set_width_if_exists(col, chars):
         if col in df_vista_fmt.columns:
-            px = chars * 8  # aprox 8 px por carácter
+            px = chars * 8
             gb.configure_column(col, width=px, minWidth=px, maxWidth=px)
 
-    # ejemplos que pediste
     set_width_if_exists("cve_prov", 10)
-    set_width_if_exists("nombre", 30)      # ~30 caracteres
-    set_width_if_exists("rfc", 15)         # ~18 caracteres
-    set_width_if_exists("num_cpto", 5)     # ~5 caracteres
-    set_width_if_exists("descr", 25)     # ~5 caracteres
+    set_width_if_exists("nombre", 30)
+    set_width_if_exists("rfc", 15)
+    set_width_if_exists("num_cpto", 5)
+    set_width_if_exists("descr", 25)
     set_width_if_exists("no_factura", 15)
     set_width_if_exists("fechaelab", 20)
     set_width_if_exists("fecha_apli", 20)
@@ -306,28 +294,14 @@ def mostrar_tab_pendientes_contabilizar():
     set_width_if_exists("importe", 15)
     set_width_if_exists("impmon_ext", 15)
 
-
-    # si quieres mostrar el prorrateo seleccionado en la tabla:
     if "idnumpon_seleccionado" in df_vista.columns:
         gb.configure_column(
             "idnumpon_seleccionado",
             headerName="id prorrateo seleccionado",
-            editable=False,   # de momento solo lectura; luego lo podemos abrir
+            editable=False,
         )
 
     grid_options = gb.build()
-
-    #grid_response = AgGrid(
-    #    df_vista_fmt,
-    #    gridOptions=grid_options,
-    #    update_mode=GridUpdateMode.SELECTION_CHANGED,
-    #    data_return_mode="AS_INPUT",
-    #    fit_columns_on_grid_load=True,
-    #    height=450,
-    #    key="agrid_pendientes_prorrateo",
-    #)
-    
-
 
     grid_response = AgGrid(
         df_vista_fmt,
@@ -345,7 +319,6 @@ def mostrar_tab_pendientes_contabilizar():
         seleccionados_list = seleccionados.to_dict("records")
     else:
         seleccionados_list = seleccionados or []
-
 
     st.download_button(
         "descargar csv (pendientes + prorrateo)",
@@ -367,7 +340,6 @@ def mostrar_tab_pendientes_contabilizar():
 
         st.markdown("#### selección de prorrateo para el documento")
 
-        # info básica del documento
         st.write(
             f"**proveedor:** {fila_sel.get('cve_prov', '')}  "
             f"**concepto:** {fila_sel.get('num_cpto', '')}  "
@@ -375,7 +347,7 @@ def mostrar_tab_pendientes_contabilizar():
             f"**refer:** {fila_sel.get('refer', '')}"
         )
 
-        # buscamos prorrateos candidatos para este proveedor + concepto
+        # candidatos por proveedor + concepto (se queda igual)
         cve_key = fila_sel.get("cve_prov_key", "")
         cpto_key = fila_sel.get("num_cpto_key", "")
 
@@ -384,37 +356,27 @@ def mostrar_tab_pendientes_contabilizar():
             & (df_pr_norm["cdnrocon_key"] == cpto_key)
         ].copy()
 
-        if df_cand.empty:
-            st.info(
-                "no hay prorrateos candidatos para este proveedor + concepto.\n"
-                "puedes crear uno nuevo en la pestaña de configuración."
-            )
-            return
-
-        # armamos opciones "idnumpon - nombre"
+        # opciones candidatos
         opciones = []
         map_label_to_id = {}
 
-        for _, r in df_cand.iterrows():
-            idp = r.get("idnumpon", None)
-            if pd.isna(idp):
-                continue
-            # buscamos una columna descriptiva razonable
-            descr_val = ""
-            if "descr" in df_cand.columns:
-                descr_val = str(r.get("descr", "") or "").strip()
-            elif "dsnombre" in df_cand.columns:
-                descr_val = str(r.get("dsnombre", "") or "").strip()
-            elif "nombre_prorrateo" in df_cand.columns:
-                descr_val = str(r.get("nombre_prorrateo", "") or "").strip()
+        if not df_cand.empty:
+            for _, r in df_cand.iterrows():
+                idp = r.get("idnumpon", None)
+                if pd.isna(idp):
+                    continue
 
-            label = f"{int(idp)} - {descr_val}"
-            opciones.append(label)
-            map_label_to_id[label] = int(idp)
+                descr_val = ""
+                if "dsnombre" in df_cand.columns:
+                    descr_val = str(r.get("dsnombre", "") or "").strip()
+                elif "nombre_prorrateo" in df_cand.columns:
+                    descr_val = str(r.get("nombre_prorrateo", "") or "").strip()
+                elif "descr" in df_cand.columns:
+                    descr_val = str(r.get("descr", "") or "").strip()
 
-        if not opciones:
-            st.info("no hay prorrateos válidos (idnumpon) para este documento.")
-            return
+                label = f"{int(idp)} - {descr_val}"
+                opciones.append(label)
+                map_label_to_id[label] = int(idp)
 
         # prorrateo actualmente seleccionado (si existe)
         current_sel = None
@@ -426,26 +388,89 @@ def mostrar_tab_pendientes_contabilizar():
             except Exception:
                 current_sel = None
 
-        default_index = 0
-        if current_sel is not None and not pd.isna(current_sel):
-            for i, label in enumerate(opciones):
-                if map_label_to_id[label] == int(current_sel):
-                    default_index = i
-                    break
+        # selector candidatos
+        id_prorr_sel = None
+        if opciones:
+            st.markdown("##### prorrateos candidatos (proveedor + concepto)")
 
-        label_choice = st.selectbox(
-            "prorrateo a aplicar a este documento",
-            opciones,
-            index=default_index,
-            key=f"sel_prorrateo_row_{row_id}",
+            default_index = 0
+            if current_sel is not None and not pd.isna(current_sel):
+                for i, label in enumerate(opciones):
+                    if map_label_to_id[label] == int(current_sel):
+                        default_index = i
+                        break
+
+            label_choice = st.selectbox(
+                "prorrateo candidato",
+                opciones,
+                index=default_index,
+                key=f"sel_prorrateo_candidato_row_{row_id}",
+            )
+            id_prorr_sel = map_label_to_id.get(label_choice, None)
+        else:
+            st.info(
+                "no hay prorrateos candidatos para este proveedor + concepto.\n"
+                "puedes seleccionar un prorrateo activo de la lista general (abajo)."
+            )
+
+        # ===== nueva lista: todos los prorrateos activos (estatus = 1) =====
+        st.markdown("##### todos los prorrateos activos (estatus = 1)")
+
+        df_activos = df_pr.copy()  # usa df_pr (sin normalizar) para no perder tipos
+        if "estatus" in df_activos.columns:
+            df_activos["estatus"] = pd.to_numeric(df_activos["estatus"], errors="coerce")
+            df_activos = df_activos[df_activos["estatus"] == 1].copy()
+
+        # ids activos
+        ids_activos = []
+        if not df_activos.empty and "idnumpon" in df_activos.columns:
+            ids_activos = (
+                pd.to_numeric(df_activos["idnumpon"], errors="coerce")
+                .dropna()
+                .astype(int)
+                .sort_values(ascending=False)
+                .tolist()
+            )
+
+        # opción neutral al inicio
+        opciones_all_ids = [None] + ids_activos
+
+        def _fmt_prorr_all(_id):
+            if _id is None:
+                return "(no usar lista general)"
+            # busca nombre para mostrarlo
+            try:
+                r = df_activos.loc[pd.to_numeric(df_activos["idnumpon"], errors="coerce") == int(_id)].iloc[0]
+                nombre = ""
+                if "dsnombre" in df_activos.columns:
+                    nombre = str(r.get("dsnombre") or "").strip()
+                elif "nombre_prorrateo" in df_activos.columns:
+                    nombre = str(r.get("nombre_prorrateo") or "").strip()
+                return f"{int(_id)} - {nombre}"
+            except Exception:
+                return str(int(_id))
+
+        id_prorr_all = st.selectbox(
+            "prorrateo activo (opcional)",
+            opciones_all_ids,
+            index=0,
+            format_func=_fmt_prorr_all,
+            key=f"sel_prorrateo_activo_row_{row_id}",
         )
 
-        # mostrar detalle del prorrateo seleccionado
-        id_prorr_sel = map_label_to_id.get(label_choice, None)
-        if id_prorr_sel is not None:
+        # prioridad: si eligió lista general, usamos esa; si no, usamos candidato
+        prorrateo_final = int(id_prorr_all) if id_prorr_all is not None else id_prorr_sel
+
+        ### aqui termina ###
+        st.write(f"---Prorrateo seleccionado (prioridad a lista general): {prorrateo_final}---")
+        
+        # prioridad: si el usuario eligió uno de la lista general, úsalo; si no, usa el candidato
+        prorrateo_final = id_prorr_all if id_prorr_all is not None else id_prorr_sel
+
+        if prorrateo_final is not None:
             st.markdown("##### detalle del prorrateo seleccionado")
 
-            df_det_sel = get_detalle_prorrateo_df(int(id_prorr_sel))
+            df_det_sel = get_detalle_prorrateo_df(int(prorrateo_final))
 
             if df_det_sel.empty:
                 st.info("este prorrateo no tiene detalle configurado todavía.")
@@ -471,61 +496,41 @@ def mostrar_tab_pendientes_contabilizar():
             "contabilizar",
             key=f"btn_contabilizar_row_{row_id}",
             type="primary",
+            disabled=(prorrateo_final is None),
         ):
-            nuevo_id = map_label_to_id.get(label_choice, None)
-            if nuevo_id is None:
-                st.error("no se pudo interpretar el prorrateo seleccionado.")
+            if prorrateo_final is None:
+                st.error("selecciona un prorrateo para contabilizar.")
                 return
 
             if row_id is None:
                 st.error("no se pudo identificar la fila seleccionada.")
                 return
 
-            # actualizamos df_full en memoria con el prorrateo elegido
-            df_full.loc[df_full["row_id"] == row_id, "idnumpon_seleccionado"] = int(
-                nuevo_id
-            )
+            df_full.loc[df_full["row_id"] == row_id, "idnumpon_seleccionado"] = int(prorrateo_final)
 
             # actualizar nombre_prorrateo con el del elegido si existe
             try:
-                nom_sel = df_cand.loc[
-                    df_cand["idnumpon"] == nuevo_id, "nombre_prorrateo"
+                # intenta en activos primero
+                nom_sel = df_activos.loc[
+                    df_activos["idnumpon"] == prorrateo_final
                 ].iloc[0]
-                df_full.loc[
-                    df_full["row_id"] == row_id, "nombre_prorrateo"
-                ] = nom_sel
+                if "nombre_prorrateo" in df_activos.columns:
+                    df_full.loc[df_full["row_id"] == row_id, "nombre_prorrateo"] = nom_sel.get("nombre_prorrateo")
+                elif "dsnombre" in df_activos.columns:
+                    df_full.loc[df_full["row_id"] == row_id, "nombre_prorrateo"] = nom_sel.get("dsnombre")
             except Exception:
                 pass
 
             st.session_state["df_pend_full"] = df_full
 
-            # buscar la fila completa del documento para pasarla al controller
             try:
                 row_doc = df_full[df_full["row_id"] == row_id].iloc[0]
             except Exception:
                 st.error("no se pudo recuperar la fila del documento para contabilizar.")
                 return
 
-            # llamada al controller → model → coi
-            res = contabilizar_pendiente_en_coi(row_doc, prorrateo_id=int(nuevo_id), debug=False)
+            res = contabilizar_pendiente_en_coi(row_doc, prorrateo_id=int(prorrateo_final), debug=False)
 
-            ##if res.get("ok"):
-            ##    msg = res.get("msg", "documento contabilizado correctamente.")
-            ##    st.success(msg)
-            ##    # si quieres, mostrar info de la póliza creada
-            ##    pol = res.get("poliza")
-            ##    if isinstance(pol, dict):
-            ##        st.write(
-            ##            f"póliza: {pol.get('tipo','')}-"
-            ##            f"{pol.get('num','')}/{pol.get('periodo','')}-"
-            ##            f"{pol.get('ejercicio','')}"
-            ##        )
-            ##    # sacamos el dataframe de sesión para forzar recarga desde bd
-            ##    if "df_pend_full" in st.session_state:
-            ##        del st.session_state["df_pend_full"]
-            ##    st.rerun()
-            ##else:
-            ##    st.error(res.get("msg", "hubo un error al contabilizar en coi."))
             if res.get("ok"):
                 msg = res.get("msg", "documento contabilizado correctamente.")
                 st.success(msg)
@@ -536,15 +541,17 @@ def mostrar_tab_pendientes_contabilizar():
                         f"{pol.get('num','')}/{pol.get('periodo','')}-"
                         f"{pol.get('ejercicio','')}"
                     )
-                # limpiar selección de prorrateo de esta fila
-                sel_key = f"sel_prorrateo_row_{row_id}"
-                if sel_key in st.session_state:
-                    del st.session_state[sel_key]
-                # forzar recarga de pendientes y de la tabla (nuevo key en aggrid)
+                # limpiar keys del row para que no se quede el estado pegado
+                for k in [
+                    f"sel_prorrateo_candidato_row_{row_id}",
+                    f"sel_prorrateo_activo_row_{row_id}",
+                ]:
+                    if k in st.session_state:
+                        del st.session_state[k]
+
                 if "df_pend_full" in st.session_state:
                     del st.session_state["df_pend_full"]
                 st.session_state["pend_grid_refresh"] += 1
-
                 st.rerun()
             else:
                 st.error(res.get("msg", "hubo un error al contabilizar en coi."))

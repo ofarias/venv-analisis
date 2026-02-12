@@ -17,6 +17,7 @@ from controllers.dashboard_controller import (
     get_cuentas_contables_coi_ctrl,
     insertar_detalle_prorrateo_ctrl,
     actualizar_concepto_prorrateo_ctrl,
+    copiar_detalle_prorrateo_ctrl,
 )
 
 
@@ -849,3 +850,27 @@ def mostrar_tab_prorrateos_mysql():
                         st.session_state["df_detalle_prorrateo"] = df_ref.copy(deep=True)
                         st.session_state["detalle_version"] += 1
                         st.rerun()
+                        
+            st.divider()
+            st.caption("copiar detalle a otra ponderación")
+
+            c1, c2, c3 = st.columns([2, 2, 2])
+
+            with c1:
+                id_dest = st.number_input("copiar a (idnumpon)", min_value=0, step=1, value=0, key="cp_idnumpon_dest")
+
+            with c2:
+                sobrescribir = st.checkbox("sobrescribir destino (borrar antes)", value=False, key="cp_sobrescribir")
+
+            with c3:
+                if st.button("copiar", use_container_width=True):
+                    res = copiar_detalle_prorrateo_ctrl(
+                        idnumpon_origen=int(id_actual),
+                        idnumpon_destino=int(id_dest),
+                        sobrescribir=bool(sobrescribir)
+                    )
+                    if res.get("ok"):
+                        st.success(res.get("msg"))
+                        st.rerun()
+                    else:
+                        st.error(res.get("msg"))            

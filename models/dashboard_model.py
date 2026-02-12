@@ -875,9 +875,7 @@ def liberar_documento_contabilizado(
         }
 
 def get_reporte_cobranza_df(fecha_corte, cliente: str | None = None, vendedor: str | None = None) -> pd.DataFrame:
-
     #fecha_corte_str = fecha_corte.strftime("%Y-%m-%d")
-
     sql = """
     with
         params as (
@@ -907,58 +905,47 @@ def get_reporte_cobranza_df(fecha_corte, cliente: str | None = None, vendedor: s
         cl.clave,
         c.refer,
         f.fecha_doc,
-
         case
             when (c.importe + coalesce(m.pagado_mn, 0)) > 10
             then (cast(c.fecha_apli as date) - (select corte from params)) * -1
             else 0
         end as diastranscurridos,
-
         case
             when (c.importe + coalesce(m.pagado_mn, 0)) > 10
             then ((cast(c.fecha_apli as date) - (select corte from params)) * -1) - cl.diascred
             else 0
         end as diasdeatraso,
-
         m.fecha_pago as fechapago,
-
         case
             when m.fecha_pago is not null
             then cast(m.fecha_pago as date) - cast(c.fecha_apli as date)
             else null
         end as diasusados,
-
         cl.diascred,
-
         case
             when m.fecha_pago is not null
             and (cl.diascred - (cast(m.fecha_pago as date) - cast(c.fecha_apli as date))) < 0
             then (cl.diascred - (cast(m.fecha_pago as date) - cast(c.fecha_apli as date))) * -1
             else 0
         end as diasdeatrasodelpago,
-
+        m2.descr as moneda,
         case
             when c.num_moned = 1 then 0
             when c.num_moned = 2 then c.impmon_ext
             else 0
-        end as subtotalusd,
-
+        end as subtotal_mon_ext,
         c.importe as importepesos,
         f.imp_tot3 as retencion_iva,
         f.imp_tot4 as iva,
         c.tcambio,
-
         coalesce(m.pagado_mn, 0) as pagado,
-        coalesce(m.pagado_usd, 0) as pagado_usd,
-
+        coalesce(m.pagado_usd, 0) as pagado_mon_ext,
         (c.importe + coalesce(m.pagado_mn, 0)) as saldo,
-        
         case
             when c.num_moned = 1 then 0
             when c.num_moned = 2 then c.impmon_ext + coalesce(m.pagado_usd, 0)
             else 0
-        end as saldo_usd,
-
+        end as saldo_mon_ext,
 
         case
             when (c.importe + coalesce(m.pagado_mn, 0)) < 10
@@ -985,16 +972,11 @@ def get_reporte_cobranza_df(fecha_corte, cliente: str | None = None, vendedor: s
         cl.cuenta_contable as cuentacontable
 
         from cuen_m01 c
-        left join clie01 cl
-        on c.cve_clie = cl.clave
-        left join factf01 f
-        on c.refer = f.cve_doc
-        and f.fecha_doc < dateadd(1 day to (select corte from params))
-        left join vend01 v
-        on f.cve_vend = v.cve_vend
-        left join movs m
-        on m.refer = c.refer
-
+        left join clie01 cl on c.cve_clie = cl.clave
+        left join factf01 f on c.refer = f.cve_doc and f.fecha_doc < dateadd(1 day to (select corte from params))
+        left join vend01 v on f.cve_vend = v.cve_vend
+        left join movs m on m.refer = c.refer
+        left join moned01 m2 on m2.num_moned = c.num_moned
         where
         c.tipo_mov = 'C'
         and c.fecha_apli < dateadd(1 day to (select corte from params))
@@ -1100,3 +1082,86 @@ def get_rep_ventas_lotes_df(fecha_ini, fecha_fin) -> pd.DataFrame:
 
     df.columns = [str(c).lower() for c in df.columns]
     return df
+
+def existe_prorrateo(idnumpon: int) -> bool:
+    sql = "select 1 from prorrateos where idnumpon = :idnumpon limit 1"
+    res = run_query("BIO", sql, {"idnumpon": int(idnumpon)})
+    try:
+        row = res.first()
+        return row is not None
+    except Exception:
+        # si run_query regresa lista/df
+        if res is None:
+            return False
+        try:
+            return len(res) > 0
+        except Exception:
+            return False
+
+
+def copiar_detalle_prorrateo(
+    idnumpon_origen: int,
+    idnumpon_destino: int,
+    *,
+    sobrescribir: bool = False
+) -> int:
+    """
+    copia detalleprorrateos de origen -> destino.
+    si sobrescribir=True, borra primero el detalle del destino.
+    regresa cantidad de filas insertadas.
+    """
+    idnumpon_origen = int(idnumpon_origen)
+    idnumpon_destino = int(idnumpon_destino)
+
+    if idnumpon_origen <= 0 or idnumpon_destino <= 0:
+        raise ValueError("idnumpon inválido")
+
+    if idnumpon_origen == idnumpon_destino:
+        raise ValueError("el idnumpon destino no puede ser igual al origen")
+
+    if not existe_prorrateo(idnumpon_destino):
+        raise ValueError(f"no existe la ponderación destino: {idnumpon_destino}")
+
+    # leer origen
+    sql_src = """
+        select dsctacon, idunineg, flporuni, idnuevo
+        from detalleprorrateos
+        where idnumpon = :idnumpon
+        order by id
+    """
+    src_res = run_query("BIO", sql_src, {"idnumpon": idnumpon_origen})
+
+    if hasattr(src_res, "mappings"):
+        src_rows = list(src_res.mappings())
+    elif isinstance(src_res, pd.DataFrame):
+        src_rows = src_res.to_dict(orient="records")
+    else:
+        src_rows = list(src_res or [])
+
+    if not src_rows:
+        return 0
+
+    if sobrescribir:
+        sql_del = "delete from detalleprorrateos where idnumpon = :idnumpon"
+        run_query("BIO", sql_del, {"idnumpon": idnumpon_destino})
+
+    sql_ins = """
+        insert into detalleprorrateos
+            (idnumpon, dsctacon, idunineg, flporuni, tmstmp, idnuevo)
+        values
+            (:idnumpon, :dsctacon, :idunineg, :flporuni, now(), :idnuevo)
+    """
+
+    afectados = 0
+    for r in src_rows:
+        params = {
+            "idnumpon": idnumpon_destino,
+            "dsctacon": str(r.get("dsctacon") or "").strip(),
+            "idunineg": int(r.get("idunineg") or 0) if r.get("idunineg") is not None else None,
+            "flporuni": float(r.get("flporuni") or 0.0),
+            "idnuevo": int(r.get("idnuevo") or (r.get("idunineg") or 0)),
+        }
+        run_query("BIO", sql_ins, params)
+        afectados += 1
+
+    return afectados

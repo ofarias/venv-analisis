@@ -294,3 +294,25 @@ def obtener_conceptos_filtrados(secrets, proveedor: str | None = None, meses: li
             con.close()
         except Exception:
             pass
+
+def obtener_datoscfd_por_uuid(secrets, uuid: str) -> dict | None:
+    uuid = ("" if uuid is None else str(uuid)).strip().upper()
+    if not uuid:
+        return None
+
+    sql = "SELECT * FROM DATOSCFD WHERE UPPER(UUID) = ? ROWS 1"
+    con = _conn_from_secrets(secrets)
+    try:
+        cur = con.cursor()
+        cur.execute(sql, (uuid,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d[0].strip() for d in cur.description]
+        return dict(zip(cols, row))
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+        
