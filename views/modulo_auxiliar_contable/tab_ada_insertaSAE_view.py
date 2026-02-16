@@ -107,6 +107,10 @@ def insertarSAE():
     # cargar ADA
     try:
         df = cargar_documentos(st.secrets, filtros, page, page_size)
+        if not df.empty:
+            col_usocfdi = next((c for c in df.columns if c.lower() == "usocfdi_"), None)
+            if col_usocfdi:
+                df = df[df[col_usocfdi].astype(str).str.strip().str.upper() == "G03"].copy()
     except Exception as e:
         st.error(f"error al cargar documentos: {e}")
         return

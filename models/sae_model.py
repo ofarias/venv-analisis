@@ -301,22 +301,6 @@ def insertar_en_paga_m01(secrets, rfc_emisor, serie, folio, fecha_emision, total
 
         sql_paga = f"insert into PAGA_M01 ({', '.join(cols)}) values ({', '.join(['?']*len(cols))})"
         cur.execute(sql_paga, tuple(vals))
-        #st.write("SQL:", sql_paga)
-        #st.write("VALORES:", vals)
-        
-        #debug_sql = sql_paga
-        #for v in vals:
-        #    if v is None:
-        #        rep = "NULL"
-        #    elif isinstance(v, str):
-        #        rep = f"'{v}'"
-        #    elif isinstance(v, datetime):
-        #        rep = f"'{v.strftime('%Y-%m-%d %H:%M:%S')}'"
-        #    else:
-        #        rep = str(v)
-        #    debug_sql = debug_sql.replace("?", rep, 1)
-        #st.text(debug_sql)   # muestra la sentencia completa
-        #st.stop()
         
         # -------------------------
         # 3) UPDATE FOLIOSCXP01 (incrementar consecutivo)
@@ -335,18 +319,11 @@ def insertar_en_paga_m01(secrets, rfc_emisor, serie, folio, fecha_emision, total
             st.warning(f"No se encontró DATOSCFD con ID_DOCTODIG={id_docto_dig}")
         else:
             #st.json(detalle)  # para inspección
-            # ejemplo de acceso
-            imp1  = (detalle.get("ISR") or 0) ## 003 -- I.E.P.S -- 0
-            imp2  = (detalle.get("ISR_RET") or 0) ## RET ISR -- -10.6670
+            imp1  = (detalle.get("IEPS") or 0) ## 003 -- IEPS -- 0
+            imp2  = (detalle.get("ISR") or 0) ## ISR -- -10.6670
             imp3  = (detalle.get("IVA_RET") or 0) ## RET IVA -- -10.00
             imp4  = (detalle.get("IVA_TASA_16") or 0) ## IVA_TASA_16
-            # ... resto de campos que necesites
         
-        #st.write(f"Valor de IEPS: {imp1}")    
-        #st.write(f"Valor de TOTAL RETENCIONES ISR: {imp2}")    
-        #st.write(f"Valor de TOTAL RETENCIONES IVA : {imp3}")    
-        #st.write(f"Valor de IVA: {imp4}")    
-        #st.stop()
         status = 'O'
         usuario = 599
 
@@ -385,30 +362,8 @@ def insertar_en_paga_m01(secrets, rfc_emisor, serie, folio, fecha_emision, total
 def insertar_en_sae_por_uso(secrets, usocfdi, **kwargs) -> Dict[str, Any]:
     uso = (str(usocfdi or "").strip().upper())
 
-    #st.write(f"Llega aqui para la insecion con valor {usocfdi}")
-    
-    #if uso.startswith("G01"):
-    #    return insertar_en_compc01(
-    #        secrets=secrets,
-    #        rfc_emisor=kwargs.get("rfc_emisor"),
-    #        serie=kwargs.get("serie"),
-    #        folio=kwargs.get("folio"),
-    #        fecha_emision=kwargs.get("fecha_emision"),
-    #        total_mxn=kwargs.get("total_mxn"),
-    #        uuid=kwargs.get("uuid"),
-    #        usocfdi=uso,
-    #        clave_prov=kwargs.get("clave_prov"),
-    #        id_docto_dig=kwargs.get("id_docto_dig"),
-    #        moneda=kwargs.get("moneda", 1),
-    #        tcambio=kwargs.get("tcambio", 1.0),
-    #        impext=kwargs.get("impext", 0.0),
-    #    )
-
     uso_norm = (uso or "").strip().upper()
     if not uso_norm.startswith("G01"):
-    #...
-    #if uso.startswith("G03"):
-        #st.write("Intenta con G03")
         return insertar_en_paga_m01(
             secrets=secrets,
             rfc_emisor=kwargs.get("rfc_emisor"),

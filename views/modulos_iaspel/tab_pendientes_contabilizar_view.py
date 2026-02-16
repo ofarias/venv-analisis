@@ -301,6 +301,19 @@ def mostrar_tab_pendientes_contabilizar():
             editable=False,
         )
 
+    # Cambiar solo encabezados visibles
+    if "impuesto4" in df_vista_fmt.columns:
+        gb.configure_column("impuesto4", headerName="IVA")
+
+    if "impuesto3" in df_vista_fmt.columns:
+        gb.configure_column("impuesto3", headerName="IVA Retenido")
+
+    if "impuesto2" in df_vista_fmt.columns:
+        gb.configure_column("impuesto2", headerName="ISR Retención")
+
+    if "impuesto1" in df_vista_fmt.columns:
+        gb.configure_column("impuesto1", headerName="IEPS")
+
     grid_options = gb.build()
 
     grid_response = AgGrid(

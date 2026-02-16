@@ -608,7 +608,7 @@ def get_cuentas_contables_coi_df() -> pd.DataFrame:
             TIPO
         FROM CUENTAS_FTC_25
         WHERE (CUENTA_COI STARTING WITH '5' OR CUENTA_COI STARTING WITH '6') AND TIPO = 'D'
-        ORDER BY CUENTA 
+        ORDER BY CUENTA
     """
     res = run_query_firebird("FIREBIRD_BIO_COI", sql, ())
     if isinstance(res, pd.DataFrame):

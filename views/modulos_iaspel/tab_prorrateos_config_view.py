@@ -3,7 +3,14 @@
 import streamlit as st
 import pandas as pd
 from decimal import Decimal
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+
+from st_aggrid import (
+    AgGrid,
+    GridOptionsBuilder,
+    GridUpdateMode,
+    DataReturnMode,
+    JsCode,
+)
 
 from controllers.dashboard_controller import (
     get_prorrateos_mysql_df,
@@ -19,6 +26,52 @@ from controllers.dashboard_controller import (
     actualizar_concepto_prorrateo_ctrl,
     copiar_detalle_prorrateo_ctrl,
 )
+
+
+def _append_blank_row_detalle(df: pd.DataFrame, id_actual: int | None) -> pd.DataFrame:
+    if df is None or df.empty:
+        df = pd.DataFrame(
+            columns=[
+                "id",
+                "idnumpon",
+                "dsctacon",
+                "idunineg",
+                "flporuni",
+                "tmstmp",
+                "idnuevo",
+                "unidad",
+            ]
+        )
+
+    for c in ["id", "idnumpon", "dsctacon", "idunineg", "flporuni", "tmstmp", "idnuevo", "unidad"]:
+        if c not in df.columns:
+            df[c] = None
+
+    if id_actual is not None:
+        df["idnumpon"] = int(id_actual)
+
+    # si el último renglón ya está vacío, no agregues otro
+    if not df.empty:
+        last = df.iloc[-1]
+        last_empty = (
+            (pd.isna(last.get("id")))
+            and (str(last.get("dsctacon") or "").strip() == "")
+            and (str(last.get("idunineg") or "").strip() in ("", "none", "nan"))
+        )
+        if last_empty:
+            return df
+
+    blank = {
+        "id": None,
+        "idnumpon": int(id_actual) if id_actual is not None else None,
+        "dsctacon": "",
+        "idunineg": None,
+        "flporuni": 0.0,
+        "tmstmp": None,
+        "idnuevo": None,
+        "unidad": "",
+    }
+    return pd.concat([df, pd.DataFrame([blank])], ignore_index=True)
 
 
 def mostrar_tab_prorrateos_mysql():
@@ -49,7 +102,7 @@ def mostrar_tab_prorrateos_mysql():
         help="si está apagado: solo muestra estatus = 1. si está encendido: muestra 1 y 9.",
     )
 
-    # default: SOLO activos
+    # default: solo activos
     if ver_eliminados:
         estatus_sel = c5.selectbox(
             "estatus",
@@ -66,7 +119,7 @@ def mostrar_tab_prorrateos_mysql():
             key="estatus_prorrateos",
             disabled=True,
         )
-    
+
     filtros: dict[str, str] = {}
 
     if nombre_like.strip():
@@ -78,7 +131,6 @@ def mostrar_tab_prorrateos_mysql():
     if prov_codigo.strip():
         filtros["proveedor"] = prov_codigo.strip()
 
-    # aplicar a filtros
     if concepto.strip():
         filtros["concepto"] = concepto.strip()
 
@@ -88,7 +140,6 @@ def mostrar_tab_prorrateos_mysql():
         filtros["estatus"] = "9"
     # (activos + eliminados) => no filtra estatus
 
-    
     # -------------------------
     # consulta prorrateos
     # -------------------------
@@ -99,9 +150,7 @@ def mostrar_tab_prorrateos_mysql():
     )
 
     if df_pr.empty:
-        st.warning(
-            "no se encontraron registros en la tabla prorrateos con los filtros aplicados."
-        )
+        st.warning("no se encontraron registros en la tabla prorrateos con los filtros aplicados.")
         return
 
     # -------------------------------------------------
@@ -127,9 +176,7 @@ def mostrar_tab_prorrateos_mysql():
             )
 
             df_merged = df_merged.rename(columns={"descr": "descripcion_concepto"})
-            df_merged = df_merged.drop(
-                columns=["cdnrocon_join", "num_cpto_join"], errors="ignore"
-            )
+            df_merged = df_merged.drop(columns=["cdnrocon_join", "num_cpto_join"], errors="ignore")
             df_pr = df_merged
 
     # -------------------------------------------------
@@ -150,9 +197,7 @@ def mostrar_tab_prorrateos_mysql():
 
     c_btn, _ = st.columns([1, 5])
     if c_btn.button("nuevo prorrateo", key="btn_nuevo_prorrateo", type="primary"):
-        st.session_state["mostrar_form_nuevo_prorrateo"] = not st.session_state[
-            "mostrar_form_nuevo_prorrateo"
-        ]
+        st.session_state["mostrar_form_nuevo_prorrateo"] = not st.session_state["mostrar_form_nuevo_prorrateo"]
 
     if st.session_state["mostrar_form_nuevo_prorrateo"]:
         st.markdown("### alta de prorrateo (cabecera)")
@@ -362,15 +407,9 @@ def mostrar_tab_prorrateos_mysql():
             st.warning("selecciona al menos un prorrateo en la columna sel.")
         else:
             if "idnumpon" not in seleccionados.columns:
-                st.error(
-                    "no se encontró la columna idnumpon en la tabla de prorrateos.\n"
-                    "verifica que la consulta principal incluya ese campo."
-                )
+                st.error("no se encontró la columna idnumpon en la tabla de prorrateos.")
             elif "estatus" not in seleccionados.columns:
-                st.error(
-                    "no se encontró la columna estatus en la tabla de prorrateos.\n"
-                    "verifica que la consulta principal incluya ese campo."
-                )
+                st.error("no se encontró la columna estatus en la tabla de prorrateos.")
             else:
                 cambios = []
                 for _, fila in seleccionados.iterrows():
@@ -433,7 +472,6 @@ def mostrar_tab_prorrateos_mysql():
 
         df_det = get_detalle_prorrateo_df(idnumpon)
 
-        # seguro para df vacío + asegurar columna id
         if df_det is None or df_det.empty:
             df_det = pd.DataFrame(
                 columns=[
@@ -469,13 +507,9 @@ def mostrar_tab_prorrateos_mysql():
 
         hdr = st.session_state.get("prorrateo_header", {})
         if hdr:
-            st.write(
-                f"concepto de cuenta por pagar: {hdr.get('cdnrocon', '')} - {hdr.get('descripcion_concepto', '')}"
-            )
+            st.write(f"concepto de cuenta por pagar: {hdr.get('cdnrocon', '')} - {hdr.get('descripcion_concepto', '')}")
             st.write(f"nombre: {hdr.get('dsnombre', '')}")
-            st.write(
-                f"proveedor: {hdr.get('cdcvepro', '')} - {hdr.get('nombre_proveedor', '')}"
-            )
+            st.write(f"proveedor: {hdr.get('cdcvepro', '')} - {hdr.get('nombre_proveedor', '')}")
 
         # -----------------------------
         # cambiar concepto de cabecera
@@ -538,9 +572,7 @@ def mostrar_tab_prorrateos_mysql():
                                 hdr["cdnrocon"] = int(nuevo_cdnrocon)
                                 hdr["descripcion_concepto"] = label_sel.split(" - ", 1)[1]
                                 st.session_state["prorrateo_header"] = hdr
-                                st.success(
-                                    f"concepto actualizado a {nuevo_cdnrocon} para el prorrateo {id_actual}."
-                                )
+                                st.success(f"concepto actualizado a {nuevo_cdnrocon} para el prorrateo {id_actual}.")
                                 st.rerun()
                             else:
                                 st.warning("no se actualizó ningún registro (revisa el idnumpon).")
@@ -549,163 +581,147 @@ def mostrar_tab_prorrateos_mysql():
         else:
             st.info("no se pudieron cargar los conceptos de aspel para cambiar el concepto.")
 
+        # ----------------------
+        # grid de detalle (sin JsCode: columnas visibles + columnas ocultas para guardar)
+        # ----------------------
         df_detalle = st.session_state["df_detalle_prorrateo"].copy()
-
-        if "id" not in df_detalle.columns:
-            df_detalle["id"] = None
 
         if "idunineg" in df_detalle.columns and "idunineg_orig" not in df_detalle.columns:
             df_detalle["idunineg_orig"] = df_detalle["idunineg"]
 
-        # ----------------------
-        # agregar detalle
-        # ----------------------
-        if "mostrar_form_detalle" not in st.session_state:
-            st.session_state["mostrar_form_detalle"] = False
+        # catálogos
+        df_ctas = get_cuentas_contables_coi_ctrl()
+        df_unis = get_unidades_prorrateo_ctrl()
 
-        c_btn_add, _ = st.columns([1, 5])
-        if c_btn_add.button("agregar detalle", key="btn_mostrar_form_detalle", type="primary"):
-            st.session_state["mostrar_form_detalle"] = not st.session_state["mostrar_form_detalle"]
+        # cuentas: label -> cuenta
+        cta_labels: list[str] = []
+        cta_label_to_val: dict[str, str] = {}
 
-        if st.session_state["mostrar_form_detalle"]:
-            st.markdown("#### nuevo detalle de prorrateo")
+        def _clean_str(v) -> str:
+            if v is None:
+                return ""
+            # evita nan de pandas
+            try:
+                if isinstance(v, float) and pd.isna(v):
+                    return ""
+            except Exception:
+                pass
+            s = str(v).strip()
+            if s.lower() in ("nan", "none", "null"):
+                return ""
+            return s
 
-            df_ctas = get_cuentas_contables_coi_ctrl()
-            df_unis = get_unidades_prorrateo_ctrl()
+        if df_ctas is not None and not df_ctas.empty:
+            seen = set()
+            for _, r in df_ctas.iterrows():
+                cta = _clean_str(r.get("cuenta"))
+                nom = _clean_str(r.get("nombre"))
+                cta_coi = _clean_str(r.get("cuenta_coi"))
+                # si la cuenta viene vacía => no se agrega al catálogo
+                if not cta:
+                    continue
+                #label = f"{cta} - {nom} - {cta_coi}" if nom else cta
+                label = f"{cta} - {nom}" if nom else cta
+                # evita labels repetidos
+                if label in seen:
+                    continue
+                seen.add(label)
 
-            opciones_ctas = []
-            cuenta_from_label = {}
-            if not df_ctas.empty:
-                for _, row in df_ctas.iterrows():
-                    cta = str(row["cuenta"]).strip()
-                    nom = str(row["nombre"]).strip()
-                    label = f"{cta} - {nom}"
-                    opciones_ctas.append(label)
-                    cuenta_from_label[label] = cta
+                cta_labels.append(label)
+                cta_label_to_val[label] = cta
 
-            opciones_unis = []
-            idunineg_from_label = {}
-            if (
-                not df_unis.empty
-                and "idunineg" in df_unis.columns
-                and "dsunineg" in df_unis.columns
-            ):
-                for _, row in df_unis.iterrows():
-                    uid = int(row["idunineg"])
-                    nomu = str(row["dsunineg"]).strip()
-                    label = f"{uid} - {nomu}"
-                    opciones_unis.append(label)
-                    idunineg_from_label[label] = uid
+            # opcional: ordena alfabéticamente por label
+            cta_labels = sorted(cta_labels)
 
-            with st.form("form_nuevo_detalle_prorrateo"):
-                c_f1, c_f2, c_f3 = st.columns([3, 2, 1])
+        # unidades: label(nombre) -> id
+        uni_labels: list[str] = []
+        uni_label_to_id: dict[str, int] = {}
 
-                if opciones_ctas:
-                    label_cta_sel = c_f1.selectbox(
-                        "cuenta contable (coi)",
-                        opciones_ctas,
-                        key="nuevo_det_cta",
-                    )
-                    dsctacon_new = cuenta_from_label.get(label_cta_sel, "")
-                else:
-                    dsctacon_new = c_f1.text_input(
-                        "cuenta contable (dsctacon)",
-                        key="nuevo_det_cta_fallback",
-                    )
+        if df_unis is not None and not df_unis.empty and "idunineg" in df_unis.columns:
+            for _, r in df_unis.iterrows():
+                try:
+                    uid = int(r.get("idunineg"))
+                except Exception:
+                    continue
+                nomu = str(r.get("dsunineg") or r.get("unidad") or "").strip()
+                label = nomu if nomu else str(uid)
+                # evita duplicados por nombre
+                if label in uni_label_to_id:
+                    label = f"{label} ({uid})"
+                uni_labels.append(label)
+                uni_label_to_id[label] = uid
 
-                if opciones_unis:
-                    label_uni_sel = c_f2.selectbox(
-                        "unidad de prorrateo",
-                        opciones_unis,
-                        key="nuevo_det_uni",
-                    )
-                    idunineg_new = idunineg_from_label.get(label_uni_sel, None)
-                else:
-                    idunineg_new = c_f2.number_input(
-                        "id unidad (idunineg)",
-                        min_value=0,
-                        step=1,
-                        key="nuevo_det_uni_fallback",
-                    )
+        # columnas visibles para edición (strings)
+        if "cuenta_contable" not in df_detalle.columns:
+            df_detalle["cuenta_contable"] = ""
+        if "unidad_negocio" not in df_detalle.columns:
+            df_detalle["unidad_negocio"] = ""
 
-                flporuni_new = c_f3.number_input(
-                    "porcentaje",
-                    min_value=0.0,
-                    step=0.01,
-                    format="%.4f",
-                    key="nuevo_det_flporuni",
-                )
+        # sincroniza visibles desde valores guardados (si hay algo)
+        if "dsctacon" in df_detalle.columns:
+            # busca un label que empiece con "cta -"
+            rev_cta = {v: k for k, v in cta_label_to_val.items()}
+            def _cta_to_label(v):
+                v = str(v or "").strip()
+                if not v:
+                    return ""
+                return rev_cta.get(v, v)  # si no existe, muestra la cuenta
+            df_detalle["cuenta_contable"] = df_detalle["dsctacon"].apply(_cta_to_label)
 
-                btn_add_det = st.form_submit_button("agregar línea")
+        if "idunineg" in df_detalle.columns:
+            rev_uni = {v: k for k, v in uni_label_to_id.items()}
+            def _id_to_unilabel(v):
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return ""
+                try:
+                    return rev_uni.get(int(v), str(int(v)))
+                except Exception:
+                    return ""
+            df_detalle["unidad_negocio"] = df_detalle["idunineg"].apply(_id_to_unilabel)
 
-            if btn_add_det:
-                errores = []
-                if not str(dsctacon_new or "").strip():
-                    errores.append("captura o selecciona la cuenta contable (dsctacon).")
-                if idunineg_new is None or (
-                    isinstance(idunineg_new, float) and idunineg_new != idunineg_new
-                ):
-                    errores.append("captura o selecciona la unidad (idunineg).")
-
-                if errores:
-                    for e in errores:
-                        st.error(e)
-                else:
-                    nueva_fila = {
-                        "id": None,
-                        "idnumpon": id_actual,
-                        "dsctacon": str(dsctacon_new).strip(),
-                        "idunineg": int(idunineg_new),
-                        "flporuni": float(flporuni_new),
-                        "tmstmp": None,
-                        "idnuevo": int(idunineg_new),
-                        "unidad": "",
-                        "idunineg_orig": None,
-                        "es_nuevo": True,
-                    }
-                    df_detalle = pd.concat([df_detalle, pd.DataFrame([nueva_fila])], ignore_index=True)
-                    st.session_state["df_detalle_prorrateo"] = df_detalle
-                    st.session_state["detalle_version"] += 1
-                    st.success("línea agregada al detalle (pendiente de guardar en bd).")
-                    st.rerun()
-
-        # ----------------------
-        # grid de detalle (corregido: gb se crea antes de usarlo)
-        # ----------------------
-        df_detalle = st.session_state["df_detalle_prorrateo"].copy()
-
-        if "id" not in df_detalle.columns:
-            df_detalle["id"] = None
-
-        if "idunineg" in df_detalle.columns and "idunineg_orig" not in df_detalle.columns:
-            df_detalle["idunineg_orig"] = df_detalle["idunineg"]
+        # agrega renglón vacío al final (alta desde grid)
+        df_detalle = _append_blank_row_detalle(df_detalle, int(id_actual) if id_actual is not None else None)
+        st.session_state["df_detalle_prorrateo"] = df_detalle
 
         gb = GridOptionsBuilder.from_dataframe(df_detalle)
         gb.configure_default_column(editable=False, resizable=True)
 
-        if "id" in df_detalle.columns:
-            gb.configure_column("id", hide=True, editable=False)
-
-        if "idnumpon" in df_detalle.columns:
-            gb.configure_column("idnumpon", headerName="id prorrateo")
-        if "dsctacon" in df_detalle.columns:
-            gb.configure_column("dsctacon", headerName="cuenta contable")
-        if "idunineg" in df_detalle.columns:
-            gb.configure_column("idunineg", headerName="id unidad")
-        if "flporuni" in df_detalle.columns:
-            gb.configure_column("flporuni", headerName="porcentaje")
-        if "tmstmp" in df_detalle.columns:
-            gb.configure_column("tmstmp", headerName="fecha registro")
-        if "idnuevo" in df_detalle.columns:
-            gb.configure_column("idnuevo", headerName="id unidad nueva")
-        if "unidad" in df_detalle.columns:
-            gb.configure_column("unidad", headerName="unidad")
-        if "idunineg_orig" in df_detalle.columns:
-            gb.configure_column("idunineg_orig", hide=True, editable=False)
-
-        for col in ["dsctacon", "idunineg", "flporuni"]:
+        # ocultar columnas “de guardado”
+        for col in ["id", "dsctacon", "idunineg", "idunineg_orig", "idnuevo", "unidad"]:
             if col in df_detalle.columns:
-                gb.configure_column(col, editable=True)
+                gb.configure_column(col, hide=True, editable=False)
+
+        # no editable
+        if "idnumpon" in df_detalle.columns:
+            gb.configure_column("idnumpon", headerName="id prorrateo", editable=False)
+        if "tmstmp" in df_detalle.columns:
+            gb.configure_column("tmstmp", headerName="fecha registro", editable=False)
+       
+        # editable: visibles
+
+        gb.configure_column(
+            "cuenta_contable",
+            headerName="cuenta contable",
+            editable=True,
+            cellEditor="agSelectCellEditor",
+            cellEditorParams={"values": cta_labels} if cta_labels else None, 
+        )
+
+        gb.configure_column(
+            "unidad_negocio",
+            headerName="unidad de negocio",
+            editable=True,
+            cellEditor="agSelectCellEditor",
+            cellEditorParams={"values": uni_labels} if uni_labels else None,
+        )
+
+        if "flporuni" in df_detalle.columns:
+            gb.configure_column(
+                "flporuni",
+                headerName="porcentaje",
+                editable=True,
+                type=["numericColumn"],
+            )
 
         grid_options = gb.build()
         grid_key = f"agrid_detalle_prorrateo_{st.session_state['detalle_version']}"
@@ -714,14 +730,37 @@ def mostrar_tab_prorrateos_mysql():
             df_detalle,
             gridOptions=grid_options,
             update_mode=GridUpdateMode.VALUE_CHANGED,
-            data_return_mode="AS_INPUT",
+            data_return_mode=DataReturnMode.AS_INPUT,
             fit_columns_on_grid_load=True,
-            height=400,
+            height=420,
             key=grid_key,
         )
 
-        df_actual = pd.DataFrame(grid_response["data"])
+        df_actual = pd.DataFrame(grid_response.get("data", []))
+
+        # reconstruir columnas de guardado desde las visibles
+        if "cuenta_contable" in df_actual.columns:
+            df_actual["dsctacon"] = df_actual["cuenta_contable"].apply(
+                lambda x: cta_label_to_val.get(str(x).strip(), str(x).strip())
+            )
+
+        if "unidad_negocio" in df_actual.columns:
+            def _uni_to_id(v):
+                s = str(v or "").strip()
+                if not s:
+                    return None
+                # si viene "nombre (123)" extrae el 123
+                if s.endswith(")") and "(" in s:
+                    try:
+                        return int(s.rsplit("(", 1)[1].replace(")", "").strip())
+                    except Exception:
+                        pass
+                return uni_label_to_id.get(s, None)
+            df_actual["idunineg"] = df_actual["unidad_negocio"].apply(_uni_to_id)
+            df_actual["idnuevo"] = df_actual["idunineg"]
+
         st.session_state["df_detalle_prorrateo"] = df_actual
+       
 
         # ----------------------
         # validación y guardar
@@ -731,7 +770,11 @@ def mostrar_tab_prorrateos_mysql():
             valores_decimal = []
             for v in df_actual["flporuni"]:
                 try:
-                    valores_decimal.append(Decimal(str(v)))
+                    # ignora nan
+                    if v is None or (isinstance(v, float) and pd.isna(v)):
+                        valores_decimal.append(Decimal("0"))
+                    else:
+                        valores_decimal.append(Decimal(str(v)))
                 except Exception:
                     valores_decimal.append(Decimal("0"))
             total_flporuni = sum(valores_decimal)
@@ -791,33 +834,71 @@ def mostrar_tab_prorrateos_mysql():
                     st.error("no se encontró el dataframe original para comparar.")
                     return
 
+                # limpia renglones “vacíos” (incluye el último renglón)
+                def _is_blank_row(r):
+                    return (
+                        (str(r.get("dsctacon") or "").strip() == "")
+                        and (r.get("idunineg") is None or str(r.get("idunineg")).strip() in ("", "none", "nan"))
+                        and (str(r.get("flporuni") or "").strip() in ("", "0", "0.0", "0.0000"))
+                    )
+
+                df_work = df_edit.copy()
+                if not df_work.empty:
+                    df_work = df_work[~df_work.apply(_is_blank_row, axis=1)].copy()
+
                 cambios = []
                 nuevos = []
 
-                for _, fila in df_edit.iterrows():
-                    es_nuevo = bool(fila.get("es_nuevo", False))
+                for _, fila in df_work.iterrows():
+                    fila_id = fila.get("id", None)
+                    is_new = (fila_id is None) or (isinstance(fila_id, float) and pd.isna(fila_id))
 
-                    if es_nuevo:
-                        if pd.isna(fila.get("idnumpon")) or pd.isna(fila.get("idunineg")):
-                            continue
+                    dsctacon_val = str(fila.get("dsctacon") or "").strip()
+                    idunineg_val = fila.get("idunineg", None)
 
+                    if dsctacon_val == "" or idunineg_val is None or str(idunineg_val).strip() in ("", "none", "nan"):
+                        continue
+
+                    try:
+                        idunineg_int = int(idunineg_val)
+                    except Exception:
+                        continue
+
+                    fl = fila.get("flporuni")
+                    try:
+                        flpor = float(fl) if fl is not None and not (isinstance(fl, float) and pd.isna(fl)) else 0.0
+                    except Exception:
+                        flpor = 0.0
+
+                    if is_new:
                         nuevos.append(
                             {
-                                "idnumpon": int(fila["idnumpon"]),
-                                "dsctacon": str(fila.get("dsctacon", "")).strip(),
-                                "idunineg": int(fila["idunineg"]),
-                                "flporuni": float(fila.get("flporuni") or 0.0),
-                                "idnuevo": int(fila.get("idnuevo") or fila["idunineg"]),
+                                "idnumpon": int(id_actual),
+                                "dsctacon": dsctacon_val,
+                                "idunineg": int(idunineg_int),
+                                "flporuni": float(flpor),
+                                "idnuevo": int(idunineg_int),
                             }
                         )
                     else:
-                        fila_id = fila.get("id", None)
-                        if pd.isna(fila_id) or fila_id is None:
+                        try:
+                            fila_id_int = int(fila_id)
+                        except Exception:
                             continue
 
                         try:
-                            orig = df_orig[df_orig["id"] == fila_id].iloc[0]
+                            orig = df_orig[df_orig["id"] == fila_id_int].iloc[0]
                         except Exception:
+                            # si no existe en orig, trátalo como nuevo (por seguridad)
+                            nuevos.append(
+                                {
+                                    "idnumpon": int(id_actual),
+                                    "dsctacon": dsctacon_val,
+                                    "idunineg": int(idunineg_int),
+                                    "flporuni": float(flpor),
+                                    "idnuevo": int(idunineg_int),
+                                }
+                            )
                             continue
 
                         campos = ["dsctacon", "idunineg", "flporuni"]
@@ -827,12 +908,12 @@ def mostrar_tab_prorrateos_mysql():
 
                         cambios.append(
                             {
-                                "id": int(fila_id),
-                                "idnumpon": int(fila["idnumpon"]),
-                                "idunineg": int(fila["idunineg"]) if pd.notna(fila["idunineg"]) else None,
-                                "idunineg_orig": int(fila["idunineg_orig"]) if pd.notna(fila.get("idunineg_orig")) else None,
-                                "dsctacon": str(fila["dsctacon"]) if pd.notna(fila.get("dsctacon")) else None,
-                                "flporuni": float(fila["flporuni"]) if pd.notna(fila.get("flporuni")) else 0.0,
+                                "id": int(fila_id_int),
+                                "idnumpon": int(id_actual),
+                                "idunineg": int(idunineg_int),
+                                "idunineg_orig": int(orig.get("idunineg")) if pd.notna(orig.get("idunineg")) else None,
+                                "dsctacon": dsctacon_val,
+                                "flporuni": float(flpor),
                             }
                         )
 
@@ -848,9 +929,7 @@ def mostrar_tab_prorrateos_mysql():
                     if cambios:
                         afectados_upd = guardar_detalle_prorrateo(cambios)
 
-                    st.success(
-                        f"se guardaron {afectados_ins} filas nuevas y se actualizaron {afectados_upd} filas existentes."
-                    )
+                    st.success(f"se guardaron {afectados_ins} filas nuevas y se actualizaron {afectados_upd} filas existentes.")
 
                     if id_actual is not None:
                         df_ref = get_detalle_prorrateo_df(id_actual)
@@ -878,7 +957,7 @@ def mostrar_tab_prorrateos_mysql():
                         st.session_state["df_detalle_prorrateo"] = df_ref.copy(deep=True)
                         st.session_state["detalle_version"] += 1
                         st.rerun()
-                        
+
             st.divider()
             st.caption("copiar detalle a otra ponderación")
 
@@ -901,4 +980,4 @@ def mostrar_tab_prorrateos_mysql():
                         st.success(res.get("msg"))
                         st.rerun()
                     else:
-                        st.error(res.get("msg"))            
+                        st.error(res.get("msg"))
