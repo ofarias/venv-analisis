@@ -38,12 +38,35 @@ def mostrar_tab_prorrateos_mysql():
         "proveedor (cdcvepro exacto)", value="", key="proveedor_prorrateos"
     )
 
-    c4, c5 = st.columns([2, 1])
+    c4, c5, c6 = st.columns([2, 1, 1])
+
     concepto = c4.text_input("concepto sae (id)", value="", key="concepto_prorrateos")
-    activo = c5.selectbox(
-        "activo", options=["(todos)", "1", "0"], index=0, key="activo_prorrateos"
+
+    ver_eliminados = c6.checkbox(
+        "ver eliminados",
+        value=False,
+        key="ver_eliminados_prorrateos",
+        help="si está apagado: solo muestra estatus = 1. si está encendido: muestra 1 y 9.",
     )
 
+    # default: SOLO activos
+    if ver_eliminados:
+        estatus_sel = c5.selectbox(
+            "estatus",
+            options=["(activos + eliminados)", "activos (1)", "eliminados (9)"],
+            index=0,
+            key="estatus_prorrateos",
+        )
+    else:
+        estatus_sel = "activos (1)"
+        c5.selectbox(
+            "estatus",
+            options=["activos (1)"],
+            index=0,
+            key="estatus_prorrateos",
+            disabled=True,
+        )
+    
     filtros: dict[str, str] = {}
 
     if nombre_like.strip():
@@ -55,12 +78,17 @@ def mostrar_tab_prorrateos_mysql():
     if prov_codigo.strip():
         filtros["proveedor"] = prov_codigo.strip()
 
+    # aplicar a filtros
     if concepto.strip():
         filtros["concepto"] = concepto.strip()
 
-    if activo in ("1", "0"):
-        filtros["activo"] = activo
+    if estatus_sel == "activos (1)":
+        filtros["estatus"] = "1"
+    elif estatus_sel == "eliminados (9)":
+        filtros["estatus"] = "9"
+    # (activos + eliminados) => no filtra estatus
 
+    
     # -------------------------
     # consulta prorrateos
     # -------------------------

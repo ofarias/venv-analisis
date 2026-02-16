@@ -7,6 +7,17 @@ from typing import List, Dict, Any, Union
 from datetime import date
 
 
+def _to_float(v, default: float = 0.0) -> float:
+    try:
+        if v is None:
+            return default
+        s = str(v).strip().replace(",", "")
+        if s == "":
+            return default
+        return float(s)
+    except Exception:
+        return default
+
 def polizas_por_tipo(eje:int, origen:str="JAVA"):
     sql = """
       SELECT concepto_sae,
@@ -276,6 +287,10 @@ def cargar_prorrateos_tabla(
     if filtros.get("nombre_like"):
         where.append("p.dsnombre LIKE :nombre_like")
         params["nombre_like"] = f"%{filtros['nombre_like']}%"
+    
+    if filtros.get("nombre_proveedor_like"):
+        where.append("pr.dsnomsup LIKE :nombre_proveedor_like")
+        params["nombre_proveedor_like"] = f"%{filtros['nombre_proveedor_like']}%"
 
     if filtros.get("proveedor"):
         where.append("p.cdcvepro = :proveedor")
@@ -284,6 +299,10 @@ def cargar_prorrateos_tabla(
     if filtros.get("concepto"):
         where.append("p.cdnrocon = :concepto")
         params["concepto"] = int(filtros["concepto"])
+    
+    if filtros.get("estatus") is not None and str(filtros.get("estatus")).strip() != "":
+        where.append("p.estatus = :estatus")
+        params["estatus"] = int(filtros["estatus"])
 
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
@@ -299,6 +318,7 @@ def cargar_prorrateos_tabla(
             COALESCE(SUM(d.flporuni), 0) AS suma_flporuni, 
             p.estatus
         FROM Prorrateos p
+        LEFT JOIN proveedores pr on trim(pr.idcvesup) = trim(p.cdcvepro)
         LEFT JOIN DetalleProrrateos d
             ON d.idnumpon = p.idnumpon
         {where_sql}
@@ -347,10 +367,16 @@ def get_detalle_prorrateo(idnumpon: int) -> pd.DataFrame:
 
 
 def update_detalle_prorrateo_rows(cambios: list[dict]) -> int:
+    """
+    actualiza filas existentes en detalleprorrateos.
+    regla nueva:
+      - si flporuni <= 0.0 -> borra la fila (delete por id)
+      - si flporuni > 0.0  -> update normal
+    """
     if not cambios:
         return 0
 
-    sql = """
+    sql_upd = """
         update detalleprorrateos
            set dsctacon = :dsctacon,
                idunineg = :idunineg,
@@ -358,16 +384,36 @@ def update_detalle_prorrateo_rows(cambios: list[dict]) -> int:
          where id = :id
     """
 
+    sql_del = """
+        delete from detalleprorrateos
+         where id = :id
+    """
+
     afectados = 0
     for row in cambios:
-        # row debe traer: id, dsctacon, idunineg, flporuni
+        fila_id = row.get("id")
+        if fila_id is None:
+            continue
+        try:
+            fila_id = int(fila_id)
+        except Exception:
+            continue
+
+        fl = _to_float(row.get("flporuni"), 0.0)
+
+        # si porcentaje 0 o negativo => borrar
+        if fl <= 0.0:
+            run_query("BIO", sql_del, {"id": fila_id})
+            afectados += 1
+            continue
+
         params = {
-            "id": int(row["id"]),
-            "dsctacon": row.get("dsctacon"),
+            "id": fila_id,
+            "dsctacon": (row.get("dsctacon") or "").strip() or None,
             "idunineg": int(row["idunineg"]) if row.get("idunineg") is not None else None,
-            "flporuni": float(row.get("flporuni") or 0.0),
+            "flporuni": float(fl),
         }
-        run_query("BIO", sql, params)
+        run_query("BIO", sql_upd, params)
         afectados += 1
 
     return afectados
@@ -583,14 +629,8 @@ def get_cuentas_contables_coi_df() -> pd.DataFrame:
 def insertar_detalle_prorrateo(filas: list[dict]) -> int:
     """
     inserta nuevas filas en detalleprorrateos.
-
-    espera dicts con:
-      - idnumpon
-      - dsctacon
-      - idunineg
-      - flporuni
-      - idnuevo
-    tmstmp se llena con now()
+    regla nueva:
+      - si flporuni <= 0.0 -> no inserta esa fila
     """
     if not filas:
         return 0
@@ -604,11 +644,16 @@ def insertar_detalle_prorrateo(filas: list[dict]) -> int:
 
     afectados = 0
     for f in filas:
+        fl = _to_float(f.get("flporuni"), 0.0)
+        if fl <= 0.0:
+            # equivalente a "borrar": no la insertamos
+            continue
+
         params = {
             "idnumpon": int(f["idnumpon"]),
             "dsctacon": str(f["dsctacon"]).strip(),
             "idunineg": int(f["idunineg"]),
-            "flporuni": float(f["flporuni"]),
+            "flporuni": float(fl),
             "idnuevo": int(f.get("idnuevo", f["idunineg"])),
         }
         run_query("BIO", sql, params)

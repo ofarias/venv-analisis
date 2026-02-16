@@ -638,3 +638,117 @@ def uuid_ya_usado(uuid: str, exclude_solicitud_id: int | None = None) -> dict | 
             conn.close()
         except Exception:
             pass
+
+
+def get_conceptos_catalogo_rows(incluir_inactivos: bool = False):
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+
+    if incluir_inactivos:
+        cur.execute(
+            """
+            select id, concepto, cuenta, fiscales, prepago, activo, created_at, updated_at
+            from solicitud_concepto_gasto
+            order by id
+            """
+        )
+    else:
+        cur.execute(
+            """
+            select id, concepto, cuenta, fiscales, prepago, activo, created_at, updated_at
+            from solicitud_concepto_gasto
+            where activo = 1
+            order by id
+            """
+        )
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def upsert_concepto_catalogo_rows(rows: list[dict], usuario_id: int):
+    if not rows:
+        return
+
+    conn = obtener_conexion()
+    cur = conn.cursor()
+    try:
+        for r in rows:
+            _id = r.get("id")
+            try:
+                if _id is not None and _id != "":
+                    _id = int(float(_id))
+                else:
+                    _id = None
+            except Exception:
+                _id = None
+            concepto = (r.get("concepto") or "").strip()
+            cuenta = (r.get("cuenta") or "").strip()
+            fiscales = int(r.get("fiscales") or 0)
+            prepago = int(r.get("prepago") or 0)
+            activo = int(r.get("activo") or 0)
+
+            if _id is None or _id == 0:
+                cur.execute(
+                    """
+                    insert into solicitud_concepto_gasto (concepto, cuenta, fiscales, prepago, activo, created_at, updated_at)
+                    values (%s, %s, %s, %s, %s, now(), now())
+                    """,
+                    (concepto, cuenta, fiscales, prepago, activo),
+                )
+            else:
+                cur.execute(
+                    """
+                    update solicitud_concepto_gasto
+                    set concepto = %s,
+                        cuenta = %s,
+                        fiscales = %s,
+                        prepago = %s,
+                        activo = %s,
+                        updated_at = now()
+                    where id = %s
+                    """,
+                    (concepto, cuenta, fiscales, prepago, activo, int(_id)),
+                )
+
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def desactivar_conceptos_catalogo(ids: list[int], usuario_id: int):
+    if not ids:
+        return
+
+    conn = obtener_conexion()
+    cur = conn.cursor()
+    try:
+        placeholders = ",".join(["%s"] * len(ids))
+        cur.execute(
+            f"""
+            update solicitud_concepto_gasto
+            set activo = 0,
+                updated_at = now()
+            where id in ({placeholders})
+            """,
+            tuple(int(x) for x in ids),
+        )
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass

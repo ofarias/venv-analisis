@@ -21,6 +21,9 @@ from models.solicitudes_model import (
     get_conceptos_gasto_rows,
     get_datoscfd_by_uuid,
     uuid_ya_usado,
+    get_conceptos_catalogo_rows,
+    upsert_concepto_catalogo_rows,
+    desactivar_conceptos_catalogo,
 )
 
 
@@ -241,3 +244,23 @@ def get_datoscfd_by_uuid_ctrl(uuid: str) -> dict | None:
 
 def uuid_ya_usado_ctrl(uuid: str, exclude_solicitud_id: int | None = None) -> dict | None:
     return uuid_ya_usado(uuid, exclude_solicitud_id=exclude_solicitud_id)
+
+
+def listar_conceptos_catalogo_ctrl(incluir_inactivos: bool = False):
+    return get_conceptos_catalogo_rows(incluir_inactivos=incluir_inactivos)
+
+
+def upsert_concepto_catalogo_ctrl(rows: list[dict], usuario_id: int):
+    try:
+        upsert_concepto_catalogo_rows(rows, usuario_id=usuario_id)
+        return {"ok": True, "msg": "catálogo guardado"}
+    except Exception as e:
+        return {"ok": False, "msg": f"error al guardar catálogo: {e}"}
+
+
+def desactivar_conceptos_catalogo_ctrl(ids: list[int], usuario_id: int):
+    try:
+        desactivar_conceptos_catalogo(ids, usuario_id=usuario_id)
+        return {"ok": True, "msg": "conceptos desactivados"}
+    except Exception as e:
+        return {"ok": False, "msg": f"error al desactivar: {e}"}
