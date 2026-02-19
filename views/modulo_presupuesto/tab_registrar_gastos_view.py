@@ -2,11 +2,35 @@
 import streamlit as st
 import pandas as pd
 import re
+from typing import Optional
+
 from controllers.presupuesto_controller import *
 from controllers.datoscfd_controller import registrar_cfdi_desde_xml
 from models.datoscfd_model import guardar_pdf_datoscfd, extraer_uuid_desde_pdf
 
-uuid_re = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+
+_HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2212"
+
+def _normaliza_texto_uuid(s: str) -> str:
+    if not s:
+        return ""
+    s = str(s).strip()
+    for h in _HYPHENS:
+        s = s.replace(h, "-")
+    s = re.sub(r"\s+", "", s)
+    return s
+
+def _uuid_en_texto(texto: str) -> Optional[str]:
+    t = _normaliza_texto_uuid(texto)
+    m = UUID_RE.search(t)
+    return m.group(0).upper() if m else None
+
+def _uuid_en_nombre(nombre: str) -> Optional[str]:
+    return _uuid_en_texto(nombre or "")
+
 
 
 def mostrar_tab_registrar_gasto():
@@ -43,10 +67,6 @@ def mostrar_tab_registrar_gasto():
         key="rg_btn_importar_archivos",
         disabled=(not up_files),
     )
-
-    def _uuid_en_nombre(nombre: str) -> Optional[str]:
-        m = uuid_re.search(nombre or "")
-        return m.group(0).upper() if m else None
 
     if btn_importar and up_files:
         xml_inserted = xml_duplicated = xml_updated = 0
@@ -117,7 +137,8 @@ def mostrar_tab_registrar_gasto():
             try:
                 b = f.getvalue()
 
-                uuid_pdf = extraer_uuid_desde_pdf(b)
+                uuid_pdf_raw = extraer_uuid_desde_pdf(b)  # puede venir con guiones unicode
+                uuid_pdf = _uuid_en_texto(uuid_pdf_raw or "")
                 metodo = "pdf_texto" if uuid_pdf else None
 
                 if not uuid_pdf:

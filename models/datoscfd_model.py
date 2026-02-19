@@ -14,6 +14,20 @@ from typing import Optional, Dict, Any
 
 uuid_re = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
+UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+
+_HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2212"  # ‐-‒–—−
+
+def _normaliza_texto_uuid(s: str) -> str:
+    if not s:
+        return ""
+    s = str(s).strip()
+    for h in _HYPHENS:
+        s = s.replace(h, "-")
+    s = re.sub(r"\s+", "", s)
+    return s
 
 NS = {
     "cfdi3": "http://www.sat.gob.mx/cfd/3",
@@ -492,26 +506,77 @@ def guardar_pdf_datoscfd(
             pass
 
 def extraer_uuid_desde_pdf(pdf_bytes: bytes) -> Optional[str]:
+    import io
+    import re
+
+    uuid_re = re.compile(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    )
+
+    hyphens = "\u2010\u2011\u2012\u2013\u2014\u2212"  # ‐-‒–—−
+
+    def _normaliza(s: str) -> str:
+        if not s:
+            return ""
+        s = str(s)
+        for h in hyphens:
+            s = s.replace(h, "-")
+        # para este pdf es clave quitar espacios/saltos porque el uuid viene “cortado”
+        s = re.sub(r"\s+", "", s)
+        return s
+
+    def _buscar(s: str) -> Optional[str]:
+        s2 = _normaliza(s)
+        m = uuid_re.search(s2)
+        return m.group(0).upper() if m else None
+
+    # 1) intento con pypdf / PyPDF2
     try:
-        # pypdf es el nombre moderno; si no está, probamos PyPDF2
         try:
             from pypdf import PdfReader  # type: ignore
         except Exception:
             from PyPDF2 import PdfReader  # type: ignore
 
-        import io
         reader = PdfReader(io.BytesIO(pdf_bytes))
         texto = ""
-        for page in reader.pages[:5]:  # con 5 páginas suele bastar
+        for page in reader.pages[:5]:
             try:
-                t = page.extract_text() or ""
-                if t:
-                    texto += "\n" + t
+                texto += "\n" + (page.extract_text() or "")
             except Exception:
                 pass
 
-        m = uuid_re.search(texto)
-        return m.group(0).upper() if m else None
+        u = _buscar(texto)
+        if u:
+            return u
     except Exception:
-        return None
-    
+        pass
+
+    # 2) fallback con pdfminer (este pdf sí lo saca aquí)
+    try:
+        from pdfminer.high_level import extract_text  # type: ignore
+
+        texto = extract_text(io.BytesIO(pdf_bytes), maxpages=5) or ""
+        u = _buscar(texto)
+        if u:
+            return u
+    except Exception:
+        pass
+
+    # 3) fallback opcional con pdfplumber (si lo tienes instalado)
+    try:
+        import pdfplumber  # type: ignore
+
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            texto = ""
+            for i in range(min(5, len(pdf.pages))):
+                try:
+                    texto += "\n" + (pdf.pages[i].extract_text() or "")
+                except Exception:
+                    pass
+        u = _buscar(texto)
+        if u:
+            return u
+    except Exception:
+        pass
+
+    return None

@@ -6,6 +6,81 @@ import pandas as pd
 from typing import List, Dict, Any, Union
 from datetime import date
 
+from models.solicitudes_model import get_datoscfd_by_uuid
+
+def _enriquecer_emisor_desde_datoscfd(df_pend: pd.DataFrame) -> pd.DataFrame:
+    if df_pend is None or df_pend.empty:
+        return df_pend
+
+    # columnas necesarias
+    if "cve_prov" not in df_pend.columns or "app_uuid" not in df_pend.columns:
+        return df_pend
+
+    # regla: solo cve_prov='0001' y app_uuid no nulo
+    mask = (
+        df_pend["cve_prov"].astype(str).str.strip().eq("0001")
+        & df_pend["app_uuid"].notna()
+        & df_pend["app_uuid"].astype(str).str.strip().ne("")
+    )
+    if not mask.any():
+        return df_pend
+
+    # uuids únicos a consultar
+    uuids = (
+        df_pend.loc[mask, "app_uuid"]
+        .astype(str).str.strip().str.upper()
+        .dropna().unique().tolist()
+    )
+    if not uuids:
+        return df_pend
+
+    # consulta 1 a 1 (con cache simple en dict)
+    secrets = dict(st.secrets) if hasattr(st, "secrets") else None
+
+    uuid_to_emisor: dict[str, dict] = {}
+    for u in uuids:
+        try:
+            row = get_datoscfd_by_uuid(u, secrets=secrets)
+        except Exception:
+            row = None
+        if row:
+            uuid_to_emisor[u] = row
+
+    if not uuid_to_emisor:
+        return df_pend
+
+    # mapeo a columnas finales (ajusta nombres según tu tabla datoscfd)
+    def _get_rfc(u: str) -> str:
+        r = uuid_to_emisor.get((u or "").strip().upper())
+        if not r:
+            return ""
+        return (r.get("RFC_EMISOR") or r.get("rfc_emisor") or r.get("RFC") or r.get("rfc") or "").strip()
+
+    def _get_nombre(u: str) -> str:
+        r = uuid_to_emisor.get((u or "").strip().upper())
+        if not r:
+            return ""
+        return (r.get("NOMBRE_EMISOR") or r.get("nombre_emisor") or r.get("NOMBRE") or r.get("nombre") or "").strip()
+
+    df = df_pend.copy()
+    # crea columnas nuevas por claridad (opcional)
+    df.loc[mask, "rfc_emisor"] = df.loc[mask, "app_uuid"].astype(str).map(_get_rfc)
+    df.loc[mask, "nombre_emisor"] = df.loc[mask, "app_uuid"].astype(str).map(_get_nombre)
+
+    # si quieres que la vista use las mismas columnas "rfc" y "nombre", pisa esas:
+    if "rfc" in df.columns:
+        df.loc[mask, "rfc"] = df.loc[mask, "rfc_emisor"].where(df.loc[mask, "rfc_emisor"].astype(str).str.strip().ne(""), df.loc[mask, "rfc"])
+    else:
+        df["rfc"] = ""
+        df.loc[mask, "rfc"] = df.loc[mask, "rfc_emisor"]
+
+    if "nombre" in df.columns:
+        df.loc[mask, "nombre"] = df.loc[mask, "nombre_emisor"].where(df.loc[mask, "nombre_emisor"].astype(str).str.strip().ne(""), df.loc[mask, "nombre"])
+    else:
+        df["nombre"] = ""
+        df.loc[mask, "nombre"] = df.loc[mask, "nombre_emisor"]
+
+    return df
 
 def _to_float(v, default: float = 0.0) -> float:
     try:
@@ -419,45 +494,50 @@ def update_detalle_prorrateo_rows(cambios: list[dict]) -> int:
     return afectados
 
 def get_pendientes_contabilizar() -> pd.DataFrame:
-    
     sql = """
-        select pm.cve_prov, 
-          p.nombre, 
-          p.rfc,  
-          pm.num_cpto, 
-          cp.descr, 
-          pm.no_factura, 
-          pm.refer, 
-          pm.fechaelab, 
-          pm.fecha_apli, 
-          m.descr as moneda, 
-          pm.importe - fcp.IMPUESTO4 + fcp.IMPUESTO2 +fcp.IMPUESTO3 as Subtotal,
-          fcp.IMPUESTO1, 
-          fcp.IMPUESTO2, 
-          fcp.IMPUESTO3, 
+        select pm.cve_prov,
+          p.nombre,
+          p.rfc,
+          pm.num_cpto,
+          cp.descr,
+          pm.no_factura,
+          pm.refer,
+          pm.fechaelab,
+          pm.fecha_apli,
+          m.descr as moneda,
+          pm.importe - fcp.IMPUESTO4 + fcp.IMPUESTO2 + fcp.IMPUESTO3 as Subtotal,
+          fcp.IMPUESTO1,
+          fcp.IMPUESTO2,
+          fcp.IMPUESTO3,
           fcp.IMPUESTO4,
-          pm.importe ,
+          pm.importe,
           pm.tcambio,
           pm.impmon_ext,
-          pm.APP_UUID 
+          pm.APP_UUID
         from Paga_m01 pm
           left join prov01 p on p.clave = pm.cve_prov
           left join moned01 m on m.num_moned = pm.num_moned
           left join conp01 cp on cp.num_cpto = pm.num_cpto
           left join folcxp01 fcp on fcp.cve_folio = pm.cve_folio
         where (afec_coi != 'A')
-            AND extract(year from fecha_apli) >= 2025
-            AND pm.num_cpto != 1
+            and extract(year from fecha_apli) >= 2025
+            and pm.num_cpto != 1
     """
+
     result = run_query_firebird("FIREBIRD_BIO_SAE", sql, ())
 
     if isinstance(result, pd.DataFrame):
         df = result.copy()
     else:
         df = pd.DataFrame(result)
-    # normalizamos todos los nombres de columnas a minúsculas
+
+    # 1) normaliza columnas primero
     df.columns = [str(c).lower() for c in df.columns]
-    return pd.DataFrame(df)
+
+    # 2) luego enriqueces (ya existe cve_prov y app_uuid)
+    df = _enriquecer_emisor_desde_datoscfd(df)
+
+    return df
 
 
 def update_estatus_prorrateos(cambios: List[Dict[str, Any]]) -> int:

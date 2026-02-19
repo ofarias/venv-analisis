@@ -24,6 +24,9 @@ from models.solicitudes_model import (
     get_conceptos_catalogo_rows,
     upsert_concepto_catalogo_rows,
     desactivar_conceptos_catalogo,
+    get_formas_pago_usuario_rows,
+    upsert_formas_pago_usuario_rows,
+    desactivar_formas_pago_usuario_ids,
 )
 
 
@@ -264,3 +267,36 @@ def desactivar_conceptos_catalogo_ctrl(ids: list[int], usuario_id: int):
         return {"ok": True, "msg": "conceptos desactivados"}
     except Exception as e:
         return {"ok": False, "msg": f"error al desactivar: {e}"}
+    
+def get_formas_pago_usuario_ctrl(id_usuario: int) -> List[Dict[str, Any]]:
+    return get_formas_pago_usuario_rows(int(id_usuario))
+
+def upsert_formas_pago_usuario_ctrl(
+        id_usuario: int,
+        rows: List[Dict[str, Any]],
+        usuario_id: int,
+    ) -> Dict[str, Any]:
+    try:
+        upsert_formas_pago_usuario_rows(
+            id_usuario=int(id_usuario),
+            rows=rows,
+            usuario_id=int(usuario_id),
+        )
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "msg": f"error al guardar formas de pago: {e}"}
+
+def desactivar_formas_pago_usuario_ctrl(
+    id_usuario: int,
+    ids: List[int],
+    usuario_id: int,
+) -> Dict[str, Any]:
+    try:
+        desactivar_formas_pago_usuario_ids(
+            id_usuario=int(id_usuario),
+            ids=[int(x) for x in (ids or [])],
+            usuario_id=int(usuario_id),
+        )
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "msg": f"error al desactivar formas de pago: {e}"}

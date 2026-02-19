@@ -57,6 +57,9 @@ def _append_blank_row_detalle(df: pd.DataFrame, id_actual: int | None) -> pd.Dat
             (pd.isna(last.get("id")))
             and (str(last.get("dsctacon") or "").strip() == "")
             and (str(last.get("idunineg") or "").strip() in ("", "none", "nan"))
+            and (str(last.get("cuenta_contable") or "").strip() == "")
+            and (str(last.get("unidad_negocio") or "").strip() == "")
+            and (str(last.get("flporuni") or "").strip() in ("", "0", "0.0", "0.0000"))
         )
         if last_empty:
             return df
@@ -682,6 +685,15 @@ def mostrar_tab_prorrateos_mysql():
         # agrega renglón vacío al final (alta desde grid)
         df_detalle = _append_blank_row_detalle(df_detalle, int(id_actual) if id_actual is not None else None)
         st.session_state["df_detalle_prorrateo"] = df_detalle
+
+        # --- botón para forzar alta de renglón ---
+        c_add, _ = st.columns([1, 5])
+        if c_add.button("agregar renglón", key="btn_add_row_detalle"):
+            df_tmp = st.session_state["df_detalle_prorrateo"].copy()
+            df_tmp = _append_blank_row_detalle(df_tmp, int(id_actual) if id_actual is not None else None)
+            st.session_state["df_detalle_prorrateo"] = df_tmp
+            st.session_state["detalle_version"] += 1  # fuerza que cambie el key del grid
+            st.rerun()
 
         gb = GridOptionsBuilder.from_dataframe(df_detalle)
         gb.configure_default_column(editable=False, resizable=True)

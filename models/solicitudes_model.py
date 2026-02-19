@@ -286,6 +286,7 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
           notas,
           presupuesto_id,
           presupuesto_detalle_id,
+          usuario_forma_pago_id,
           fecha_creacion
         from solicitudes_detalle
         where solicitud_id = %s
@@ -386,6 +387,7 @@ def upsert_detalle_rows(
     rows: List[Dict[str, Any]],
     creado_por: int
 ) -> None:
+
     conn = obtener_conexion()
     cur = conn.cursor()
 
@@ -438,6 +440,8 @@ def upsert_detalle_rows(
             presupuesto_id = _none_if_nan(r.get("presupuesto_id"))
             presupuesto_detalle_id = _none_if_nan(r.get("presupuesto_detalle_id"))
 
+            usuario_forma_pago_id = _none_if_nan(r.get("usuario_forma_pago_id"))
+
             if detalle_id is None:
                 renglon = _next_renglon(cur, solicitud_id)
                 cur.execute(
@@ -455,6 +459,7 @@ def upsert_detalle_rows(
                       subtotal_xml, iva_xml, total_xml,
                       uuid, referencia, archivo_url, notas,
                       presupuesto_id, presupuesto_detalle_id,
+                      usuario_forma_pago_id,
                       creado_por
                     )
                     values
@@ -470,6 +475,7 @@ def upsert_detalle_rows(
                       %s, %s, %s,
                       %s, %s, %s, %s,
                       %s, %s,
+                      %s,
                       %s
                     )
                     """,
@@ -485,6 +491,7 @@ def upsert_detalle_rows(
                         subtotal_xml, iva_xml, total_xml,
                         uuid, referencia, archivo_url, notas,
                         presupuesto_id, presupuesto_detalle_id,
+                        usuario_forma_pago_id,
                         creado_por,
                     ),
                 )
@@ -536,7 +543,8 @@ def upsert_detalle_rows(
                       notas = %s,
 
                       presupuesto_id = %s,
-                      presupuesto_detalle_id = %s
+                      presupuesto_detalle_id = %s,
+                      usuario_forma_pago_id = %s
                     where id = %s
                       and solicitud_id = %s
                     """,
@@ -579,6 +587,7 @@ def upsert_detalle_rows(
                         notas,
                         presupuesto_id,
                         presupuesto_detalle_id,
+                        usuario_forma_pago_id,
                         int(detalle_id),
                         int(solicitud_id),
                     ),
@@ -741,6 +750,166 @@ def desactivar_conceptos_catalogo(ids: list[int], usuario_id: int):
             where id in ({placeholders})
             """,
             tuple(int(x) for x in ids),
+        )
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_formas_pago_usuario_rows(id_usuario: int) -> list[dict]:
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        """
+        select
+          id,
+          id_usuario,
+          tipo,
+          entidad_bancaria,
+          moneda,
+          ultimos4,
+          numero_tarjeta_enmascarado,
+          vigencia_inicio,
+          vigencia_fin,
+          activo,
+          concat(
+            lower(tipo),
+            case when entidad_bancaria is not null and trim(entidad_bancaria) <> '' then concat(' | ', lower(entidad_bancaria)) else '' end,
+            ' | ', lower(moneda),
+            case
+              when numero_tarjeta_enmascarado is not null and trim(numero_tarjeta_enmascarado) <> '' then concat(' | ', numero_tarjeta_enmascarado)
+              when ultimos4 is not null and trim(ultimos4) <> '' then concat(' | **** ', ultimos4)
+              else ''
+            end
+          ) as etiqueta
+        from usuarios_forma_pago
+        where id_usuario = %s
+          and activo = 1
+        order by tipo, entidad_bancaria, moneda, id desc
+        """,
+        (int(id_usuario),),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def _mask_tarjeta(num: str) -> tuple[str | None, str | None]:
+    """
+    regresa (ultimos4, enmascarado) a partir del numero (puede venir con espacios/guiones)
+    """
+    if not num:
+        return None, None
+    s = str(num).strip()
+    # deja solo dígitos
+    s = "".join(ch for ch in s if ch.isdigit())
+    if not s:
+        return None, None
+    u4 = s[-4:] if len(s) >= 4 else s
+    return u4, f"**** **** **** {u4}"
+
+
+def upsert_formas_pago_usuario_rows(id_usuario: int, rows: list[dict], usuario_id: int) -> None:
+    conn = obtener_conexion()
+    cur = conn.cursor()
+    try:
+        for r in rows:
+            _id = _none_if_nan(r.get("id"))
+            tipo = (r.get("tipo") or "").strip()
+            if not tipo:
+                continue
+
+            entidad_bancaria = (r.get("entidad_bancaria") or "").strip() or None
+            moneda = (r.get("moneda") or "MXN").strip().upper()
+            cuenta_contable = (r.get("cuenta_contable") or "").strip() or None
+
+            ultimos4 = (r.get("ultimos4") or "").strip() or None
+            numero_tarjeta_enmascarado = (r.get("numero_tarjeta_enmascarado") or "").strip() or None
+
+            vigencia_inicio = _none_if_nan(r.get("vigencia_inicio"))
+            vigencia_fin = _none_if_nan(r.get("vigencia_fin"))
+
+            activo = 1 if int(r.get("activo") or 0) == 1 else 0
+
+            if _id is None:
+                cur.execute(
+                    """
+                    insert into usuarios_forma_pago
+                    (id_usuario, tipo, entidad_bancaria, moneda, cuenta_contable,
+                     ultimos4, numero_tarjeta_enmascarado, vigencia_inicio, vigencia_fin, activo,
+                     created_at, updated_at)
+                    values
+                    (%s, %s, %s, %s, %s,
+                     %s, %s, %s, %s, %s,
+                     now(), now())
+                    """,
+                    (
+                        int(id_usuario), tipo, entidad_bancaria, moneda, cuenta_contable,
+                        ultimos4, numero_tarjeta_enmascarado, vigencia_inicio, vigencia_fin, activo
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    update usuarios_forma_pago
+                    set
+                      tipo = %s,
+                      entidad_bancaria = %s,
+                      moneda = %s,
+                      cuenta_contable = %s,
+                      ultimos4 = %s,
+                      numero_tarjeta_enmascarado = %s,
+                      vigencia_inicio = %s,
+                      vigencia_fin = %s,
+                      activo = %s,
+                      updated_at = now()
+                    where id = %s
+                      and id_usuario = %s
+                    """,
+                    (
+                        tipo, entidad_bancaria, moneda, cuenta_contable,
+                        ultimos4, numero_tarjeta_enmascarado,
+                        vigencia_inicio, vigencia_fin, activo,
+                        int(_id), int(id_usuario)
+                    ),
+                )
+
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def desactivar_formas_pago_usuario_ids(id_usuario: int, ids: list[int], usuario_id: int) -> None:
+    if not ids:
+        return
+    conn = obtener_conexion()
+    cur = conn.cursor()
+    try:
+        placeholders = ",".join(["%s"] * len(ids))
+        cur.execute(
+            f"""
+            update usuarios_forma_pago
+            set activo = 0,
+                updated_at = now()
+            where id_usuario = %s
+              and id in ({placeholders})
+            """,
+            tuple([int(id_usuario)] + [int(x) for x in ids]),
         )
         conn.commit()
     finally:
