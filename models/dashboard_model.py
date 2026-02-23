@@ -1290,3 +1290,152 @@ def copiar_detalle_prorrateo(
         afectados += 1
 
     return afectados
+
+
+def get_reporte_pagos_rows(corte: date):
+    sql = """
+    with
+        params as (
+            select cast(? as date) as corte
+            from rdb$database
+        ),
+        movs as (
+            select
+                d.refer,
+                sum(d.importe * d.signo) as pagado_mn,
+                sum(d.impmon_ext * d.signo) as pagado_usd,
+                max(
+                    case
+                        when d.num_cpto not in (19, 20)
+                         and d.fecha_apli < dateadd(1 day to (select corte from params))
+                        then d.fecha_apli
+                    end
+                ) as fecha_pago
+            from paga_det01 d
+            where d.fecha_apli < dateadd(1 day to (select corte from params))
+            group by d.refer
+        )
+
+    select
+        p.nombre,
+        p.clasific as clasificacionproveedor,
+        p.clave,
+        c.refer,
+        cc.fecha_doc,
+
+        cast(c.fecha_apli as date) as fecha_apli,
+
+        case
+            when (c.importe + coalesce(m.pagado_mn, 0)) > 10
+            then (cast(c.fecha_apli as date) - (select corte from params)) * -1
+            else 0
+        end as diastranscurridos,
+
+        case
+            when (c.importe + coalesce(m.pagado_mn, 0)) > 10
+            then ((cast(c.fecha_apli as date) - (select corte from params)) * -1) - p.diascred
+            else 0
+        end as diasdeatraso,
+
+        m.fecha_pago as fechapago,
+
+        case
+            when m.fecha_pago is not null
+            then cast(m.fecha_pago as date) - cast(c.fecha_apli as date)
+            else null
+        end as diasusados,
+
+        p.diascred,
+
+        case
+            when m.fecha_pago is not null
+             and (p.diascred - (cast(m.fecha_pago as date) - cast(c.fecha_apli as date))) < 0
+            then (p.diascred - (cast(m.fecha_pago as date) - cast(c.fecha_apli as date))) * -1
+            else 0
+        end as diasdeatrasodelpago,
+
+        c.num_moned as num_moned,
+        m2.descr as moneda,
+
+        case
+            when c.num_moned = 1 then 0
+            when c.num_moned = 2 then c.impmon_ext
+            else 0
+        end as subtotal_mon_ext,
+
+        c.importe as importepesos,
+
+        cc.imp_tot3 as retencion_iva,
+        cc.imp_tot4 as iva,
+
+        c.tcambio,
+        coalesce(m.pagado_mn, 0) as pagado,
+        coalesce(m.pagado_usd, 0) as pagado_mon_ext,
+        (c.importe + coalesce(m.pagado_mn, 0)) as saldo,
+
+        case
+            when c.num_moned = 1 then 0
+            when c.num_moned = 2 then c.impmon_ext + coalesce(m.pagado_usd, 0)
+            else 0
+        end as saldo_mon_ext,
+
+        case
+            when (c.importe + coalesce(m.pagado_mn, 0)) < 10
+             and m.fecha_pago is not null
+             and (p.diascred - (cast(m.fecha_pago as date) - cast(c.fecha_apli as date))) >= 0
+            then 'pagado en tiempo'
+
+            when (c.importe + coalesce(m.pagado_mn, 0)) < 10
+             and m.fecha_pago is not null
+             and (p.diascred - (cast(m.fecha_pago as date) - cast(c.fecha_apli as date))) < 0
+            then 'pagado con atraso'
+
+            when (c.importe + coalesce(m.pagado_mn, 0)) < 10
+            then 'pagado'
+
+            when (((cast(c.fecha_apli as date) - (select corte from params)) * -1) - p.diascred) <= 0
+            then 'vigente'
+
+            else 'vencido'
+        end as estatusdocumento,
+
+        dateadd(p.diascred day to cast(c.fecha_apli as date)) as fecha_vencimiento,
+        dateadd(p.diascred day to cast(c.fecha_apli as date)) - (select corte from params) as dias_para_vencer,
+
+        case
+            when (c.importe + coalesce(m.pagado_mn, 0)) < 10
+                then 'pagado'
+            when (dateadd(p.diascred day to cast(c.fecha_apli as date)) - (select corte from params)) < 0
+                then 'vencido'
+            when (dateadd(p.diascred day to cast(c.fecha_apli as date)) - (select corte from params)) between 0 and 15
+                then '0-15'
+            when (dateadd(p.diascred day to cast(c.fecha_apli as date)) - (select corte from params)) between 16 and 30
+                then '16-30'
+            when (dateadd(p.diascred day to cast(c.fecha_apli as date)) - (select corte from params)) between 31 and 60
+                then '31-60'
+            when (dateadd(p.diascred day to cast(c.fecha_apli as date)) - (select corte from params)) between 61 and 90
+                then '61-90'
+            else '90+'
+        end as bucket_pronostico,
+
+        p.cuenta_contable as cuentacontable
+
+    from paga_m01 c
+    left join prov01 p
+        on c.cve_prov = p.clave
+    left join compc01 cc
+        on c.refer = cc.cve_doc
+       and cc.fecha_doc < dateadd(1 day to (select corte from params))
+    left join movs m
+        on m.refer = c.refer
+    left join moned01 m2
+        on m2.num_moned = c.num_moned
+
+    where
+        c.tipo_mov = 'C'
+        and c.fecha_apli < dateadd(1 day to (select corte from params))
+
+    order by
+        p.nombre asc
+    """
+    return run_query_firebird("FIREBIRD_BIO_SAE", sql, (corte,))

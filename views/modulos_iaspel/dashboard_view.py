@@ -20,7 +20,7 @@ from views.modulos_iaspel.tab_poliza_costo_ventas_view import mostrar_tab_poliza
 from views.modulos_iaspel.tab_contabilizados_view import mostrar_tab_contabilizados
 from views.modulos_iaspel.tab_reporte_cobranza_view import mostrar_tab_reporte_cobranza
 from views.modulos_iaspel.tab_rep_ventas_lotes_view import mostrar_tab_rep_ventas_lotes
-
+from views.modulos_iaspel.tab_reporte_pagos_view import mostrar_tab_reporte_pagos
 
 
 def pantalla_dashboard():
@@ -38,6 +38,7 @@ def pantalla_dashboard():
             "Tabla Prorrateos",
             "Catálogo (ksae20t/21t)",
             "Reporte de Cobranza",
+            "Pronostico de Pagos",
             "Reporte ventas lotes",
             "Pólizas por Tipo",
             "Usos por Prorrateo",
@@ -89,8 +90,10 @@ def pantalla_dashboard():
     with tabs[6]:
         mostrar_tab_reporte_cobranza()
     with tabs[7]:
-        mostrar_tab_rep_ventas_lotes()
+        mostrar_tab_reporte_pagos()
     with tabs[8]:
+        mostrar_tab_rep_ventas_lotes()
+    with tabs[9]:
         c1, c2 = st.columns(2)
         eje = c1.number_input("Eje (2 dígitos)", 0, 99, value=25, step=1)
         origen = c2.text_input("Origen", "JAVA")
@@ -129,7 +132,7 @@ def pantalla_dashboard():
                 det = get_detalle_polizas(eje, origen, int(lim), int(off))
                 st.dataframe(det, use_container_width=True)
 
-    with tabs[9]:
+    with tabs[10]:
         st.subheader("Pólizas por prorrateo aplicado")
         lim3 = st.number_input("Top N", 1, 2000, value=50, step=10, key="lim3")
         usos = get_usos_prorrateo(eje, origen, int(lim3), 0)
@@ -149,7 +152,7 @@ def pantalla_dashboard():
             )
             st.altair_chart(chart3, use_container_width=True)
 
-    with tabs[10]:
+    with tabs[11]:
         st.subheader("Cobertura (pólizas con/ sin regla aplicada)")
         dfc = get_cobertura(eje, origen)
         if dfc.empty:
@@ -173,7 +176,7 @@ def pantalla_dashboard():
     
     
 
-    with tabs[11]   :
+    with tabs[12]:
         st.subheader("Ponderaciones por Proveedor")
 
         provs = get_proveedores_df()
@@ -207,7 +210,7 @@ def pantalla_dashboard():
                     mime="text/csv",
                 )
 
-    with tabs[12]:
+    with tabs[13]:
         st.subheader("Resumen por Proveedor")
 
         # Checkbox para incluir/excluir proveedores sin pólizas

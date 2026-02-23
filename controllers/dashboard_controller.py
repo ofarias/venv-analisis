@@ -199,3 +199,8 @@ def copiar_detalle_prorrateo_ctrl(
         return {"ok": False, "msg": str(e)}
     except Exception as e:
         return {"ok": False, "msg": f"error al copiar detalle: {e}"}
+    
+def get_reporte_pagos_df(corte: date) -> pd.DataFrame:
+    rows = get_reporte_pagos_rows(corte)
+    df = pd.DataFrame(rows or [])
+    return df
