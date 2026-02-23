@@ -704,3 +704,70 @@ def buscar_conceptos_en_paga_g03(
             con.close()
         except:
             pass # Ignorar error de cierre si ya estaba cerrada
+
+
+# --- catálogo clientes (clie01) ---
+
+def buscar_clientes_sae(secrets, q: str = "", limit: int = 500) -> list[dict]:
+    """
+    regresa lista de clientes activos: [{clave, nombre, rfc}]
+    filtro opcional por clave/nombre/rfc
+    """
+    q = (q or "").strip()
+    limit = int(limit or 500)
+    if limit <= 0:
+        limit = 50
+
+    con = _conn_sae_from_secrets(secrets)
+    try:
+        cur = con.cursor()
+
+        sql = """
+            select 
+                c.CLAVE,
+                c.NOMBRE,
+                c.RFC
+            from CLIE01 c
+            where c.STATUS <> 'B'
+        """.format(limit=limit)
+
+        params = []
+
+        if q:
+            # busca por clave, nombre o rfc
+            sql += """
+              and (
+                    upper(c.CLAVE) containing upper(?)
+                 or upper(c.NOMBRE) containing upper(?)
+                 or upper(c.RFC)   containing upper(?)
+              )
+            """
+            params = [q, q, q]
+
+        sql += " order by c.NOMBRE"
+
+        cur.execute(sql, tuple(params))
+        cols = [d[0].strip() for d in cur.description]
+        rows = cur.fetchall()
+
+        out = []
+        for row in rows:
+            d = dict(zip(cols, row))
+            out.append({
+                "clave": (d.get("CLAVE") or "").strip(),
+                "nombre": (d.get("NOMBRE") or "").strip(),
+                "rfc": (d.get("RFC") or "").strip(),
+            })
+        return out
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+def get_clientes_sae_top(secrets, limit: int = 200) -> list[dict]:
+    """
+    lista rápida (sin filtro) para autocomplete inicial
+    """
+    return buscar_clientes_sae(secrets, q="", limit=limit)

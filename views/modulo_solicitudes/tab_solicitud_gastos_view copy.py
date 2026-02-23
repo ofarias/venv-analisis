@@ -478,6 +478,7 @@ def mostrar_tab_solicitudes_gastos():
         st.info("selecciona una solicitud para capturar detalle.")
         return
 
+
     # ---------------------------------------------------------------------
     # importar xml/pdf a datoscfd (global)
     # ---------------------------------------------------------------------

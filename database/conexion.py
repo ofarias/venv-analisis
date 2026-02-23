@@ -1,3 +1,5 @@
+#database/conexion.py
+
 import mysql.connector
 
 def obtener_conexion():

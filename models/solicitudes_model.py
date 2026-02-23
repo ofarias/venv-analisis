@@ -319,7 +319,7 @@ def get_conceptos_gasto_rows(activo: int = 1):
     cur = conn.cursor(dictionary=True)
     cur.execute(
         """
-        select id, concepto, cuenta
+        select id, concepto, cuenta, prepago, fiscales
         from solicitud_concepto_gasto
         where (%s is null) or (activo = %s)
         order by concepto
@@ -921,3 +921,36 @@ def desactivar_formas_pago_usuario_ids(id_usuario: int, ids: list[int], usuario_
             conn.close()
         except Exception:
             pass
+
+from datetime import datetime
+from database.conexion import obtener_conexion
+
+def eliminar_solicitud_model(*, solicitud_id: int, usuario_id: int) -> None:
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+    #st.write(f"Intentando eliminar solicitud_id={solicitud_id} por usuario_id={usuario_id} a las {datetime.now()}")
+    #st.stop()
+    try:
+        cur.execute("select id, estatus from solicitudes where id = %s", (solicitud_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("la solicitud no existe")
+
+        estatus = (row.get("estatus") or "").strip().lower()
+        if estatus != "captura":
+            raise ValueError("solo se puede eliminar si el estatus es 'captura'")
+
+        # primero detalle (si tienes FK)
+        #cur.execute("update solicitudes_detalle set activo = 0 where solicitud_id = %s", (solicitud_id,))
+        cur.execute("update solicitudes set estatus = 'eliminada', actualizado_por = %s, fecha_actualizacion = now() where id = %s", (usuario_id, solicitud_id))
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()

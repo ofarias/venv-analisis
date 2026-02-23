@@ -29,6 +29,8 @@ from models.solicitudes_model import (
     desactivar_formas_pago_usuario_ids,
 )
 
+from models.sae45_model import buscar_clientes_sae
+
 
 def _d(x: Any, default: str = "0") -> Decimal:
     if x in (None, ""):
@@ -57,6 +59,10 @@ def calcular_totales_row(r: Dict[str, Any]) -> Dict[str, Any]:
     subtotal_xml = _d(r.get("subtotal_xml"), "0")
     iva_xml = _d(r.get("iva_xml"), "0")
     total_xml = _d(r.get("total_xml"), "0")
+
+    # regla: importe se queda como total_xml (si existe)
+    r["importe"] = total_xml
+
 
     # subtotal: usa el del xml si viene; si no, usa cantidad*pu o importe
     if subtotal_xml != Decimal("0"):
@@ -215,11 +221,30 @@ def guardar_detalle_ctrl(
 ) -> Dict[str, Any]:
     try:
         fixed: List[Dict[str, Any]] = []
+
+
+        def _is_nullish(v) -> bool:
+            if v is None:
+                return True
+            # nan float (incluye numpy.nan)
+            if isinstance(v, float) and v != v:
+                return True
+            s = str(v).strip().lower()
+            return s in ("", "nan", "none", "null", "<na>", "nat")
+
         for r in rows:
             if not (r.get("concepto") or "").strip():
                 continue
-            fixed.append(calcular_totales_row(r))
 
+            if _is_nullish(r.get("cantidad")):
+                r["cantidad"] = 1
+            if _is_nullish(r.get("precio_unitario")):
+                r["precio_unitario"] = 0
+            if _is_nullish(r.get("importe")):
+                r["importe"] = 0
+
+            fixed.append(calcular_totales_row(r))
+            
         if deleted_ids:
             delete_detalle_ids(solicitud_id, deleted_ids)
 
@@ -300,3 +325,13 @@ def desactivar_formas_pago_usuario_ctrl(
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "msg": f"error al desactivar formas de pago: {e}"}
+    
+
+def buscar_clientes_sae_ctrl(q: str = "", limit: int = 50) -> list[dict]:
+    return buscar_clientes_sae(st.secrets, q=q, limit=limit)
+
+def eliminar_solicitud_ctrl(solicitud_id: int, usuario_id: int) -> None:
+    # aquí solo orquestas, la validación fuerte debe vivir en el model
+    from models.solicitudes_model import eliminar_solicitud_model
+    eliminar_solicitud_model(solicitud_id=solicitud_id, usuario_id=usuario_id)
+    
