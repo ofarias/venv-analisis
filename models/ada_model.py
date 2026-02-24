@@ -149,12 +149,12 @@ def buscar_documentos(secrets, filtros, paginacion):
     return pd.DataFrame(rows, columns=cols)
 
 
-def obtener_detalle_documento(_secrets, id_docto_dig: int) -> dict | None:
-    sql = "SELECT * FROM DATOSCFD WHERE ID_DOCTODIG = ?"
+def obtener_detalle_documento(_secrets, id_docto_dig: int, uuid: str | None = None) -> dict | None:
+    sql = "SELECT * FROM DATOSCFD WHERE ID_DOCTODIG = ? and UUID = ?"
     con = _conn_from_secrets(_secrets)
     try:
         cur = con.cursor()
-        cur.execute(sql, (int(id_docto_dig),))
+        cur.execute(sql, (int(id_docto_dig), uuid))
         row = cur.fetchone()
         if not row:
             return None

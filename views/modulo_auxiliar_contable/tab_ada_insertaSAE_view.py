@@ -16,6 +16,7 @@ from controllers.ada_controller import (
     cargar_conceptos_por_documento,
     # buscar_en_paga_g03,
     buscar_concep_en_paga_g03,
+    cargar_documentos_con_mysql,
 )
 
 # ---------------------------
@@ -106,7 +107,8 @@ def insertarSAE():
 
     # cargar ADA
     try:
-        df = cargar_documentos(st.secrets, filtros, page, page_size)
+        #df = cargar_documentos(st.secrets, filtros, page, page_size)
+        df = cargar_documentos_con_mysql(st.secrets, filtros, page, page_size)
         if not df.empty:
             col_usocfdi = next((c for c in df.columns if c.lower() == "usocfdi_"), None)
             if col_usocfdi:
@@ -142,7 +144,7 @@ def insertarSAE():
     ).str.upper().str.slice(0, 20)
     df["CVE_PROV_MATCH"] = df.get("CLAVE_PROV_SAE", "").apply(_cve_match)
 
-    uso_series = _first_series(df, ["uso_cfdi", "USO_CFDI", "USOCFDI"]).fillna("").astype(str)
+    uso_series = _first_series(df, ["uso_cfdi", "USO_CFDI", "USOCFDI", "USOCFDI_"]).fillna("").astype(str)
     
     df["DESTINO_SAE"] = uso_series.str.upper().map(
         lambda u: "COMPC01" if u.startswith("G01") else ("PAGA_M01" if u.startswith("G03") else "")
@@ -432,7 +434,9 @@ def insertarSAE():
             grafica_montos_por_dia(df_cmp)
 
     ### TABLA Principal 
-     
+    # asegurar tipos antes de mostrar
+    if "ID_DOCTODIG" in df_cmp.columns:
+        df_cmp["ID_DOCTODIG"] = pd.to_numeric(df_cmp["ID_DOCTODIG"], errors="coerce").astype("Int64") 
     
     # columnas visibles (ajusta si te falta alguna)
     visible_cols = [

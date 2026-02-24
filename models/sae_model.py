@@ -4,6 +4,8 @@ import fdb
 import pandas as pd
 from datetime import date, datetime
 from typing import Optional, Dict, Any
+from models.datoscfd_mysql_model import obtener_detalle_datoscfd_mysql_df
+
 
 def _conn_sae_from_secrets(secrets) -> fdb.Connection:
     cfg = secrets["FIREBIRD_BIO_SAE"]
@@ -192,6 +194,7 @@ def insertar_en_paga_m01(secrets, rfc_emisor, serie, folio, fecha_emision, total
     cur = con.cursor()
     ahora = datetime.now()
     #st.write("Intenta la insercion")
+    #st.write(f"Datos para inserción: rfc_emisor={rfc_emisor}, serie={serie}, folio={folio}, fecha_emision={fecha_emision}, total_mxn={total_mxn}, uuid={uuid}, usocfdi={usocfdi}, clave_prov={clave_prov}, id_docto_dig={id_docto_dig}, moneda={moneda}, tcambio={tcambio}, impext={impext}, num_cpto_manual={num_cpto_manual}, concepto_label={concepto_label}")
     if uuid:
         try:
             cur.execute(
@@ -300,6 +303,8 @@ def insertar_en_paga_m01(secrets, rfc_emisor, serie, folio, fecha_emision, total
         #    cols.append("UUID"); vals.append(str(uuid).upper())
 
         sql_paga = f"insert into PAGA_M01 ({', '.join(cols)}) values ({', '.join(['?']*len(cols))})"
+        #st.write(f"SQL a ejecutar en PAGA_M01: {sql_paga} con valores {vals}")
+
         cur.execute(sql_paga, tuple(vals))
         
         # -------------------------
@@ -314,15 +319,32 @@ def insertar_en_paga_m01(secrets, rfc_emisor, serie, folio, fecha_emision, total
         # Ejemplo típico mínimo:
         from models.ada_model import obtener_detalle_documento
         # aquí consultas ADA con el UUID o el id_docto_dig
-        detalle = obtener_detalle_documento(secrets, id_docto_dig)
-        if detalle is None:
-            st.warning(f"No se encontró DATOSCFD con ID_DOCTODIG={id_docto_dig}")
-        else:
-            #st.json(detalle)  # para inspección
+        from models.datoscfd_mysql_model import obtener_datoscfd_mysql_df
+
+       
+        detalle = obtener_detalle_documento(secrets, id_docto_dig, uuid=uuid)
+        #st.write(f"Detalle desde MySQL para id_docto_dig={id_docto_dig}, uuid={uuid}: {detalle}")
+        if detalle:
             imp1  = (detalle.get("IEPS") or 0) ## 003 -- IEPS -- 0
             imp2  = (detalle.get("ISR") or 0) ## ISR -- -10.6670
             imp3  = (detalle.get("IVA_RET") or 0) ## RET IVA -- -10.00
             imp4  = (detalle.get("IVA_TASA_16") or 0) ## IVA_TASA_16
+        else:
+            #st.write(f"No se encontró detalle en DATOSCFD para id_docto_dig={id_docto_dig} y uuid={uuid}")
+            detalle = obtener_detalle_datoscfd_mysql_df(id_docto_dig=id_docto_dig, uuid=uuid)
+            fila = detalle.iloc[0]   # esto ya es una Series (una fila)
+            imp1 = fila.get("IEPS", 0)
+            imp2 = fila.get("ISR", 0)
+            imp3 = fila.get("IVA_RET", 0)
+            imp4 = fila.get("IVA_TASA_16", 0)
+            
+        #st.write(f"Impuestos extraídos para id_docto_dig={id_docto_dig}, uuid={uuid}: IEPS={imp1}, ISR={imp2}, IVA_RET={imp3}, IVA_TASA_16={imp4}")
+        #st.stop()
+            
+        #if detalle is None:
+        #    st.warning(f"No se encontró DATOSCFD con ID_DOCTODIG={id_docto_dig}")
+        #else:
+            #st.json(detalle)  # para inspección   
         
         status = 'O'
         usuario = 599
