@@ -7,10 +7,7 @@ from typing import Any, Dict, Optional, Tuple, List
 import xml.etree.ElementTree as ET
 import pandas as pd
 from database.conexion import obtener_conexion  # ajusta al import real
-import json
-import base64
 import re
-from typing import Optional, Dict, Any
 
 uuid_re = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
@@ -86,41 +83,56 @@ def _get_root_and_version(xml_bytes: bytes) -> Tuple[ET.Element, str]:
 
 
 def _sum_impuestos(root: ET.Element) -> Dict[str, float]:
+    """
+    lee impuestos desde el nodo cfdi:Impuestos (cfdi 3.3/4.0)
+    - ISR = retenciones impuesto 001
+    - IVA_RET = retenciones impuesto 002
+    - IEPS = traslados impuesto 003 (si aplica)
+    - IVA_TASA_16 = traslados impuesto 002 tasa 0.160000
+    """
     imp = _find_first(root, (".//cfdi4:Impuestos", ".//cfdi3:Impuestos"))
 
     out = {
         "total_traslados": 0.0,
         "total_retenidos": 0.0,
-        "iva": 0.0,
-        "isr": 0.0,
-        "ieps": 0.0,
-        "iva_ret": 0.0,
-        "isr_ret": 0.0,
-        "ieps_ret": 0.0,
+
+        "iva": 0.0,          # sum traslados 002
+        "ieps": 0.0,         # sum traslados 003
+
+        "isr_ret": 0.0,      # ret 001  (lo usaremos como ISR)
+        "iva_ret": 0.0,      # ret 002
+        "ieps_ret": 0.0,     # ret 003 (si aplica)
+
         "base_16": 0.0,
         "base_8": 0.0,
         "base_0": 0.0,
         "base_exento": 0.0,
+
         "iva_16": 0.0,
         "iva_8": 0.0,
         "iva_0": 0.0,
     }
+
     if imp is None:
         return out
 
     out["total_traslados"] = _to_float(imp.attrib.get("TotalImpuestosTrasladados")) or 0.0
     out["total_retenidos"] = _to_float(imp.attrib.get("TotalImpuestosRetenidos")) or 0.0
 
+    # traslados
     traslados = imp.findall(".//cfdi4:Traslado", NS) + imp.findall(".//cfdi3:Traslado", NS)
     for t in traslados:
         impuesto = _to_str(t.attrib.get("Impuesto"))
         importe = _to_float(t.attrib.get("Importe")) or 0.0
         base = _to_float(t.attrib.get("Base")) or 0.0
-        tasa = _to_str(t.attrib.get("TasaOCuota")) or ""
-        tipo_factor = (_to_str(t.attrib.get("TipoFactor")) or "").lower()
+        tasa = (_to_str(t.attrib.get("TasaOCuota")) or "").strip()
+        tipo_factor = (_to_str(t.attrib.get("TipoFactor")) or "").strip().lower()
 
         if impuesto == "002":
+            # IVA trasladado
             out["iva"] += importe
+
+            # desglose por tasa
             if tipo_factor == "exento":
                 out["base_exento"] += base
             else:
@@ -133,19 +145,21 @@ def _sum_impuestos(root: ET.Element) -> Dict[str, float]:
                 elif tasa.startswith("0.000"):
                     out["base_0"] += base
                     out["iva_0"] += importe
-        elif impuesto == "001":
-            out["isr"] += importe
+
         elif impuesto == "003":
+            # IEPS trasladado (si viene)
             out["ieps"] += importe
 
+    # retenciones
     retenciones = imp.findall(".//cfdi4:Retencion", NS) + imp.findall(".//cfdi3:Retencion", NS)
     for r in retenciones:
         impuesto = _to_str(r.attrib.get("Impuesto"))
         importe = _to_float(r.attrib.get("Importe")) or 0.0
-        if impuesto == "002":
-            out["iva_ret"] += importe
-        elif impuesto == "001":
+
+        if impuesto == "001":
             out["isr_ret"] += importe
+        elif impuesto == "002":
+            out["iva_ret"] += importe
         elif impuesto == "003":
             out["ieps_ret"] += importe
 
@@ -177,11 +191,17 @@ def parse_cfdi_to_datoscfd(xml_bytes: bytes) -> Dict[str, Any]:
 
     data["rfc_receptor"] = _to_str(receptor.attrib.get("Rfc") if receptor is not None else None)
     data["nombre_receptor"] = _to_str(receptor.attrib.get("Nombre") if receptor is not None else None)
-    data["usocfdi"] = _to_str(receptor.attrib.get("UsoCFDI") if receptor is not None else None)
+
+    # cambio 3: llenar usocfdi_ desde UsoCFDI del xml (además de usocfdi)
+    uso = _to_str(receptor.attrib.get("UsoCFDI") if receptor is not None else None)
+    data["usocfdi"] = uso
+    data["usocfdi_"] = (uso or "").strip().upper()  # <- cambio 3
+
     data["regimen_fiscal_receptor"] = _to_str(receptor.attrib.get("RegimenFiscalReceptor") if receptor is not None else None)
 
-    data["folio"] = _to_str(root.attrib.get("Folio"))
-    data["serie"] = _to_str(root.attrib.get("Serie"))
+    # cambio 1: si no trae Serie/Folio guardar '' (no NULL)
+    data["folio"] = (_to_str(root.attrib.get("Folio")) or "")  # <- cambio 1
+    data["serie"] = (_to_str(root.attrib.get("Serie")) or "")  # <- cambio 1
 
     data["total"] = _to_float(root.attrib.get("Total"))
     data["subtotal"] = _to_float(root.attrib.get("SubTotal"))
@@ -189,6 +209,8 @@ def parse_cfdi_to_datoscfd(xml_bytes: bytes) -> Dict[str, Any]:
 
     data["version"] = _to_str(root.attrib.get("Version") or root.attrib.get("version") or version)
     data["moneda"] = _to_str(root.attrib.get("Moneda"))
+
+    # si viene null, tu UI ya lo puede default a 1, pero aquí lo dejamos como float|None
     data["tipocambio"] = _to_float(root.attrib.get("TipoCambio"))
 
     data["formapago"] = _to_str(root.attrib.get("FormaPago"))
@@ -198,12 +220,16 @@ def parse_cfdi_to_datoscfd(xml_bytes: bytes) -> Dict[str, Any]:
 
     data["rfc_prov_certif"] = _to_str(tfd.attrib.get("RfcProvCertif") if tfd is not None else None)
 
+    # cambio 2: impuestos desde cfdi:Impuestos (retenciones/traslados)
     data["total_traslados"] = float(tax["total_traslados"])
     data["total_retenidos"] = float(tax["total_retenidos"])
-    data["iva"] = float(tax["iva"])
-    data["isr"] = float(tax["isr"])
-    data["ieps"] = float(tax["ieps"])
-    data["iva_ret"] = float(tax["iva_ret"])
+
+    data["iva"] = float(tax["iva"])                    # traslados 002 (todas tasas)
+    data["iva_ret"] = float(tax["iva_ret"])            # ret 002
+    data["isr"] = float(tax["isr_ret"])                # <- cambio 2 (ISR desde Retenciones 001)
+    data["ieps"] = float(tax["ieps"])                  # traslados 003 (si aplica)
+
+    # conservamos estos campos por compatibilidad con tu tabla
     data["isr_ret"] = float(tax["isr_ret"])
     data["ieps_ret"] = float(tax["ieps_ret"])
 
@@ -219,12 +245,15 @@ def parse_cfdi_to_datoscfd(xml_bytes: bytes) -> Dict[str, Any]:
     data["base_tasa_8"] = float(Decimal(str(tax["base_8"])).quantize(Decimal("0.01")))
     data["base_tasa_0"] = float(Decimal(str(tax["base_0"])).quantize(Decimal("0.01")))
     data["base_tasa_exento"] = float(Decimal(str(tax["base_exento"])).quantize(Decimal("0.01")))
-    data["iva_tasa_16"] = float(Decimal(str(tax["iva_16"])).quantize(Decimal("0.01")))
+
+    # IVA_TASA_16 desde traslados 002 tasa 0.16
+    data["iva_tasa_16"] = float(Decimal(str(tax["iva_16"])).quantize(Decimal("0.01")))  # <- cambio 2
     data["iva_tasa_8"] = float(Decimal(str(tax["iva_8"])).quantize(Decimal("0.01")))
 
     data["reporte_validacioncfd"] = xml_bytes.decode("utf-8", errors="replace")
 
     return data
+
 
 def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
     conn = None
@@ -238,7 +267,7 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             UUID, RFC_EMISOR, RFC_RECEPTOR, FECHA_EMISION,
             REPORTE_VALIDACIONCFD, NOMBRE_EMISOR, NOMBRE_RECEPTOR, FOLIO, SERIE,
             TOTAL, SUBTOTAL, IVA, `VERSION`, MONEDA, TIPOCAMBIO,
-            FORMAPAGO, METODOPAGO, TIPOCOMPROBANTE, USOCFDI, DESCUENTO,
+            FORMAPAGO, METODOPAGO, TIPOCOMPROBANTE, USOCFDI, USOCFDI_, DESCUENTO,
             LUGAR_EXPEDICION, REGIMEN_FISCAL, TOTAL_TRASLADOS, ISR, IEPS,
             TOTAL_RETENIDOS, IVA_RET, ISR_RET, IEPS_RET, RFC_PROV_CERTIF,
             FECHA_TIMBRADO, REGIMEN_FISCAL_RECEPTOR,
@@ -252,7 +281,7 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
             %s, %s,
@@ -282,6 +311,7 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             METODOPAGO = VALUES(METODOPAGO),
             TIPOCOMPROBANTE = VALUES(TIPOCOMPROBANTE),
             USOCFDI = VALUES(USOCFDI),
+            USOCFDI_ = VALUES(USOCFDI_),
             DESCUENTO = VALUES(DESCUENTO),
             LUGAR_EXPEDICION = VALUES(LUGAR_EXPEDICION),
             REGIMEN_FISCAL = VALUES(REGIMEN_FISCAL),
@@ -318,11 +348,11 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             data.get("reporte_validacioncfd"),
             data.get("nombre_emisor"),
             data.get("nombre_receptor"),
-            data.get("folio"),
-            data.get("serie"),
+            data.get("folio"),          # cambio 1: ya viene '' si no hay
+            data.get("serie"),          # cambio 1: ya viene '' si no hay
             data.get("total"),
             data.get("subtotal"),
-            data.get("iva"),
+            data.get("iva"),            # cambio 2
             data.get("version"),
             data.get("moneda"),
             data.get("tipocambio"),
@@ -330,14 +360,15 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             data.get("metodopago"),
             data.get("tipocomprobante"),
             data.get("usocfdi"),
+            data.get("usocfdi_"),       # cambio 3
             data.get("descuento"),
             data.get("lugar_expedicion"),
             data.get("regimen_fiscal"),
             data.get("total_traslados"),
-            data.get("isr"),
-            data.get("ieps"),
+            data.get("isr"),            # cambio 2 (retenciones 001)
+            data.get("ieps"),           # cambio 2
             data.get("total_retenidos"),
-            data.get("iva_ret"),
+            data.get("iva_ret"),        # cambio 2
             data.get("isr_ret"),
             data.get("ieps_ret"),
             data.get("rfc_prov_certif"),
@@ -354,7 +385,7 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             data.get("base_tasa_8"),
             data.get("base_tasa_0"),
             data.get("base_tasa_exento"),
-            data.get("iva_tasa_16"),
+            data.get("iva_tasa_16"),    # cambio 2
             data.get("iva_tasa_8"),
         )
 
@@ -362,7 +393,6 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
         affected = cursor.rowcount
         conn.commit()
 
-        # mysql: 1=insert, 2=update, 0=duplicate (sin cambios)
         if affected == 1:
             status = "inserted"
         elif affected == 2:
@@ -399,7 +429,8 @@ def importar_cfdi_xml_a_mysql(xml_bytes: bytes) -> Dict[str, Any]:
         return upsert_datoscfd(data)
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    
+
+
 def buscar_datoscfd_mysql(uuid: str, folio: Optional[str] = None, monto: Optional[float] = None) -> pd.DataFrame:
     uuid = (uuid or "").strip().upper()
     folio = (folio or "").strip()
@@ -412,7 +443,6 @@ def buscar_datoscfd_mysql(uuid: str, folio: Optional[str] = None, monto: Optiona
         params.append(folio)
 
     if monto and float(monto) > 0:
-        # tolerancia por decimales: ±0.01
         where.append("TOTAL BETWEEN %s AND %s")
         params.append(float(monto) - 0.01)
         params.append(float(monto) + 0.01)
@@ -438,6 +468,7 @@ def buscar_datoscfd_mysql(uuid: str, folio: Optional[str] = None, monto: Optiona
             METODOPAGO,
             TIPOCOMPROBANTE,
             USOCFDI,
+            USOCFDI_,
             LUGAR_EXPEDICION,
             REGIMEN_FISCAL,
             REGIMEN_FISCAL_RECEPTOR,
@@ -454,6 +485,7 @@ def buscar_datoscfd_mysql(uuid: str, folio: Optional[str] = None, monto: Optiona
         return df
     finally:
         conn.close()
+
 
 def guardar_pdf_datoscfd(
     pdf_bytes: bytes,
@@ -505,6 +537,7 @@ def guardar_pdf_datoscfd(
         except Exception:
             pass
 
+
 def extraer_uuid_desde_pdf(pdf_bytes: bytes) -> Optional[str]:
     import io
     import re
@@ -521,7 +554,6 @@ def extraer_uuid_desde_pdf(pdf_bytes: bytes) -> Optional[str]:
         s = str(s)
         for h in hyphens:
             s = s.replace(h, "-")
-        # para este pdf es clave quitar espacios/saltos porque el uuid viene “cortado”
         s = re.sub(r"\s+", "", s)
         return s
 
@@ -530,7 +562,6 @@ def extraer_uuid_desde_pdf(pdf_bytes: bytes) -> Optional[str]:
         m = uuid_re.search(s2)
         return m.group(0).upper() if m else None
 
-    # 1) intento con pypdf / PyPDF2
     try:
         try:
             from pypdf import PdfReader  # type: ignore
@@ -551,7 +582,6 @@ def extraer_uuid_desde_pdf(pdf_bytes: bytes) -> Optional[str]:
     except Exception:
         pass
 
-    # 2) fallback con pdfminer (este pdf sí lo saca aquí)
     try:
         from pdfminer.high_level import extract_text  # type: ignore
 
@@ -562,7 +592,6 @@ def extraer_uuid_desde_pdf(pdf_bytes: bytes) -> Optional[str]:
     except Exception:
         pass
 
-    # 3) fallback opcional con pdfplumber (si lo tienes instalado)
     try:
         import pdfplumber  # type: ignore
 
