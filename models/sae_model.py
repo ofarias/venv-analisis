@@ -6,6 +6,34 @@ from datetime import date, datetime
 from typing import Optional, Dict, Any
 from models.datoscfd_mysql_model import obtener_detalle_datoscfd_mysql_df
 
+def _clean_txt(x: Any) -> str:
+    if x is None:
+        return ""
+    try:
+        if pd.isna(x):
+            return ""
+    except Exception:
+        pass
+    s = str(x).strip()
+    return "" if s.lower() == "nan" else s
+
+def _refer(serie: Any, folio: Any, uuid: Any = None) -> str:
+    s = _clean_txt(serie).upper()
+    f = _clean_txt(folio).upper()
+
+    # caso 1: no hay serie pero sí folio → pad izquierda a 20
+    if not s and f:
+        return f[:20].rjust(20)
+
+    # caso 2: hay serie → normal concatenación sin padding especial
+    if s:
+        return (s + f)[:20]
+
+    # caso 3: no hay serie ni folio → usar uuid
+    u = _clean_txt(uuid).upper().replace("-", "")
+    return u[:20]
+
+
 
 def _conn_sae_from_secrets(secrets) -> fdb.Connection:
     cfg = secrets["FIREBIRD_BIO_SAE"]
@@ -74,13 +102,6 @@ def _buscar_num_cpto_ideal(cur, cve_prov: str, importe: float, fecha_emision=Non
 def _rfc(s: Any) -> str:
     return (str(s or "")).strip().upper()[:13]
 
-def _refer(serie: Any, folio: Any, uuid: Any = None) -> str:
-    s = (str(serie or "").strip()).upper()
-    f = (str(folio or "").strip()).upper()
-    if not s and not f:
-        u = (str(uuid or "").strip()).upper().replace("-", "")
-        return u[:8] if u else ""
-    return (s + f)[:20]
 
 def _importe_mxn(total_mxn: Any) -> float:
     try:
