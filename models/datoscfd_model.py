@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from datetime import datetime, date
 from decimal import Decimal
+#from turtle import st
 from typing import Any, Dict, Optional, Tuple, List
 import xml.etree.ElementTree as ET
 import pandas as pd
 from database.conexion import obtener_conexion  # ajusta al import real
 import re
+import streamlit as st  
 
 uuid_re = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
@@ -83,14 +85,6 @@ def _get_root_and_version(xml_bytes: bytes) -> Tuple[ET.Element, str]:
 
 
 def _sum_impuestos(root: ET.Element) -> Dict[str, float]:
-    """
-    lee impuestos desde el nodo cfdi:Impuestos (cfdi 3.3/4.0)
-    - ISR = retenciones impuesto 001
-    - IVA_RET = retenciones impuesto 002
-    - IEPS = traslados impuesto 003 (si aplica)
-    - IVA_TASA_16 = traslados impuesto 002 tasa 0.160000
-    """
-    imp = _find_first(root, (".//cfdi4:Impuestos", ".//cfdi3:Impuestos"))
 
     out = {
         "total_traslados": 0.0,
@@ -113,14 +107,40 @@ def _sum_impuestos(root: ET.Element) -> Dict[str, float]:
         "iva_0": 0.0,
     }
 
+    def _get_ns(root):
+        if root.tag.startswith("{"):
+            uri = root.tag.split("}")[0].strip("{")
+            return {"cfdi": uri}
+        return {}
+
+    NS = _get_ns(root)
+
+    comp = root
+    imp = comp.find("cfdi:Impuestos", NS)
+    if imp is None:
+        return out
+
+    out["total_traslados"] = float(
+        imp.attrib.get("TotalImpuestosTrasladados", 0)
+    )
+
+    out["total_retenidos"] = float(
+        imp.attrib.get("TotalImpuestosRetenidos", 0)
+    )
+    
+
     if imp is None:
         return out
 
     out["total_traslados"] = _to_float(imp.attrib.get("TotalImpuestosTrasladados")) or 0.0
     out["total_retenidos"] = _to_float(imp.attrib.get("TotalImpuestosRetenidos")) or 0.0
 
+    #st.write(f"total_traslados: {out['total_traslados']}, total_retenidos: {out['total_retenidos']}\n")
+    #st.stop()
+
     # traslados
-    traslados = imp.findall(".//cfdi4:Traslado", NS) + imp.findall(".//cfdi3:Traslado", NS)
+    #traslados = imp.findall(".//cfdi4:Traslado", NS) + imp.findall(".//cfdi3:Traslado", NS)
+    traslados = imp.findall(".//cfdi:Traslado", NS)
     for t in traslados:
         impuesto = _to_str(t.attrib.get("Impuesto"))
         importe = _to_float(t.attrib.get("Importe")) or 0.0
@@ -151,7 +171,8 @@ def _sum_impuestos(root: ET.Element) -> Dict[str, float]:
             out["ieps"] += importe
 
     # retenciones
-    retenciones = imp.findall(".//cfdi4:Retencion", NS) + imp.findall(".//cfdi3:Retencion", NS)
+    #retenciones = imp.findall(".//cfdi4:Retencion", NS) + imp.findall(".//cfdi3:Retencion", NS)
+    retenciones = imp.findall(".//cfdi:Retencion", NS)
     for r in retenciones:
         impuesto = _to_str(r.attrib.get("Impuesto"))
         importe = _to_float(r.attrib.get("Importe")) or 0.0
