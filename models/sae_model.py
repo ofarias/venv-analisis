@@ -20,20 +20,18 @@ def _clean_txt(x: Any) -> str:
 def _refer(serie: Any, folio: Any, uuid: Any = None) -> str:
     s = _clean_txt(serie).upper()
     f = _clean_txt(folio).upper()
-
     # caso 1: no hay serie pero sí folio → pad izquierda a 20
     if not s and f:
         return f[:20].rjust(20)
-
-    # caso 2: hay serie → normal concatenación sin padding especial
+    # caso 2: hay serie → normal concatenación (máx 20)
     if s:
         return (s + f)[:20]
-
-    # caso 3: no hay serie ni folio → usar uuid
+    # caso 3: no hay serie ni folio → usar solo 8 del uuid (sin guiones)
     u = _clean_txt(uuid).upper().replace("-", "")
-    return u[:20]
-
-
+    if u:
+        return u[:8]
+    # fallback: nada de nada
+    return " " * 20
 
 def _conn_sae_from_secrets(secrets) -> fdb.Connection:
     cfg = secrets["FIREBIRD_BIO_SAE"]

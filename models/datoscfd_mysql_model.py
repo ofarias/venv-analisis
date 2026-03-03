@@ -12,38 +12,87 @@ def _uuid_norm_series(s: pd.Series) -> pd.Series:
 
 
 def obtener_datoscfd_mysql_df(
-    *,
-    fecha_desde: Optional[str] = None,
-    fecha_hasta: Optional[str] = None,
-    limit: Optional[int] = None,
-) -> pd.DataFrame:
-    """
-    trae DATOSCFD completo desde mysql.
-    si pasas fecha_desde/fecha_hasta filtra (si existe columna FECHA_EMISION o FECHA).
-    """
+        filtros: dict | None = None,
+    ) -> pd.DataFrame:
+
+    filtros = filtros or {}
+
     conn = obtener_conexion()
     cur = conn.cursor(dictionary=True)
 
-    where = ["1=1"]
-    params: list[Any] = []
+    where = []
+    params = []
 
-    # como no sé el nombre exacto de fecha, probamos con FECHA_EMISION primero y luego FECHA.
-    # si tu columna es otra, cámbiala aquí.
-    # nota: en mysql no podemos hacer "if column exists" en sql simple,
-    # así que elegimos una: FECHA_EMISION (ajústala a tu esquema real).
-    col_fecha = "FECHA_EMISION"  # <-- ajusta si en tu DATOSCFD se llama distinto
+    # FECHA_DESDE
+    if filtros.get("fecha_desde"):
+        where.append("FECHA_EMISION >= %s")
+        params.append(filtros["fecha_desde"])
 
-    if fecha_desde:
-        where.append(f"{col_fecha} >= %s")
-        params.append(fecha_desde)
+    # FECHA_HASTA (mismo comportamiento que firebird)
+    if filtros.get("fecha_hasta"):
+        where.append("FECHA_EMISION < DATE_ADD(%s, INTERVAL 1 DAY)")
+        params.append(filtros["fecha_hasta"])
 
-    if fecha_hasta:
-        where.append(f"{col_fecha} <= %s")
-        params.append(fecha_hasta)
+    # RFC_EMISOR
+    if filtros.get("rfc_emisor"):
+        where.append("UPPER(RFC_EMISOR) LIKE CONCAT('%%', UPPER(%s), '%%')")
+        params.append(filtros["rfc_emisor"][:13])
 
-    sql = f"select * from DATOSCFD where {' and '.join(where)}"
-    if limit is not None:
-        sql += f" limit {int(limit)}"
+    # NOMBRE_EMISOR
+    if filtros.get("nombre_emisor"):
+        where.append("UPPER(NOMBRE_EMISOR) LIKE CONCAT('%%', UPPER(%s), '%%')")
+        params.append(filtros["nombre_emisor"][:120])
+
+    # FOLIO
+    if filtros.get("folio"):
+        where.append("FOLIO LIKE CONCAT('%%', %s, '%%')")
+        params.append(filtros["folio"][:20])
+
+    # TIPO
+    if filtros.get("tipo"):
+        where.append("UPPER(TIPOCOMPROBANTE) = UPPER(%s)")
+        params.append(filtros["tipo"][:20])
+
+    # RFC_RECEPTOR
+    if filtros.get("rfc_receptor"):
+        where.append("UPPER(RFC_RECEPTOR) LIKE CONCAT('%%', UPPER(%s), '%%')")
+        params.append(filtros["rfc_receptor"][:13])
+
+    # TOTAL > 0
+    where.append("TOTAL > 0")
+
+    where_sql = ""
+    if where:
+        where_sql = "WHERE " + " AND ".join(where)
+
+    sql = f"""
+        SELECT
+            ID_DOCTODIG,
+            FECHA_EMISION,
+            UUID,
+            TIPOCOMPROBANTE,
+            SERIE,
+            FOLIO,
+            RFC_EMISOR,
+            NOMBRE_EMISOR,
+            RFC_RECEPTOR,
+            NOMBRE_RECEPTOR,
+            MONEDA,
+            TIPOCAMBIO,
+            TOTAL,
+            TOTAL * TIPOCAMBIO AS TOTAL_MXN,
+            ESTADO_SAT,
+            ESTADO_CFD,
+            FECHA_TIMBRADO,
+            FECHA_CANCELACION,
+            CONCAT(usocfdi_, ' - ', USOCFDI) AS uso_cfdi,
+            usocfdi_,
+            CONCAT(metodopago_, ' - ', METODOPAGO) AS metodo_pago,
+            CONCAT(formapago_, ' - ', FORMAPAGO) AS forma_pago
+        FROM DATOSCFD
+        {where_sql}
+        ORDER BY FECHA_EMISION DESC, ID_DOCTODIG DESC
+    """
 
     cur.execute(sql, tuple(params))
     rows = cur.fetchall()
@@ -52,11 +101,9 @@ def obtener_datoscfd_mysql_df(
     conn.close()
 
     df = pd.DataFrame(rows) if rows else pd.DataFrame()
-    #st.write(f"Datos CFD desde MySQL: {df} registros obtenidos.")
-    #st.write(df)
 
     if not df.empty and "UUID" in df.columns:
-        df["_UUID_NORM"] = _uuid_norm_series(df["UUID"])
+        df["_UUID_NORM"] = df["UUID"].astype(str).str.strip().str.upper()
     else:
         df["_UUID_NORM"] = ""
 

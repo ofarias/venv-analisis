@@ -130,7 +130,9 @@ def buscar_documentos(secrets, filtros, paginacion):
       c.FECHA_TIMBRADO,
       c.FECHA_CANCELACION, 
       c.usocfdi_ ||' - '|| c.USOCFDI as uso_cfdi,
-      c.usocfdi_
+      c.usocfdi_,
+      c.metodopago_ ||' - '|| c.METODOPAGO as metodo_pago,
+      c.formapago_ ||' - '|| c.FORMAPAGO as forma_pago
     from DATOSCFD c
     {where_sql} 
     and total > 0

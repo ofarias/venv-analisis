@@ -275,6 +275,70 @@ def parse_cfdi_to_datoscfd(xml_bytes: bytes) -> Dict[str, Any]:
 
     return data
 
+    #### NORMALIZAMOS PARA DATOSCFD
+
+
+TIPO_COMPROBANTE_MAP = {
+    "I": "Ingreso",
+    "E": "Egreso",
+    "N": "Nómina",
+    "P": "Pago",
+    "T": "Traslado",
+}
+
+METODO_PAGO_MAP = {
+    "PUE": "Pago en una sola exhibición",
+    "PPD": "Pago en parcialidades o diferido",
+}
+
+FORMA_PAGO_MAP = {
+    "01": "Efectivo",
+    "03": "Transferencia electrónica de fondos",
+    "04": "Tarjeta de crédito",
+    "05": "Monedero electrónico",
+    "06": "Dinero electrónico",
+    "15": "Condonación",
+    "17": "Compensación",
+    "28": "Tarjeta de débito",
+    "29": "Tarjeta de servicios",
+    "30": "Aplicación de anticipos",
+    "31": "Intermediario pagos",
+    "99": "Por definir",
+}
+
+def _norm_code(x: Any) -> str:
+    return ("" if x is None else str(x)).strip().upper()
+
+def normalizar_antes_upsert(data: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(data or {})
+
+    # tipocomprobante: letra -> texto
+    tc = _norm_code(data.get("tipocomprobante"))
+    if tc in TIPO_COMPROBANTE_MAP:
+        data["tipocomprobante"] = TIPO_COMPROBANTE_MAP[tc]
+    else:
+        # si ya viene como "Ingreso", "Egreso", etc, se respeta
+        data["tipocomprobante"] = (data.get("tipocomprobante") or "").strip()
+
+    # metodopago: usar metodopago_ (código) para llenar metodopago (texto)
+    mp_code = _norm_code(data.get("metodopago_") or data.get("metodopago"))
+    if mp_code in METODO_PAGO_MAP:
+        data["metodopago"] = METODO_PAGO_MAP[mp_code]
+        data["metodopago_"] = mp_code
+    else:
+        data["metodopago"] = (data.get("metodopago") or "").strip()
+
+    # formapago: usar formapago_ (código) para llenar formapago (texto)
+    fp_code = _norm_code(data.get("formapago_") or data.get("formapago"))
+    if fp_code in FORMA_PAGO_MAP:
+        data["formapago"] = FORMA_PAGO_MAP[fp_code]
+        data["formapago_"] = fp_code
+    else:
+        data["formapago"] = (data.get("formapago") or "").strip()
+
+    return data
+
+
 
 def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
     conn = None
@@ -282,7 +346,7 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         conn = obtener_conexion()
         cursor = conn.cursor()
-
+        data = normalizar_antes_upsert(data)
         sql = """
         INSERT INTO DATOSCFD (
             UUID, RFC_EMISOR, RFC_RECEPTOR, FECHA_EMISION,
@@ -297,7 +361,8 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             TOTAL_TRASLADO_BASE_IVA0, TOTAL_TRASLADOS_IMPUESTO_IVA0,
             TOTAL_TRASLADO_BASE_IVA_EXENTO,
             BASE_TASA_16, BASE_TASA_8, BASE_TASA_0, BASE_TASA_EXENTO,
-            IVA_TASA_16, IVA_TASA_8
+            IVA_TASA_16, IVA_TASA_8,
+            FORMAPAGO_, METODOPAGO_
         ) VALUES (
             %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
@@ -311,7 +376,8 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             %s, %s,
             %s,
             %s, %s, %s, %s,
-            %s, %s
+            %s, %s,
+            %s, %s 
         )
         ON DUPLICATE KEY UPDATE
             RFC_EMISOR = VALUES(RFC_EMISOR),
@@ -358,7 +424,9 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             BASE_TASA_0 = VALUES(BASE_TASA_0),
             BASE_TASA_EXENTO = VALUES(BASE_TASA_EXENTO),
             IVA_TASA_16 = VALUES(IVA_TASA_16),
-            IVA_TASA_8 = VALUES(IVA_TASA_8)
+            IVA_TASA_8 = VALUES(IVA_TASA_8),
+            FORMAPAGO_ = VALUES(FORMAPAGO_),
+            METODOPAGO_ = VALUES(METODOPAGO_)
         """
 
         params = (
@@ -408,6 +476,8 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
             data.get("base_tasa_exento"),
             data.get("iva_tasa_16"),    # cambio 2
             data.get("iva_tasa_8"),
+            data.get("formapago_"),
+            data.get("metodopago_")
         )
 
         cursor.execute(sql, params)

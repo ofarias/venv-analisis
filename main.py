@@ -129,6 +129,7 @@ else:
         menu_opciones["Tablero CFDI"] = "tab_cfdi"        
         menu_opciones[" Dashboard Prorrateos"] = "dash_prorrateos"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
+        menu_opciones["Solicitudes"] = "solicitudes"
 
     if "Auxiliar Contable" in roles:
         menu_opciones["Dashboard Auxiliar Contable"] = "auxconta"
@@ -143,6 +144,9 @@ else:
         menu_opciones["🧑🏻‍💻 Navegar"] = "navegar"
         menu_opciones["Administracion de Presupuestos"] = "presupuestos"
         menu_opciones["💸 Registro de Gastos"] = "regGasto"
+
+    if "Compras" in roles:
+        menu_opciones["Solicitudes"] = "solicitudes"
 
 
     if menu_opciones:

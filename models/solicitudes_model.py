@@ -954,3 +954,58 @@ def eliminar_solicitud_model(*, solicitud_id: int, usuario_id: int) -> None:
         except Exception:
             pass
         conn.close()
+
+def get_dispersion_flags(solicitud_id: int) -> Dict[str, Any]:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        sql = """
+            SELECT
+              COALESCE(conta_disp_gasolina, 0) AS disp_gasolina,
+              COALESCE(conta_disp_prepagados, 0) AS disp_prepagados
+            FROM solicitudes
+            WHERE id = %s
+            LIMIT 1
+        """
+        cur.execute(sql, (int(solicitud_id),))
+        row = cur.fetchone() or {}
+        return row
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def set_dispersion_flag(solicitud_id: int, flag: str, value: bool, user_id: int) -> bool:
+    flag = (flag or "").strip().lower()
+    if flag not in ("disp_gasolina", "disp_prepagados"):
+        return False
+
+    col = "conta_disp_gasolina" if flag == "disp_gasolina" else "conta_disp_prepagados"
+
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        sql = f"""
+            UPDATE solicitudes
+            SET {col} = %s,
+                conta_disp_updated_by = %s,
+                conta_disp_updated_at = NOW()
+            WHERE id = %s
+            LIMIT 1
+        """
+        cur.execute(sql, (1 if value else 0, int(user_id), int(solicitud_id)))
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

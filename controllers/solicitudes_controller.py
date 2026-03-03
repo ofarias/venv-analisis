@@ -27,7 +27,10 @@ from models.solicitudes_model import (
     get_formas_pago_usuario_rows,
     upsert_formas_pago_usuario_rows,
     desactivar_formas_pago_usuario_ids,
+    get_dispersion_flags,
+    set_dispersion_flag,
 )
+
 
 from models.sae45_model import buscar_clientes_sae
 
@@ -334,4 +337,9 @@ def eliminar_solicitud_ctrl(solicitud_id: int, usuario_id: int) -> None:
     # aquí solo orquestas, la validación fuerte debe vivir en el model
     from models.solicitudes_model import eliminar_solicitud_model
     eliminar_solicitud_model(solicitud_id=solicitud_id, usuario_id=usuario_id)
-    
+
+def get_dispersion_flags_ctrl(solicitud_id: int) -> dict:
+    return get_dispersion_flags(int(solicitud_id))
+
+def set_dispersion_flag_ctrl(solicitud_id: int, flag: str, value: bool, user_id: int) -> bool:
+    return set_dispersion_flag(int(solicitud_id), str(flag), bool(value), int(user_id))

@@ -198,6 +198,7 @@ def preparar_docs_ada_con_mysql(
         fecha_desde: str | None,
         fecha_hasta: str | None,
         limit: int | None = None,
+        filtros: dict | None = None,
     ) -> pd.DataFrame:
     """
     - carga mysql (DATOSCFD)
@@ -213,9 +214,7 @@ def preparar_docs_ada_con_mysql(
     df_mysql = pd.DataFrame()
     try:
         df_mysql = obtener_datoscfd_mysql_df(
-            fecha_desde=fecha_desde,
-            fecha_hasta=fecha_hasta,
-            limit=limit,
+            filtros=filtros,
         )
     except Exception:
         df_mysql = pd.DataFrame()
@@ -365,6 +364,7 @@ def cargar_documentos_con_mysql(_secrets, filtros: Dict[str, Any], page: int, pa
         fecha_desde=filtros.get("fecha_desde"),
         fecha_hasta=filtros.get("fecha_hasta"),
         limit=None,
+        filtros=filtros,
     )
 
     # si quieres que aquí mismo se filtre a g03 (y ya no en el view), descomenta:

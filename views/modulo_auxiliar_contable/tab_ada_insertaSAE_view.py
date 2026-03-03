@@ -48,6 +48,14 @@ def _first_series(dframe: pd.DataFrame, candidates):
             return dframe[c]
     return pd.Series(index=dframe.index, dtype="object")
 
+def _style_en_sae(series: pd.Series) -> list[str]:
+    styles = []
+    for v in series:
+        if bool(v):
+            styles.append("background-color:#ffe082; color:black;")  # amarillo suave
+        else:
+            styles.append("")
+    return styles
 
 def insertarSAE():
     # --- defaults pedidos ---
@@ -109,6 +117,7 @@ def insertarSAE():
     try:
         #df = cargar_documentos(st.secrets, filtros, page, page_size)
         df = cargar_documentos_con_mysql(st.secrets, filtros, page, page_size)
+        
         if not df.empty:
             col_usocfdi = next((c for c in df.columns if c.lower() == "usocfdi_"), None)
             if col_usocfdi:
@@ -285,10 +294,19 @@ def insertarSAE():
     df = df.copy()
     df["_UUID_ADA"] = df.get("UUID", "").astype(str).str.upper().str.strip()
 
-    antes = len(df)
-    df = df[~df["_UUID_ADA"].isin(uuids_en_sae)].copy()
-    st.caption(f"filtrados por app_uuid ya insertados en paga_m01: {antes - len(df)}")
-    
+    #antes = len(df)
+    #df = df[~df["_UUID_ADA"].isin(uuids_en_sae)].copy()
+    #st.caption(f"filtrados por app_uuid ya insertados en paga_m01: {antes - len(df)}")
+    ### Quitar el filtro y mostrar quiénes son (para diagnóstico)
+
+    df = df.copy()
+    df["_UUID_ADA"] = df.get("UUID", "").astype(str).str.upper().str.strip()
+
+    df["YA_INSERTADO_SAE"] = df["_UUID_ADA"].isin(uuids_en_sae)
+    #####
+
+    n_ya = int(df["YA_INSERTADO_SAE"].sum())
+    st.caption(f"ya insertados en sae (por app_uuid en paga_m01): {n_ya} de {len(df)}")
 
     # MATCH 1: CVE_PROV + REFER
     m1 = df.merge(
@@ -394,6 +412,14 @@ def insertarSAE():
     ], inplace=True, errors="ignore")
 
     df_cmp = m1
+
+    # formapago / metodopago (soporta varias llaves) -> sobre df_cmp
+    fp = _first_series(df_cmp, ["FORMAPAGO", "FORMA_PAGO", "FORMADEPAGO", "forma_pago", "FORMA_PAGO"]).fillna("")
+    mp = _first_series(df_cmp, ["METODOPAGO", "METODO_PAGO", "METODODEPAGO", "metodo_pago", "METODO_PAGO"]).fillna("")
+
+    df_cmp["FORMAPAGO"] = fp.astype(str).str.strip().str.upper()
+    df_cmp["METODOPAGO"] = mp.astype(str).str.strip().str.upper()
+
     if "EN_SAE" not in df_cmp.columns:
         df_cmp["EN_SAE"] = False
 
@@ -438,12 +464,14 @@ def insertarSAE():
     if "ID_DOCTODIG" in df_cmp.columns:
         df_cmp["ID_DOCTODIG"] = pd.to_numeric(df_cmp["ID_DOCTODIG"], errors="coerce").astype("Int64") 
     
+    # formapago / metodopago (soporta varias llaves)
+    
     # columnas visibles (ajusta si te falta alguna)
     visible_cols = [
-        "DESTINO_SAE","INSERTAR","FECHA_EMISION","CVE_PROV_MATCH","CLAVE_PROV_SAE",
+        "DESTINO_SAE","INSERTAR","EN_SAE","FECHA_EMISION","CVE_PROV_MATCH","CLAVE_PROV_SAE",
         "RFC_EMISOR","NOMBRE_EMISOR","SERIE","FOLIO",
-        "MONEDA","TOTAL","TIPOCAMBIO","TOTAL_MXN","USOCFDI_","UUID",
-        "EN_SAE","REFER_SAE","NO_FACTURA_SAE","ID_DOCTODIG",
+        "MONEDA","TOTAL","TIPOCAMBIO","TOTAL_MXN","USOCFDI_","UUID","METODOPAGO","FORMAPAGO",
+        "REFER_SAE","NO_FACTURA_SAE","ID_DOCTODIG", "TIPOCOMPROBANTE"
     ]
     visible_cols = [c for c in visible_cols if c in df_cmp.columns]
 
@@ -452,8 +480,17 @@ def insertarSAE():
     # dejar solo INSERTAR editable, todo lo demás solo lectura
     disabled_cols = [c for c in visible_cols if c != "INSERTAR"]
 
+    sty = df_cmp[visible_cols].style
+
+    if "RFC_EMISOR" in visible_cols:
+        sty = sty.apply(_style_rfc, subset=["RFC_EMISOR"])
+
+    if "EN_SAE" in visible_cols:
+        sty = sty.apply(_style_en_sae, subset=["EN_SAE"])
+
     df_edit = st.data_editor(
-        df_cmp[visible_cols].style.apply(_style_rfc, subset=["RFC_EMISOR"]),
+        #df_cmp[visible_cols].style.apply(_style_rfc, subset=["RFC_EMISOR"]),
+        sty,
         hide_index=True,
         use_container_width=True,
         disabled=disabled_cols,
@@ -669,6 +706,10 @@ def insertarSAE():
                 tcambio = doc_sel.get("TIPOCAMBIO", 1.0)
                 impext = doc_sel.get("TOTAL", 0.0)
 
+                if bool(doc_sel.get("EN_SAE")):
+                    st.warning("este documento ya fue detectado en SAE.")
+                    st.stop()
+
                 try:
                     res = insertar_en_sae_por_uso(
                         st.secrets,
@@ -709,7 +750,8 @@ def insertarSAE():
     with col_a:
         if st.button("exportar a excel", key="btn_exportar"):
             try:
-                xlsx = exportar_excel(df)
+                df_export = df_cmp[visible_cols].copy()
+                xlsx = exportar_excel(df_export)
                 st.download_button(
                     "descargar documentos.xlsx",
                     data=xlsx,
