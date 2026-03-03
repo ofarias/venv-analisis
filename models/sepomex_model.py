@@ -25,9 +25,8 @@ def get_sepomex_ciudades_catalogo_rows(limit: int = 200000) -> List[Dict[str, An
               and d_codigo is not null and trim(d_codigo) <> ''
               and d_asenta is not null and trim(d_asenta) <> ''
             order by d_estado, d_ciudad, d_codigo, d_asenta
-            limit %s
         """
-        cur.execute(sql, (int(limit),))
+        cur.execute(sql,)
         rows = cur.fetchall()
 
         out: List[Dict[str, Any]] = []

@@ -21,27 +21,26 @@ from controllers.solicitudes_controller import (
     get_datoscfd_by_uuid_ctrl,
     uuid_ya_usado_ctrl,
     get_formas_pago_usuario_ctrl,
+    buscar_clientes_sae_ctrl,
+    eliminar_solicitud_ctrl,
 )
 
 from controllers.datoscfd_controller import registrar_cfdi_desde_xml
 from models.datoscfd_model import guardar_pdf_datoscfd, extraer_uuid_desde_pdf
 from utils.envio_correo import enviar_correo
-from controllers.solicitudes_controller import buscar_clientes_sae_ctrl
-
 from controllers.sepomex_controller import get_sepomex_ciudades_catalogo_ctrl
-from controllers.solicitudes_controller import eliminar_solicitud_ctrl
+
 
 def _split_clientes_texto(s: str) -> list[str]:
     if not s:
         return []
-    # permite coma o salto de línea
     parts = re.split(r"[,\n]+", str(s))
     out = []
     for p in parts:
         v = p.strip()
         if v:
             out.append(v)
-    # únicos preservando orden
+
     uniq = []
     seen = set()
     for x in out:
@@ -56,6 +55,7 @@ def _split_clientes_texto(s: str) -> list[str]:
 def _join_clientes(items: list[str]) -> str:
     items = [str(x).strip() for x in (items or []) if str(x).strip()]
     return ", ".join(items)
+
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -148,12 +148,12 @@ def _defaults_row():
         "fecha_gasto": date.today(),
         "concepto": "",
         "uuid": "",
-        "descripcion": "",  # observaciones
+        "descripcion": "",
         "cantidad": 1,
         "precio_unitario": 0,
         "importe": 0,
-        "usuario_forma_pago_id": None,  # id real
-        "pagado_con": "",  # etiqueta visible
+        "usuario_forma_pago_id": None,
+        "pagado_con": "",
         "proveedor": "",
         "receptor": "",
         "serie": "",
@@ -279,33 +279,20 @@ def _fmt_money(x) -> str:
         v = float(x or 0)
     except Exception:
         v = 0.0
-    # miles con coma y punto decimal (1,234.56)
     return f"{v:,.2f}"
 
+
 def _monto_para_correo(r: dict) -> float:
-    # regla: si existe total_xml úsalo, si no, usa estimado = cantidad * precio_unitario
     total_xml = _to_float(r.get("total_xml"))
     if total_xml > 0:
         return total_xml
 
     cant = _to_float(r.get("cantidad"))
-    pu = _to_float(r.get("precio_unitario"))  # gasto estimado
+    pu = _to_float(r.get("precio_unitario"))
     return round(cant * pu, 2)
 
 
-def _fmt_num(x) -> str:
-    try:
-        if x is None:
-            x = 0.0
-        return f"{float(x):, .2f}".replace(" ", "")
-    except Exception:
-        return "0.00"
-
-
 def _get_prepago_map():
-    """
-    mapa concepto -> prepago (1 = prepago, 0 = no)
-    """
     import mysql.connector
     from database.conexion import obtener_conexion
 
@@ -336,10 +323,10 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
         s = "" if s is None else str(s)
         return (
             s.replace("&", "&amp;")
-             .replace("<", "&lt;")
-             .replace(">", "&gt;")
-             .replace('"', "&quot;")
-             .replace("'", "&#39;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&#39;")
         )
 
     def _fecha_iso(v):
@@ -367,10 +354,12 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
         if not filas:
             return f"<p><b>{esc(titulo)}</b>: sin registros.</p>"
 
-        th = "".join([
-            f"<th style='border:1px solid #ddd;padding:6px;text-align:left;background:#f7f7f7'>{esc(t)}</th>"
-            for _, t in cols
-        ])
+        th = "".join(
+            [
+                f"<th style='border:1px solid #ddd;padding:6px;text-align:left;background:#f7f7f7'>{esc(t)}</th>"
+                for _, t in cols
+            ]
+        )
 
         subtotal = 0.0
         trs = []
@@ -383,7 +372,9 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
             for k, _t in cols:
                 if k == "_monto":
                     v = _fmt_money(monto)
-                    tds.append(f"<td style='border:1px solid #ddd;padding:6px;text-align:right'>{esc(v)}</td>")
+                    tds.append(
+                        f"<td style='border:1px solid #ddd;padding:6px;text-align:right'>{esc(v)}</td>"
+                    )
                     continue
 
                 v = r.get(k, "")
@@ -393,19 +384,22 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
 
                 if k in ("precio_unitario",):
                     v = _fmt_money(_to_float(v))
-                    tds.append(f"<td style='border:1px solid #ddd;padding:6px;text-align:right'>{esc(v)}</td>")
+                    tds.append(
+                        f"<td style='border:1px solid #ddd;padding:6px;text-align:right'>{esc(v)}</td>"
+                    )
                     continue
 
                 if k in ("cantidad",):
                     v = str(_to_int(v))
-                    tds.append(f"<td style='border:1px solid #ddd;padding:6px;text-align:right'>{esc(v)}</td>")
+                    tds.append(
+                        f"<td style='border:1px solid #ddd;padding:6px;text-align:right'>{esc(v)}</td>"
+                    )
                     continue
 
                 tds.append(f"<td style='border:1px solid #ddd;padding:6px'>{esc(v)}</td>")
 
             trs.append("<tr>" + "".join(tds) + "</tr>")
 
-        # fila subtotal
         colspan = len(cols) - 1
         trs.append(
             "<tr>"
@@ -417,12 +411,15 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
         return (
             f"<p><b>{esc(titulo)}</b></p>"
             "<table style='border-collapse:collapse;width:100%'>"
-            "<thead><tr>" + th + "</tr></thead>"
-            "<tbody>" + "".join(trs) + "</tbody>"
+            "<thead><tr>"
+            + th
+            + "</tr></thead>"
+            "<tbody>"
+            + "".join(trs)
+            + "</tbody>"
             "</table>"
         )
 
-    # separar filas
     prepagados = []
     por_comprobar = []
 
@@ -434,9 +431,8 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
             por_comprobar.append(r)
 
     html_pre = _render_tabla("detalle de gastos prepagados", prepagados)
-    html_no  = _render_tabla("detalle de gastos por comprobar", por_comprobar)
+    html_no = _render_tabla("detalle de gastos por comprobar", por_comprobar)
 
-    # total general (suma de ambos)
     total_general = sum(_monto_para_correo(r) for r in rows)
     html_total = (
         "<p style='margin-top:10px'>"
@@ -445,6 +441,7 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
     )
 
     return html_pre + "<br>" + html_no + html_total
+
 
 def mostrar_tab_solicitudes_gastos():
     st.subheader("solicitudes de gastos")
@@ -473,6 +470,25 @@ def mostrar_tab_solicitudes_gastos():
                 st.session_state["sg_selected_id"] = None
                 st.warning("no tienes acceso a esa solicitud")
                 st.rerun()
+
+    # ---------------------------------------------
+    # precarga catálogos necesarios para defaults
+    # ---------------------------------------------
+    sep_rows = get_sepomex_ciudades_catalogo_ctrl(limit=20000) or []
+    sep_opts = [
+        (r["d_codigo"], r["d_asenta"], r["d_estado"], r["d_ciudad"])
+        for r in sep_rows
+        if r.get("d_codigo") is not None
+    ]
+
+    def _to_store(opt):
+        d_codigo, d_asenta, d_estado, d_ciudad = opt
+        return f"{d_codigo} | {d_asenta} | {d_estado} | {d_ciudad}"
+
+    def _fmt_sep(opt):
+        d_codigo, d_asenta, d_estado, d_ciudad = opt
+        return f"{d_codigo} | {d_asenta} | {d_estado} | {d_ciudad}"
+
     # -------------------------------------------------
     # cargar cabecera en session_state al cambiar solicitud
     # -------------------------------------------------
@@ -481,8 +497,7 @@ def mostrar_tab_solicitudes_gastos():
 
     if solicitud and st.session_state["sg_head_loaded_id"] != int(selected_id):
         st.session_state["sg_empleado_id"] = int(solicitud.get("empleado_id") or usuario["id"])
-        st.session_state["sg_clientes"] = str(solicitud.get("clientes") or "")
-        st.session_state["sg_ciudades"] = str(solicitud.get("ciudades") or "")
+        st.session_state["sg_clientes_texto"] = str(solicitud.get("clientes") or "")
         st.session_state["sg_objetivo"] = str(solicitud.get("objetivo") or "")
 
         fi = solicitud.get("fecha_inicio")
@@ -492,17 +507,26 @@ def mostrar_tab_solicitudes_gastos():
         except Exception:
             st.session_state["sg_fecha_ini"] = date.today()
         try:
-            st.session_state["sg_fecha_fin"] = pd.to_datetime(ff, errors="coerce").date() if ff else date.today()
+            st.session_state["sg_fecha_fin"] = pd.to_datetime(ff, errors="coerce").date() if ff else st.session_state["sg_fecha_ini"]
         except Exception:
-            st.session_state["sg_fecha_fin"] = date.today()
+            st.session_state["sg_fecha_fin"] = st.session_state["sg_fecha_ini"]
 
         st.session_state["sg_hora_salida"] = _to_time(solicitud.get("hora_salida")) or _hora_default(5, 0)
         st.session_state["sg_hora_regreso"] = _to_time(solicitud.get("hora_regreso")) or _hora_default(19, 0)
 
-        st.session_state["sg_head_loaded_id"] = int(selected_id)
-    
+        # clientes catálogo (solo ayuda)
+        st.session_state["sg_clientes_sel"] = []
 
-    usuarios = get_usuarios_activos_ctrl()
+        # ciudades: precargar desde texto guardado en bd a lista de tuplas
+        ciudades_prev = (solicitud.get("ciudades") or "")
+        prev_list = [x.strip() for x in ciudades_prev.replace("\n", ",").split(",") if x.strip()]
+        prev_set = set([x.upper() for x in prev_list])
+        default_ciudades = [opt for opt in sep_opts if _to_store(opt).upper() in prev_set]
+        st.session_state["sg_ciudades_sel"] = default_ciudades
+
+        st.session_state["sg_head_loaded_id"] = int(selected_id)
+
+    usuarios = get_usuarios_activos_ctrl() or []
     usuarios_map = {u["id"]: u for u in usuarios}
 
     st.caption("cabecera")
@@ -513,47 +537,34 @@ def mostrar_tab_solicitudes_gastos():
     else:
         st.text_input("folio", value="(se genera al guardar)", disabled=True)
 
-    empleado_default = (
-        solicitud["empleado_id"] if solicitud else (usuario["id"] if usuario else None)
-    )
-    ids_usuarios = [u["id"] for u in usuarios]
+    empleado_default = solicitud["empleado_id"] if solicitud else (usuario["id"] if usuario else None)
+    ids_usuarios = [u["id"] for u in usuarios] if usuarios else []
     idx_default = ids_usuarios.index(empleado_default) if empleado_default in ids_usuarios else 0
 
-    ### manejo de roles y estatus para mostrar/activar botones de acción
     roles = [str(x).strip().lower() for x in (usuario.get("roles", []) or [])]
-    is_admin = str(usuario.get("roles") or "").strip().lower() == "admin"  # si todavía lo usas
-    is_jefe_ventas = "jefe ventas" in roles
-    is_conta = "contabilidad" in roles
-
     estatus_actual = (solicitud["estatus"] if solicitud else "captura") if modo == "editar" else "captura"
 
-    # permisos por estatus (según tu regla)
     puede_editar_cabecera = estatus_actual in ("captura", "rechazada")
-    puede_editar_detalle  = estatus_actual in ("captura", "rechazada", "autorizada ventas")
-    # en "captura" se pueden estimados/prepagos; si eso es otra sección la amarras a este flag:
+    puede_editar_detalle = estatus_actual in ("captura", "rechazada", "autorizada ventas")
     puede_prepagos_estimados = estatus_actual == "captura"
-
-
-    ### finaliza el estatus y roles para mostrar/activar botones de acción
 
     empleado_id = st.selectbox(
         "empleado",
         options=ids_usuarios,
         format_func=lambda _id: f"{usuarios_map[_id]['nombre']} ({usuarios_map[_id]['rol']})",
         index=idx_default,
-        disabled=not puede_editar_cabecera, key="sg_empleado_id"
+        disabled=not puede_editar_cabecera,
+        key="sg_empleado_id",
     )
     empleado_nombre = usuarios_map[empleado_id]["nombre"]
 
-    c3, c4, c5 = st.columns([3,1,1])
+    c3, c4, c5 = st.columns([3, 1, 1])
+
     with c3:
         # --- clientes: catálogo sae + libre ---
-        clientes_base = (solicitud.get("clientes") or "") if solicitud else ""
-        st.session_state.setdefault("sg_clientes_texto", clientes_base)
         q_cli = ""
         sae_rows = buscar_clientes_sae_ctrl(q=q_cli, limit=50) if (q_cli or "").strip() else buscar_clientes_sae_ctrl(q="", limit=50)
 
-        # label visible sin limitar el guardado
         sae_opts = []
         for r in (sae_rows or []):
             clave = (r.get("clave") or "").strip()
@@ -565,65 +576,37 @@ def mostrar_tab_solicitudes_gastos():
             elif nombre:
                 sae_opts.append(nombre)
 
-        # multiselect solo para “ayuda”, no restringe
-        seleccion = st.multiselect(
+        st.multiselect(
             "clientes (selecciona del catálogo si aplica)",
             options=sae_opts,
-            default=[],
             key="sg_clientes_sel",
             disabled=not puede_editar_cabecera,
         )
 
-        # normaliza selección: si viene "clave - nombre", guardamos el mismo string (o si quieres solo clave lo ajusto)
-        seleccion_norm = [str(x).strip() for x in (seleccion or []) if str(x).strip()]
-
-        # dentro de c3 donde capturas clientes/ciudades/objetivo (reemplaza ciudades)
-        sep_rows = get_sepomex_ciudades_catalogo_ctrl(limit=20000)
-
-        # cada opción será una tupla estable (para que streamlit no se “confunda” en reruns)
-        sep_opts = [
-            (r["d_codigo"], r["d_asenta"], r["d_estado"], r["d_ciudad"])
-            for r in (sep_rows or [])
-        ]
-
-        def _fmt_sep(opt):
-            d_codigo, d_asenta, d_estado, d_ciudad = opt
-            return f"{d_codigo} | {d_asenta} | {d_estado} | {d_ciudad}"
-
-        # si estás editando, intenta precargar por coincidencia de "ciudad, estado"
-        ciudades_prev = (solicitud["ciudades"] or "") if solicitud else ""
-        prev_list = [x.strip() for x in ciudades_prev.replace("\n", ",").split(",") if x.strip()]
-        prev_set = set([x.upper() for x in prev_list])
-
-        def _to_store(opt):
-            d_codigo, d_asenta, d_estado, d_ciudad = opt
-            return f"{d_codigo} | {d_asenta} | {d_estado} | {d_ciudad}"
-
-        default_sel = [opt for opt in sep_opts if _to_store(opt).upper() in prev_set]
-
-        ciudades_sel = st.multiselect(
-            "Ciudades se muestran por (CP - asentamiento - estado - ciudad)",
+        # ciudades multiselect (tuplas estables)
+        st.multiselect(
+            "ciudades se muestran por (cp - asentamiento - estado - ciudad)",
             options=sep_opts,
-            default=default_sel,
             format_func=_fmt_sep,
             key="sg_ciudades_sel",
+            disabled=not puede_editar_cabecera,
         )
 
-        # string final a guardar en la bd (coma-separado)
+        ciudades_sel = st.session_state.get("sg_ciudades_sel") or []
         ciudades = ", ".join([_to_store(opt) for opt in ciudades_sel])
 
-        # textarea libre (aquí puedes pegar cualquier cliente que no exista en sae)
-        texto = st.text_area(
+        # texto libre clientes
+        st.text_area(
             "clientes (texto libre, separados por coma o enter)",
-            value=st.session_state.get("sg_clientes_texto", ""),
             height=90,
             key="sg_clientes_texto",
             disabled=not puede_editar_cabecera,
         )
 
-        libres = _split_clientes_texto(texto)
+        # merge catálogo (solo ayuda) + libres
+        seleccion_norm = [str(x).strip() for x in (st.session_state.get("sg_clientes_sel") or []) if str(x).strip()]
+        libres = _split_clientes_texto(st.session_state.get("sg_clientes_texto", "") or "")
 
-        # merge (selección + libres) sin duplicados
         merged = []
         seen = set()
         for x in seleccion_norm + libres:
@@ -633,76 +616,90 @@ def mostrar_tab_solicitudes_gastos():
             seen.add(k)
             merged.append(x)
 
-        # este es el valor final que se guarda en bd
         clientes = _join_clientes(merged)
 
-        #ciudades = st.text_input(
-        #    "ciudad(es)",
-        #    value=(solicitud["ciudades"] or "") if solicitud else "",
-        #    key="sg_ciudades",
-        #    disabled=not puede_editar_cabecera,
-        #)
-
-        objetivo = st.text_area(
+        st.text_area(
             "objetivo",
-            value=(solicitud["objetivo"] or "") if solicitud else "",
             height=120,
             key="sg_objetivo",
             disabled=not puede_editar_cabecera,
         )
-    
+        objetivo = st.session_state.get("sg_objetivo", "") or ""
+
     with c4:
-        
-        fecha_inicio = st.date_input(
-            "fecha inicio",
-            value=(solicitud["fecha_inicio"] if solicitud else date.today()),
-            min_value=date.today(),
-            disabled=not puede_editar_cabecera,
-            key="sg_fecha_ini"
-        )
+        # -----------------------------
+        # clamp de fechas en session_state
+        # -----------------------------
+        st.session_state.setdefault("sg_fecha_ini", date.today())
+        st.session_state.setdefault("sg_fecha_fin", date.today())
 
-        fecha_fin = st.date_input(
-            "fecha fin",
-            value=(solicitud["fecha_fin"] if solicitud else date.today()),
-            disabled=not puede_editar_cabecera,
-            key="sg_fecha_fin",
-        )
+        if puede_editar_cabecera:
+            hoy = date.today()
 
-    with c5: 
+            fi = st.session_state.get("sg_fecha_ini") or hoy
+            if fi < hoy:
+                fi = hoy
+                st.session_state["sg_fecha_ini"] = fi
 
-        hs = _to_time(solicitud["hora_salida"]) if solicitud else None
-        hr = _to_time(solicitud["hora_regreso"]) if solicitud else None
+            ff = st.session_state.get("sg_fecha_fin") or fi
+            if ff < fi:
+                ff = fi
+                st.session_state["sg_fecha_fin"] = ff
+
+            fecha_inicio = st.date_input(
+                "fecha inicio",
+                key="sg_fecha_ini",
+                min_value=hoy,
+                disabled=not puede_editar_cabecera,
+            )
+
+            # después de elegir fecha_inicio, vuelve a asegurar fin >= inicio
+            if (st.session_state.get("sg_fecha_fin") or fecha_inicio) < fecha_inicio:
+                st.session_state["sg_fecha_fin"] = fecha_inicio
+
+            fecha_fin = st.date_input(
+                "fecha fin",
+                key="sg_fecha_fin",
+                min_value=fecha_inicio,
+                disabled=not puede_editar_cabecera,
+            )
+        else:
+            # modo consulta: sin min_value
+            fecha_inicio = st.date_input(
+                "fecha inicio",
+                key="sg_fecha_ini",
+                disabled=True,
+            )
+            fecha_fin = st.date_input(
+                "fecha fin",
+                key="sg_fecha_fin",
+                disabled=True,
+            )
+
+    with c5:
+        st.session_state.setdefault("sg_hora_salida", _hora_default(5, 0))
+        st.session_state.setdefault("sg_hora_regreso", _hora_default(19, 0))
 
         hora_salida = st.time_input(
             "hora salida",
-            value=(hs if hs else _hora_default(5, 0)),
-            disabled=not puede_editar_cabecera,
             key="sg_hora_salida",
+            disabled=not puede_editar_cabecera,
         )
-
         hora_regreso = st.time_input(
             "hora regreso",
-            value=(hr if hr else _hora_default(19, 0)),
-            disabled=not puede_editar_cabecera,
             key="sg_hora_regreso",
+            disabled=not puede_editar_cabecera,
         )
 
-        # -------------------------
-        # VALIDACIÓN CONTRA FECHA CREACIÓN
-        # -------------------------
-
-        if solicitud and solicitud.get("fecha_creacion"):
+        # validación contra fecha creación solo si se puede editar
+        if puede_editar_cabecera and solicitud and solicitud.get("fecha_creacion"):
             fecha_creacion = solicitud["fecha_creacion"]
-
             if isinstance(fecha_creacion, str):
                 fecha_creacion = datetime.fromisoformat(fecha_creacion)
 
-            inicio_datetime = datetime.combine(fecha_inicio, hora_salida)
-
+            inicio_datetime = datetime.combine(st.session_state["sg_fecha_ini"], st.session_state["sg_hora_salida"])
             if inicio_datetime <= fecha_creacion:
-                st.error(
-                    "La fecha y hora de inicio deben ser posteriores a la fecha de creación de la solicitud."
-                )
+                st.error("la fecha y hora de inicio deben ser posteriores a la fecha de creación de la solicitud.")
                 st.stop()
 
     if fecha_inicio > fecha_fin:
@@ -710,12 +707,17 @@ def mostrar_tab_solicitudes_gastos():
         return
 
     st.session_state.setdefault("sg_delete_armed", False)
-    st.session_state.setdefault("sg_delete_target_id", None)    
+    st.session_state.setdefault("sg_delete_target_id", None)
 
-    cbtn1, cbtn2, cbtn3, cbtn4, cbtn5= st.columns([2, 2, 2, 2, 2])
+    cbtn1, cbtn2, cbtn3, cbtn4, cbtn5 = st.columns([2, 2, 2, 2, 2])
 
     if modo == "crear":
-        if cbtn1.button("guardar cabecera", use_container_width=True, disabled=not puede_editar_cabecera, key="sg_btn_save_head_create"):
+        if cbtn1.button(
+            "guardar cabecera",
+            use_container_width=True,
+            disabled=not puede_editar_cabecera,
+            key="sg_btn_save_head_create",
+        ):
             solicitud_id, folio = crear_solicitud_ctrl(
                 empleado_id=int(empleado_id),
                 empleado_nombre=empleado_nombre,
@@ -728,13 +730,66 @@ def mostrar_tab_solicitudes_gastos():
                 objetivo=objetivo.strip() or None,
                 usuario_id=int(usuario["id"]),
             )
+
+            cat = get_conceptos_gasto_ctrl(activo=1) or []
+
+            def _ord_key(r: dict) -> int:
+                v = r.get("orden", None)
+                if v is None:
+                    v = r.get("id", 0)
+                try:
+                    return int(float(v))
+                except Exception:
+                    return 0
+
+            cat_sorted = sorted(cat, key=_ord_key)
+
+            rows_auto = []
+            for r in cat_sorted:
+                concepto = (r.get("concepto") or "").strip()
+                if not concepto:
+                    continue
+                row = _defaults_row()
+                row["fecha_gasto"] = fecha_inicio
+                row["concepto"] = concepto
+                row["cantidad"] = 1
+                row["precio_unitario"] = 0
+                row["importe"] = 0
+                row["usuario_forma_pago_id"] = None
+                rows_auto.append(row)
+
+            if rows_auto:
+                for r in rows_auto:
+                    r.pop("pagado_con", None)
+
+                res_det = guardar_detalle_ctrl(
+                    solicitud_id=int(solicitud_id),
+                    rows=rows_auto,
+                    deleted_ids=[],
+                    usuario_id=int(usuario["id"]),
+                )
+                if not res_det.get("ok"):
+                    st.warning(f"cabecera creada, pero no se pudo crear detalle automático: {res_det.get('msg','')}")
+
             st.success(f"solicitud creada: {folio} (id {solicitud_id})")
             st.session_state["sg_selected_id"] = int(solicitud_id)
             st.session_state["sg_head_loaded_id"] = None
+
+            st.session_state.pop("sg_det_df", None)
+            st.session_state.pop("sg_det_df_solicitud_id", None)
+            st.session_state["sg_uuid_prev"] = {}
+            st.session_state["sg_uuid_cache"] = {}
+            st.session_state.pop("sg_det_editor", None)
+
             st.rerun()
     else:
         if selected_id:
-            if cbtn1.button("guardar cambios cabecera", use_container_width=True, disabled=not puede_editar_cabecera, key="sg_btn_save_head_edit"):
+            if cbtn1.button(
+                "guardar cambios cabecera",
+                use_container_width=True,
+                disabled=not puede_editar_cabecera,
+                key="sg_btn_save_head_edit",
+            ):
                 actualizar_cabecera_ctrl(
                     solicitud_id=int(selected_id),
                     empleado_id=int(empleado_id),
@@ -753,7 +808,6 @@ def mostrar_tab_solicitudes_gastos():
 
             estatus_actual = solicitud["estatus"] if solicitud else ""
 
-            
             if cbtn2.button(
                 "enviar",
                 use_container_width=True,
@@ -762,14 +816,10 @@ def mostrar_tab_solicitudes_gastos():
             ):
                 cambiar_estatus_ctrl(int(selected_id), "enviada", int(usuario["id"]))
 
-                # datos cabecera (usa lo que está en pantalla)
                 folio = str((solicitud or {}).get("folio") or "").strip()
                 asunto = f"solicitud de gastos enviada {folio}".strip() if folio else "solicitud de gastos enviada"
 
-                # detalle desde bd para que sea consistente
                 detalle_rows_mail = get_detalle_ctrl(int(selected_id)) or []
-
-                # catálogo para detectar prepagos (prepago = 1)
                 cat_conceptos_mail = get_conceptos_gasto_ctrl(activo=1) or []
 
                 conceptos_prepago = set()
@@ -778,7 +828,7 @@ def mostrar_tab_solicitudes_gastos():
                     if not c:
                         continue
                     if int(x.get("prepago") or 0) == 1:
-                        conceptos_prepago.add(c)                
+                        conceptos_prepago.add(c)
 
                 cuerpo_html = f"""
                 <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
@@ -834,18 +884,15 @@ def mostrar_tab_solicitudes_gastos():
                 cambiar_estatus_ctrl(int(selected_id), "rechazada", int(usuario["id"]))
                 st.success("estatus actualizado: rechazada")
                 st.rerun()
-            
-            # --- eliminar (solo captura) ---
+
             puede_eliminar = bool(selected_id) and (str(estatus_actual).strip().lower() == "captura")
 
-            # el checkbox debe renderizarse siempre (en este rerun)
-            confirm_delete = cbtn5.checkbox(
+            cbtn5.checkbox(
                 "confirmo eliminar",
                 key="sg_confirm_delete",
                 disabled=not puede_eliminar,
             )
 
-            # el botón usa el valor del checkbox
             with cbtn5:
                 disabled_delete = (not selected_id or estatus_actual != "captura")
 
@@ -860,7 +907,6 @@ def mostrar_tab_solicitudes_gastos():
                         st.session_state["sg_delete_target_id"] = int(selected_id)
                         st.rerun()
                 else:
-                    # si cambió la selección, desarma
                     if st.session_state.get("sg_delete_target_id") != int(selected_id):
                         st.session_state["sg_delete_armed"] = False
                         st.session_state["sg_delete_target_id"] = None
@@ -874,13 +920,11 @@ def mostrar_tab_solicitudes_gastos():
                             eliminar_solicitud_ctrl(int(selected_id), int(usuario["id"]))
                             st.success("solicitud eliminada")
 
-                            # limpiar selección y estados relacionados
                             st.session_state["sg_selected_id"] = None
                             st.session_state["sg_head_loaded_id"] = None
                             st.session_state["sg_delete_armed"] = False
                             st.session_state["sg_delete_target_id"] = None
 
-                            # opcional: limpiar detalle cached
                             st.session_state.pop("sg_det_df", None)
                             st.session_state.pop("sg_det_df_solicitud_id", None)
 
@@ -893,6 +937,10 @@ def mostrar_tab_solicitudes_gastos():
                             st.rerun()
         else:
             st.info("para editar, selecciona una solicitud abajo.")
+
+    # ---------------------------------------------------------------------
+    # desde aquí tu archivo sigue igual (buscar/resultados, importar xml/pdf, detalle, etc.)
+    # ---------------------------------------------------------------------
 
     st.divider()
     st.caption("buscar / resultados")
@@ -928,6 +976,7 @@ def mostrar_tab_solicitudes_gastos():
         )
 
         df = pd.DataFrame(rows)
+
         def _estatus_badge(e):
             e = (e or "").strip().lower()
             if e == "captura":
@@ -942,7 +991,6 @@ def mostrar_tab_solicitudes_gastos():
                 return "⚫ eliminada"
             if e == "cerrada":
                 return "🟣 cerrada"
-            
             return e
 
         if not df.empty and "estatus" in df.columns:
@@ -981,7 +1029,7 @@ def mostrar_tab_solicitudes_gastos():
     if not selected_id:
         st.info("selecciona una solicitud para capturar detalle.")
         return
-    
+
     # ---------------------------------------------------------------------
     # importar xml/pdf a datoscfd (global)
     # ---------------------------------------------------------------------
@@ -1017,7 +1065,6 @@ def mostrar_tab_solicitudes_gastos():
 
         uuid_par = None
 
-        # regla 1: exactamente 1 xml y 1 pdf -> el uuid del xml se asigna al pdf
         if len(xml_files) == 1 and len(pdf_files) == 1:
             try:
                 rxml = registrar_cfdi_desde_xml(xml_bytes=xml_files[0].getvalue(), username=username)
@@ -1055,7 +1102,6 @@ def mostrar_tab_solicitudes_gastos():
             xml_files = []
             pdf_files = []
 
-        # xml restantes
         for f in xml_files:
             try:
                 rxml = registrar_cfdi_desde_xml(xml_bytes=f.getvalue(), username=username)
@@ -1072,7 +1118,6 @@ def mostrar_tab_solicitudes_gastos():
             except Exception as e:
                 errores.append(f"{f.name}: {e}")
 
-        # pdf restantes con regla 2 y 3
         for f in pdf_files:
             try:
                 b = f.getvalue()
@@ -1121,7 +1166,7 @@ def mostrar_tab_solicitudes_gastos():
     st.divider()
 
     # ---------------------------------------------------------------------
-    # detalle
+    # detalle (tu bloque original sigue aquí)
     # ---------------------------------------------------------------------
     st.caption("detalle de gastos")
 
@@ -1162,7 +1207,6 @@ def mostrar_tab_solicitudes_gastos():
     df_edit = _normalize_df(df_det, cols)
     df_edit = _normaliza_sat_campos_en_df(df_edit)
 
-    # carga inicial por solicitud (una sola vez al cambiar solicitud)
     if st.session_state.get("sg_det_df_solicitud_id") != int(selected_id):
         st.session_state["sg_det_df"] = df_edit.copy()
         st.session_state["sg_det_df_solicitud_id"] = int(selected_id)
@@ -1171,7 +1215,6 @@ def mostrar_tab_solicitudes_gastos():
 
     st.session_state.setdefault("sg_det_df", df_edit.copy())
 
-    # catálogo de conceptos
     cat_conceptos = get_conceptos_gasto_ctrl(activo=1)
     conceptos_opts = [
         str(r.get("concepto", "")).strip()
@@ -1188,7 +1231,6 @@ def mostrar_tab_solicitudes_gastos():
     extras = [v for v in valores_actuales if v not in set(conceptos_opts)]
     conceptos_opts_final = conceptos_opts + extras
 
-    # catálogo de formas de pago del empleado seleccionado
     formas = get_formas_pago_usuario_ctrl(int(empleado_id))
     id_to_label = {
         int(x["id"]): str(x.get("etiqueta") or "").strip()
@@ -1215,7 +1257,6 @@ def mostrar_tab_solicitudes_gastos():
             return None
         return int(label_to_id.get(s)) if s in label_to_id else None
 
-    # reconstruye pagado_con desde usuario_forma_pago_id (para mostrar al recargar)
     df_base = st.session_state["sg_det_df"].copy()
     if "usuario_forma_pago_id" not in df_base.columns:
         df_base["usuario_forma_pago_id"] = None
@@ -1244,13 +1285,11 @@ def mostrar_tab_solicitudes_gastos():
             "uuid": st.column_config.TextColumn("uuid"),
             "descripcion": st.column_config.TextColumn("observaciones"),
             "pagado_con": st.column_config.SelectboxColumn("pagado con", options=formas_opts, required=False),
-
             "proveedor": st.column_config.TextColumn("proveedor", disabled=True),
             "fecha_gasto": st.column_config.DateColumn("fecha", disabled=True),
             "cantidad": st.column_config.NumberColumn("cantidad", min_value=0.0, step=1.0),
             "precio_unitario": st.column_config.NumberColumn("gasto estimado", min_value=0.0, step=1.0),
             "importe": st.column_config.NumberColumn("importe", disabled=True),
-
             "receptor": st.column_config.TextColumn("receptor", disabled=True),
             "serie": st.column_config.TextColumn("serie", disabled=True),
             "folio": st.column_config.TextColumn("folio", disabled=True),
@@ -1265,11 +1304,9 @@ def mostrar_tab_solicitudes_gastos():
             "subtotal_xml": st.column_config.NumberColumn("subtotal xml", disabled=True),
             "iva_xml": st.column_config.NumberColumn("iva xml", disabled=True),
             "total_xml": st.column_config.NumberColumn("total xml", disabled=True),
-            # nota: usuario_forma_pago_id no se muestra, solo se guarda
         },
     )
 
-    # convertir etiqueta -> id (para guardar)
     edited["usuario_forma_pago_id"] = edited["pagado_con"].apply(_lbl_to_id)
 
     st.session_state.setdefault("sg_uuid_cache", {})
@@ -1277,7 +1314,6 @@ def mostrar_tab_solicitudes_gastos():
 
     changed = False
 
-    # autollenado por uuid
     for i, r in edited.iterrows():
         uuid_now = _norm_uuid(r.get("uuid"))
         uuid_prev = st.session_state["sg_uuid_prev"].get(i, "")
@@ -1286,10 +1322,8 @@ def mostrar_tab_solicitudes_gastos():
             st.session_state["sg_uuid_prev"][i] = ""
             continue
 
-        # solo procesar cuando el uuid ya está completo y válido (evita rerun mientras escribes)
         uuid_ok = bool(UUID_RE.fullmatch(uuid_now))
         if not uuid_ok:
-            # no guardes uuid_prev aquí para no “congelar” un uuid incompleto
             continue
 
         falta_datos = (_to_float(r.get("importe")) == 0.0) and (str(r.get("proveedor") or "").strip() == "")
@@ -1380,14 +1414,6 @@ def mostrar_tab_solicitudes_gastos():
 
             st.session_state["sg_uuid_prev"][i] = uuid_now
 
-    # normaliza y reconstruye pagado_con desde el id (por si cambió el catálogo)
-    
-    #edited = _normalize_df(edited, cols)
-    #edited = _normaliza_sat_campos_en_df(edited)
-    #edited["pagado_con"] = edited["usuario_forma_pago_id"].apply(_id_to_lbl)
-
-    #st.session_state["sg_det_df"] = edited
-
     if changed:
         st.session_state["sg_det_df"] = edited
         st.rerun()
@@ -1396,12 +1422,6 @@ def mostrar_tab_solicitudes_gastos():
 
     with cdel:
         ids_opts = []
-        ##if "id" in st.session_state["sg_det_df"].columns:
-        ##    ids_opts = [
-        ##        int(x)
-        ##        for x in st.session_state["sg_det_df"]["id"].dropna().tolist()
-        ##        if str(x).strip() not in ("", "none", "nan")
-        ##    ]
         if "id" in edited.columns:
             ids_opts = [
                 int(x)
@@ -1418,10 +1438,7 @@ def mostrar_tab_solicitudes_gastos():
 
     with csave:
         if st.button("guardar detalle", use_container_width=True, key="sg_btn_guardar_detalle"):
-            #rows_out = st.session_state["sg_det_df"].to_dict(orient="records")
             rows_out = edited.to_dict(orient="records")
-
-            # pagado_con es solo display
             for r in rows_out:
                 r.pop("pagado_con", None)
 
@@ -1435,7 +1452,6 @@ def mostrar_tab_solicitudes_gastos():
             if res.get("ok"):
                 st.success(res.get("msg", "detalle guardado"))
 
-                # forzar recarga desde bd al siguiente rerun
                 st.session_state.pop("sg_det_df", None)
                 st.session_state.pop("sg_det_df_solicitud_id", None)
                 st.session_state["sg_uuid_prev"] = {}
