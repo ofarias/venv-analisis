@@ -706,9 +706,9 @@ def insertarSAE():
                 tcambio = doc_sel.get("TIPOCAMBIO", 1.0)
                 impext = doc_sel.get("TOTAL", 0.0)
 
-                if bool(doc_sel.get("EN_SAE")):
-                    st.warning("este documento ya fue detectado en SAE.")
-                    st.stop()
+                #if bool(doc_sel.get("EN_SAE")):
+                #    st.warning("este documento ya fue detectado en SAE.")
+                #    st.stop()
 
                 try:
                     res = insertar_en_sae_por_uso(
