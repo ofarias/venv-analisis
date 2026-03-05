@@ -4,9 +4,13 @@ from __future__ import annotations
 import re
 from typing import Optional
 from datetime import datetime, date, time, timedelta
-
 import pandas as pd
 import streamlit as st
+import base64
+import hmac
+import hashlib
+import json
+from pathlib import Path
 
 from controllers.solicitudes_controller import (
     get_usuarios_activos_ctrl,
@@ -24,11 +28,77 @@ from controllers.solicitudes_controller import (
     buscar_clientes_sae_ctrl,
     eliminar_solicitud_ctrl,
 )
-
 from controllers.datoscfd_controller import registrar_cfdi_desde_xml
 from models.datoscfd_model import guardar_pdf_datoscfd, extraer_uuid_desde_pdf
 from utils.envio_correo import enviar_correo
 from controllers.sepomex_controller import get_sepomex_ciudades_catalogo_ctrl
+
+def _get_app_link_cfg():
+    base_url = (st.secrets.get("APP_BASE_URL", "") or "").strip()
+    secret = (st.secrets.get("APP_LINK_SECRET", "") or "").strip()
+
+    if not base_url:
+        base_url = (os.getenv("APP_BASE_URL") or "").strip()
+    if not secret:
+        secret = (os.getenv("APP_LINK_SECRET") or "").strip()
+
+    # normaliza base_url
+    base_url = base_url.rstrip("/")
+
+    return base_url, secret
+
+def _get_app_base_url() -> str:
+    # ejemplo en secrets.toml: APP_BASE_URL="https://tuapp.com"
+    base_url, secret = _get_app_link_cfg()
+    if not base_url or not secret:
+        st.warning("no se pudo generar link de autorización (falta app_base_url o app_link_secret).")
+    return str(st.secrets.get("APP_BASE_URL", "")).strip().rstrip("/")
+
+def _sign_payload(payload: dict, secret: str) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    sig = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).digest()
+    token = base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=") + "." + base64.urlsafe_b64encode(sig).decode("utf-8").rstrip("=")
+    return token
+
+def _verify_token(token: str, secret: str) -> dict | None:
+    try:
+        raw_b64, sig_b64 = token.split(".", 1)
+        pad = "=" * (-len(raw_b64) % 4)
+        raw = base64.urlsafe_b64decode(raw_b64 + pad)
+
+        pad2 = "=" * (-len(sig_b64) % 4)
+        sig = base64.urlsafe_b64decode(sig_b64 + pad2)
+
+        expected = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+
+        payload = json.loads(raw.decode("utf-8"))
+        return payload
+    except Exception:
+        return None
+
+def _build_action_links(solicitud_id: int, folio: str | None = None) -> dict:
+    base = _get_app_base_url()
+    if not base:
+        return {"ok": False, "error": "no existe APP_BASE_URL en secrets.toml"}
+
+    secret = str(st.secrets.get("APP_LINK_SECRET", "")).strip()
+    if not secret:
+        return {"ok": False, "error": "no existe APP_LINK_SECRET en secrets.toml"}
+
+    exp = int((datetime.utcnow() + timedelta(hours=72)).timestamp())
+
+    # token incluye id + exp + (opcional) folio
+    payload = {"sg_id": int(solicitud_id), "exp": exp, "folio": (folio or "")}
+    t = _sign_payload(payload, secret)
+
+    # nota: aquí NO ponemos urls directas a aprobar sin confirmación; solo “action=...”
+    approve = f"{base}/?sg_id={int(solicitud_id)}&action=approve&t={t}"
+    reject  = f"{base}/?sg_id={int(solicitud_id)}&action=reject&t={t}"
+    view    = f"{base}/?sg_id={int(solicitud_id)}&t={t}"
+
+    return {"ok": True, "approve": approve, "reject": reject, "view": view, "token": t}
 
 
 def _split_clientes_texto(s: str) -> list[str]:
@@ -451,6 +521,44 @@ def mostrar_tab_solicitudes_gastos():
         st.warning("no hay sesión de usuario en st.session_state['usuario']")
         return
 
+    ###Manejador para el envio de correo electronico con el link #
+    # -------------------------------------------------
+    # deep-link desde correo: ?sg_id=...&action=...&t=...
+    # -------------------------------------------------
+    qp = st.query_params
+    qp_sg_id = qp.get("sg_id", None)
+    qp_action = (qp.get("action", "") or "").strip().lower()
+    qp_token = (qp.get("t", "") or "").strip()
+
+    if qp_sg_id:
+        try:
+            sg_id = int(qp_sg_id)
+        except Exception:
+            sg_id = None
+
+        if sg_id and qp_token:
+            secret = str(st.secrets.get("APP_LINK_SECRET", "")).strip()
+            payload = _verify_token(qp_token, secret) if secret else None
+
+            ok_token = False
+            if payload:
+                exp = int(payload.get("exp") or 0)
+                if exp > 0 and int(datetime.utcnow().timestamp()) <= exp:
+                    if int(payload.get("sg_id") or 0) == int(sg_id):
+                        ok_token = True
+
+            if ok_token:
+                # selecciona la solicitud automáticamente
+                st.session_state["sg_selected_id"] = int(sg_id)
+                # guarda la acción pedida (para mostrar panel confirmación)
+                if qp_action in ("approve", "reject"):
+                    st.session_state["sg_pending_action"] = qp_action
+            else:
+                st.warning("link inválido o expirado (token).")
+    
+    st.session_state.setdefault("sg_pending_action", "")
+    ###### Finaliza la generacion del token 
+
     st.session_state.setdefault("sg_selected_id", None)
     selected_id = st.session_state.get("sg_selected_id") or None
 
@@ -821,7 +929,30 @@ def mostrar_tab_solicitudes_gastos():
 
                 detalle_rows_mail = get_detalle_ctrl(int(selected_id)) or []
                 cat_conceptos_mail = get_conceptos_gasto_ctrl(activo=1) or []
-
+                #### Incliusion del token 
+                links = _build_action_links(int(selected_id), folio=folio)
+                links_html = ""
+                if links.get("ok"):
+                    links_html = f"""
+                    <p style="margin:14px 0">
+                      <a href="{links['approve']}"
+                         style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+                        autorizar
+                      </a>
+                      <a href="{links['reject']}"
+                         style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+                        rechazar
+                      </a>
+                      <a href="{links['view']}"
+                         style="display:inline-block;margin-left:10px;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+                        ver solicitud
+                      </a>
+                    </p>
+                    """
+                else:
+                    # si no hay secrets configurados, al menos manda texto
+                    links_html = "<p><i>no se pudo generar link de autorización (falta APP_BASE_URL o APP_LINK_SECRET).</i></p>"
+                ####
                 conceptos_prepago = set()
                 for x in cat_conceptos_mail:
                     c = (x.get("concepto") or "").strip()
@@ -833,7 +964,7 @@ def mostrar_tab_solicitudes_gastos():
                 cuerpo_html = f"""
                 <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
                 <p>se envió una solicitud de gastos.</p>
-
+                {links_html}
                 <p>
                     <b>empleado:</b> {empleado_nombre}<br>
                     <b>clientes:</b> {clientes}<br>

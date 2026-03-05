@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import streamlit as st
 import pandas as pd
+from datetime import datetime, timedelta
+import base64
+import hmac
+import hashlib
+import json
+
 from controllers.solicitudes_controller import (
     listar_solicitudes_ctrl,
     get_solicitud_ctrl,
@@ -14,6 +20,79 @@ from controllers.solicitudes_controller import (
 )
 from utils.envio_correo import enviar_correo
 from textwrap import dedent
+
+def _verify_token(token: str, secret: str) -> dict | None:
+    try:
+        raw_b64, sig_b64 = token.split(".", 1)
+
+        pad = "=" * (-len(raw_b64) % 4)
+        raw = base64.urlsafe_b64decode(raw_b64 + pad)
+
+        pad2 = "=" * (-len(sig_b64) % 4)
+        sig = base64.urlsafe_b64decode(sig_b64 + pad2)
+
+        expected = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _consume_deeplink():
+    """
+    lee query params:
+      ?sg_id=123&action=approve|reject&t=token
+    si token es válido y no expiró:
+      - set aut_selected_id
+      - set aut_pending_action
+    """
+    qp = st.query_params
+    qp_sg_id = qp.get("sg_id", None)
+    qp_action = (qp.get("action", "") or "").strip().lower()
+    qp_token = (qp.get("t", "") or "").strip()
+
+    if not qp_sg_id or not qp_token:
+        return
+
+    try:
+        sg_id = int(qp_sg_id)
+    except Exception:
+        return
+
+    secret = str(st.secrets.get("APP_LINK_SECRET", "")).strip()
+    if not secret:
+        st.warning("falta APP_LINK_SECRET en secrets.toml")
+        return
+
+    payload = _verify_token(qp_token, secret)
+    if not payload:
+        st.warning("link inválido (token).")
+        return
+
+    # expira
+    exp = int(payload.get("exp") or 0)
+    if exp <= 0 or int(datetime.utcnow().timestamp()) > exp:
+        st.warning("link expirado.")
+        return
+
+    # valida que el token corresponda al sg_id
+    if int(payload.get("sg_id") or 0) != int(sg_id):
+        st.warning("link inválido (id no coincide).")
+        return
+
+    # aplica selección + acción
+    st.session_state["aut_selected_id"] = int(sg_id)
+
+    if qp_action in ("approve", "reject"):
+        st.session_state["aut_pending_action"] = qp_action
+
+    # opcional: limpiar query params para que no se re-dispare en cada rerun
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
 
 def _get_email_vendedor(solicitud: dict) -> str | None:
     empleado_id = int(solicitud.get("empleado_id") or 0)
@@ -143,6 +222,12 @@ def mostrar_tab_autorizaciones_solicitudes():
         st.info("sin acceso")
         return
 
+    if is_jefe_ventas:
+        st.info("como jefe de ventas puedes autorizar o rechazar solicitudes en estatus enviada.")
+
+    st.session_state.setdefault("aut_pending_action", "")
+    _consume_deeplink()
+
     st.caption("filtros")
     c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
 
@@ -227,6 +312,61 @@ def mostrar_tab_autorizaciones_solicitudes():
         return
 
     estatus_actual = str(s.get("estatus") or "").strip().lower()
+
+    ##### utilizando el link desde el correo
+    
+    pending = (st.session_state.get("aut_pending_action") or "").strip().lower()
+
+    # si viene del correo, forzamos que se muestre el panel de rechazo
+    # o ejecutamos autorización con confirmación explícita
+    if pending in ("approve", "reject"):
+        st.info("acción solicitada desde correo. confirma para continuar.")
+
+        # solo permitir a jefe de ventas en estatus enviada (misma regla que ya tienes)
+        puede_accion_jefe = is_jefe_ventas and estatus_actual == "enviada"
+
+        if not puede_accion_jefe:
+            st.warning("no tienes permiso para autorizar/rechazar o la solicitud no está en estatus enviada.")
+            st.session_state["aut_pending_action"] = ""
+        else:
+            cpa1, cpa2, cpa3 = st.columns([2, 2, 6])
+
+            with cpa1:
+                if st.button(
+                    "confirmar autorizar",
+                    use_container_width=True,
+                    disabled=(pending != "approve"),
+                    key="aut_btn_confirm_from_link_approve",
+                ):
+                    cambiar_estatus_ctrl(int(sel_id), "autorizada", int(usuario.get("id") or 0))
+
+                    token = st.session_state.get("microsoft_token")
+                    ok_mail, msg_mail = _enviar_autorizacion_correo(solicitud=s, token=token)
+
+                    if ok_mail:
+                        st.success("solicitud autorizada y correo enviado al vendedor.")
+                    else:
+                        st.warning(f"solicitud autorizada, pero no se pudo enviar correo: {msg_mail}")
+
+                    st.session_state["aut_pending_action"] = ""
+                    st.rerun()
+
+            with cpa2:
+                if st.button(
+                    "continuar a rechazo",
+                    use_container_width=True,
+                    disabled=(pending != "reject"),
+                    key="aut_btn_confirm_from_link_reject",
+                ):
+                    # abre tu panel de rechazo existente
+                    st.session_state["aut_rechazando"] = True
+
+            with cpa3:
+                if st.button("cancelar acción", use_container_width=True, key="aut_btn_cancel_from_link"):
+                    st.session_state["aut_pending_action"] = ""
+                    st.session_state["aut_rechazando"] = False
+                    st.rerun()
+    #### Finaliza el link del correo
 
     st.markdown("### cabecera")
     st.markdown(
