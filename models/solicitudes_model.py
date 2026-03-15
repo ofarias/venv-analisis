@@ -245,53 +245,75 @@ def get_solicitud_by_id(solicitud_id: int) -> Optional[Dict[str, Any]]:
 def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
     conn = obtener_conexion()
     cur = conn.cursor(dictionary=True)
-    cur.execute("""
+    cur.execute(
+        """
         select
-          id, solicitud_id, renglon,
-          fecha_gasto,
-          concepto,
-          descripcion,
-          cantidad,
-          precio_unitario,
-          importe,
-          impuesto1,
-          impuesto2,
-          impuesto3,
-          impuesto4,
-          subtotal,
-          iva,
-          ieps,
-          ret_iva,
-          ret_isr,
-          total,
-          moneda,
-          proveedor,
-          receptor,
-          serie,
-          folio,
-          version,
-          moneda_xml,
-          tipo_cambio,
-          estado_sat,
-          forma_pago,
-          metodo_pago,
-          tipo_comprobante,
-          uso_cfdi,
-          subtotal_xml,
-          iva_xml,
-          total_xml,
-          uuid,
-          referencia,
-          archivo_url,
-          notas,
-          presupuesto_id,
-          presupuesto_detalle_id,
-          usuario_forma_pago_id,
-          fecha_creacion
-        from solicitudes_detalle
-        where solicitud_id = %s
-        order by renglon
-    """, (solicitud_id,))
+          d.id, d.solicitud_id, d.renglon,
+          d.fecha_gasto,
+          d.concepto,
+          d.descripcion,
+          d.cantidad,
+          d.precio_unitario,
+          d.importe,
+          d.impuesto1,
+          d.impuesto2,
+          d.impuesto3,
+          d.impuesto4,
+          d.subtotal,
+          d.iva,
+          d.ieps,
+          d.ret_iva,
+          d.ret_isr,
+          d.total,
+          d.moneda,
+          d.proveedor,
+          d.receptor,
+          d.serie,
+          d.folio,
+          d.version,
+          d.moneda_xml,
+          d.tipo_cambio,
+          d.estado_sat,
+          d.forma_pago,
+          d.metodo_pago,
+          d.tipo_comprobante,
+          d.uso_cfdi,
+          d.subtotal_xml,
+          d.iva_xml,
+          d.total_xml,
+          d.uuid,
+          d.referencia,
+          d.archivo_url,
+          d.notas,
+          d.presupuesto_id,
+          d.presupuesto_detalle_id,
+          d.usuario_forma_pago_id,
+          d.fecha_creacion,
+
+          case
+            when d.uuid is not null
+             and trim(d.uuid) <> ''
+             and exists (
+                select 1
+                from DATOSCFD_PDF p
+                where upper(trim(p.UUID)) = upper(trim(d.uuid))
+                limit 1
+             )
+            then 1 else 0
+          end as tiene_pdf,
+
+          coalesce((
+            select round(sum(u.porcentaje), 6)
+            from solicitudes_detalle_un u
+            where u.solicitud_detalle_id = d.id
+          ), 0) as total_unidades
+
+        from solicitudes_detalle d
+        where d.solicitud_id = %s
+        order by d.renglon
+        """,
+        (solicitud_id,),
+    )
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -1145,3 +1167,83 @@ def guardar_detalle_unidades_rows(
         except Exception:
             pass
         
+
+def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            select
+                d.id,
+                d.concepto,
+                d.uuid,
+                d.total_xml,
+                d.precio_unitario,
+                case
+                    when d.uuid is not null and trim(d.uuid) <> '' and exists (
+                        select 1
+                        from DATOSCFD_PDF p
+                        where upper(trim(p.UUID)) = upper(trim(d.uuid))
+                        limit 1
+                    ) then 1
+                    else 0
+                end as tiene_pdf_uuid,
+                coalesce((
+                    select round(sum(u.porcentaje), 6)
+                    from solicitudes_detalle_un u
+                    where u.solicitud_detalle_id = d.id
+                ), 0) as total_unidades,
+                coalesce((
+                    select count(*)
+                    from solicitudes_detalle_un u
+                    where u.solicitud_detalle_id = d.id
+                ), 0) as num_unidades
+            from solicitudes_detalle d
+            where d.solicitud_id = %s
+            order by d.renglon, d.id
+            """,
+            (int(solicitud_id),),
+        )
+        return cur.fetchall()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
+    rows = get_validacion_detalle_solicitud_rows(int(solicitud_id))
+    errores = []
+
+    for r in rows:
+        detalle_id = int(r.get("id") or 0)
+        concepto = (r.get("concepto") or "").strip()
+        uuid = (r.get("uuid") or "").strip()
+        tiene_pdf_uuid = int(r.get("tiene_pdf_uuid") or 0)
+        total_unidades = float(r.get("total_unidades") or 0)
+        num_unidades = int(r.get("num_unidades") or 0)
+
+        if uuid and not tiene_pdf_uuid:
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): no tiene PDF cargado en DATOSCFD_PDF para el UUID {uuid}"
+            )
+
+        if num_unidades <= 0:
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): no tiene unidades de negocio capturadas"
+            )
+        elif round(total_unidades, 6) != 100.0:
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): las unidades suman {total_unidades} y deben sumar 100"
+            )
+
+    return {
+        "ok": len(errores) == 0,
+        "rows": rows,
+        "errores": errores,
+    }

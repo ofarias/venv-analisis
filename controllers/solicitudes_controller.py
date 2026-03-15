@@ -32,6 +32,7 @@ from models.solicitudes_model import (
     get_unidades_negocio_rows,
     get_detalle_unidades_rows,
     guardar_detalle_unidades_rows,
+    validar_detalle_para_comprobacion,
 )
 
 
@@ -370,3 +371,6 @@ def guardar_detalle_unidades_ctrl(
         return {"ok": False, "msg": str(e)}
     except Exception as e:
         return {"ok": False, "msg": f"error al guardar unidades de negocio: {e}"}
+
+def validar_detalle_para_comprobacion_ctrl(solicitud_id: int) -> dict:
+    return validar_detalle_para_comprobacion(int(solicitud_id))
