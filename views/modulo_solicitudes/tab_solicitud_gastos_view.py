@@ -1310,8 +1310,12 @@ def mostrar_tab_solicitudes_gastos():
     cols = [
         "id",
         "fecha_gasto",
+        "prepago_icon",
         "concepto",
         "uuid",
+        "subtotal_xml",
+        "iva_xml",
+        "total_xml",
         "descripcion",
         "cantidad",
         "precio_unitario",
@@ -1330,9 +1334,7 @@ def mostrar_tab_solicitudes_gastos():
         "metodo_pago",
         "tipo_comprobante",
         "uso_cfdi",
-        "subtotal_xml",
-        "iva_xml",
-        "total_xml",
+        
     ]
 
     if df_det.empty:
@@ -1415,15 +1417,59 @@ def mostrar_tab_solicitudes_gastos():
 
     st.session_state["sg_det_df"] = df_base
 
+    def _money_fmt(v):
+        try:
+            return f"${float(v or 0):,.2f}"
+        except Exception:
+            return "$0.00"
+
+    df_show = st.session_state["sg_det_df"].copy()
+
+    #df_show["importe_view"] = df_show["importe"].apply(_money_fmt)
+    df_show["subtotal_xml_view"] = df_show["subtotal_xml"].apply(_money_fmt)
+    df_show["iva_xml_view"] = df_show["iva_xml"].apply(_money_fmt)
+    df_show["total_xml_view"] = df_show["total_xml"].apply(_money_fmt)
+    df_show["precio_unitario_view"] = df_show["precio_unitario"].apply(_money_fmt)
+
+    
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDataEditor"] td[data-column="subtotal_xml_view"],
+        div[data-testid="stDataEditor"] td[data-column="iva_xml_view"],
+        div[data-testid="stDataEditor"] td[data-column="total_xml_view"] {
+            text-align: right;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    def _icono_prepago(concepto):
+        k = (concepto or "").strip().lower()
+        if PREPAGO_MAP.get(k, False):
+            return "💳"
+        return ""
+
+    df_show["prepago_icon"] = df_show["concepto"].apply(_icono_prepago)
+
     edited = st.data_editor(
-        st.session_state["sg_det_df"],
+        #st.session_state["sg_det_df"],
+        df_show,
         use_container_width=True,
         hide_index=True,
         num_rows="dynamic",
         key="sg_det_editor",
         column_config={
             "id": st.column_config.TextColumn("id", disabled=True),
-
+            
+            "prepago_icon": st.column_config.TextColumn(
+                "",
+                help="concepto marcado como prepago",
+                disabled=True,
+                width="small",
+            ),
+            
             "concepto": st.column_config.SelectboxColumn(
                 "concepto",
                 options=conceptos_opts_final,
@@ -1431,6 +1477,12 @@ def mostrar_tab_solicitudes_gastos():
             ),
 
             "uuid": st.column_config.TextColumn("uuid"),
+
+            "subtotal_xml_view": st.column_config.TextColumn("subtotal xml", disabled=True),
+            "iva_xml_view": st.column_config.TextColumn("iva xml", disabled=True),
+            "total_xml_view": st.column_config.TextColumn("total xml", disabled=True),
+
+
             "descripcion": st.column_config.TextColumn("observaciones"),
 
             "pagado_con": st.column_config.SelectboxColumn(
@@ -1484,23 +1536,10 @@ def mostrar_tab_solicitudes_gastos():
             "tipo_comprobante": st.column_config.TextColumn("tipo comprobante", disabled=True),
             "uso_cfdi": st.column_config.TextColumn("uso cfdi", disabled=True),
 
-            "subtotal_xml": st.column_config.NumberColumn(
-                "subtotal xml",
-                disabled=True,
-                format="%.2f",
-            ),
-
-            "iva_xml": st.column_config.NumberColumn(
-                "iva xml",
-                disabled=True,
-                format="%.2f",
-            ),
-
-            "total_xml": st.column_config.NumberColumn(
-                "total xml",
-                disabled=True,
-                format="%.2f",
-            ),
+            
+            "subtotal_xml": None,
+            "iva_xml": None,
+            "total_xml": None,
         },
     )
 
@@ -1614,6 +1653,69 @@ def mostrar_tab_solicitudes_gastos():
     if changed:
         st.session_state["sg_det_df"] = edited
         st.rerun()
+
+    # -------------------------------------------------
+    # totales resumen antes de guardar detalle
+    # -------------------------------------------------
+    df_tot = edited.copy()
+
+    def _has_uuid(v) -> bool:
+        return bool(str(v or "").strip())
+
+    def _is_prepago(concepto: str) -> bool:
+        k = (concepto or "").strip().lower()
+        return bool(PREPAGO_MAP.get(k, False))
+
+    # columnas numéricas seguras
+    for col in ["precio_unitario", "total_xml"]:
+        if col not in df_tot.columns:
+            df_tot[col] = 0
+        df_tot[col] = pd.to_numeric(df_tot[col], errors="coerce").fillna(0.0)
+
+    if "uuid" not in df_tot.columns:
+        df_tot["uuid"] = ""
+    if "concepto" not in df_tot.columns:
+        df_tot["concepto"] = ""
+
+    df_tot["tiene_uuid"] = df_tot["uuid"].apply(_has_uuid)
+    df_tot["es_prepago"] = df_tot["concepto"].apply(_is_prepago)
+
+    # total fiscal: suma total_xml cuando sí hay uuid
+    total_fiscal = float(df_tot.loc[df_tot["tiene_uuid"], "total_xml"].sum())
+
+    # total no fiscal: suma gasto estimado cuando no hay uuid
+    total_no_fiscal = float(df_tot.loc[~df_tot["tiene_uuid"], "precio_unitario"].sum())
+
+    # total general
+    total_general = total_fiscal + total_no_fiscal
+
+    # total prepago: conceptos prepago
+    # si tiene uuid toma total_xml, si no toma gasto estimado
+    total_prepago = float(
+        df_tot.loc[df_tot["es_prepago"]].apply(
+            lambda r: float(r["total_xml"]) if r["tiene_uuid"] else float(r["precio_unitario"]),
+            axis=1
+        ).sum()
+    )
+
+    # total pagado vendedor: conceptos no prepago
+    # si tiene uuid toma total_xml, si no toma gasto estimado
+    total_pagado_vendedor = float(
+        df_tot.loc[~df_tot["es_prepago"]].apply(
+            lambda r: float(r["total_xml"]) if r["tiene_uuid"] else float(r["precio_unitario"]),
+            axis=1
+        ).sum()
+    )
+
+    st.markdown("### resumen de totales")
+
+    t1, t2, t3, t4, t5 = st.columns(5)
+    t1.metric("Total Fiscal", _money_fmt(total_fiscal))
+    t2.metric("Total No Fiscal", _money_fmt(total_no_fiscal))
+    t3.metric("Total General", _money_fmt(total_general))
+    t4.metric("Total Prepago", _money_fmt(total_prepago))
+    t5.metric("Total Pagado Vendedor", _money_fmt(total_pagado_vendedor))
+
 
     csave, cdel = st.columns([2, 1])
 
