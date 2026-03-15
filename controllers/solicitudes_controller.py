@@ -29,6 +29,9 @@ from models.solicitudes_model import (
     desactivar_formas_pago_usuario_ids,
     get_dispersion_flags,
     set_dispersion_flag,
+    get_unidades_negocio_rows,
+    get_detalle_unidades_rows,
+    guardar_detalle_unidades_rows,
 )
 
 
@@ -58,6 +61,7 @@ def calcular_totales_row(r: Dict[str, Any]) -> Dict[str, Any]:
     imp2 = _d(r.get("impuesto2"), "0")
     imp3 = _d(r.get("impuesto3"), "0")
     imp4 = _d(r.get("impuesto4"), "0")
+    total = _d(r.get("total"), "0")
 
     subtotal_xml = _d(r.get("subtotal_xml"), "0")
     iva_xml = _d(r.get("iva_xml"), "0")
@@ -80,8 +84,8 @@ def calcular_totales_row(r: Dict[str, Any]) -> Dict[str, Any]:
     ieps = imp3
     ret_isr = imp1
     ret_iva = imp2
-
-    total = subtotal + iva + ieps - ret_iva - ret_isr
+    
+    #total = subtotal + iva + ieps - ret_iva - ret_isr
 
     r["cantidad"] = _trunc(cantidad)
     r["precio_unitario"] = _trunc(pu)
@@ -343,3 +347,26 @@ def get_dispersion_flags_ctrl(solicitud_id: int) -> dict:
 
 def set_dispersion_flag_ctrl(solicitud_id: int, flag: str, value: bool, user_id: int) -> bool:
     return set_dispersion_flag(int(solicitud_id), str(flag), bool(value), int(user_id))
+
+def get_unidades_negocio_ctrl() -> List[Dict[str, Any]]:
+    return get_unidades_negocio_rows()
+
+def get_detalle_unidades_ctrl(solicitud_detalle_id: int) -> List[Dict[str, Any]]:
+    return get_detalle_unidades_rows(int(solicitud_detalle_id))
+
+def guardar_detalle_unidades_ctrl(
+    solicitud_detalle_id: int,
+    rows: List[Dict[str, Any]],
+    usuario_id: int,
+) -> Dict[str, Any]:
+    try:
+        guardar_detalle_unidades_rows(
+            solicitud_detalle_id=int(solicitud_detalle_id),
+            rows=rows,
+            usuario_id=int(usuario_id),
+        )
+        return {"ok": True, "msg": "unidades de negocio guardadas"}
+    except ValueError as e:
+        return {"ok": False, "msg": str(e)}
+    except Exception as e:
+        return {"ok": False, "msg": f"error al guardar unidades de negocio: {e}"}

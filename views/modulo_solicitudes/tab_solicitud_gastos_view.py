@@ -27,6 +27,9 @@ from controllers.solicitudes_controller import (
     get_formas_pago_usuario_ctrl,
     buscar_clientes_sae_ctrl,
     eliminar_solicitud_ctrl,
+    get_unidades_negocio_ctrl,
+    get_detalle_unidades_ctrl,
+    guardar_detalle_unidades_ctrl,
 )
 from controllers.datoscfd_controller import registrar_cfdi_desde_xml
 from models.datoscfd_model import guardar_pdf_datoscfd, extraer_uuid_desde_pdf
@@ -1404,6 +1407,14 @@ def mostrar_tab_solicitudes_gastos():
         st.session_state["sg_uuid_prev"] = {}
         st.rerun()
 
+    df_base = st.session_state["sg_det_df"].copy()
+
+    # ocultar importe en la vista
+    if "importe" in df_base.columns:
+        df_base = df_base.drop(columns=["importe"])
+
+    st.session_state["sg_det_df"] = df_base
+
     edited = st.data_editor(
         st.session_state["sg_det_df"],
         use_container_width=True,
@@ -1412,29 +1423,84 @@ def mostrar_tab_solicitudes_gastos():
         key="sg_det_editor",
         column_config={
             "id": st.column_config.TextColumn("id", disabled=True),
-            "concepto": st.column_config.SelectboxColumn("concepto", options=conceptos_opts_final, required=True),
+
+            "concepto": st.column_config.SelectboxColumn(
+                "concepto",
+                options=conceptos_opts_final,
+                required=True,
+            ),
+
             "uuid": st.column_config.TextColumn("uuid"),
             "descripcion": st.column_config.TextColumn("observaciones"),
-            "pagado_con": st.column_config.SelectboxColumn("pagado con", options=formas_opts, required=False),
+
+            "pagado_con": st.column_config.SelectboxColumn(
+                "pagado con",
+                options=formas_opts,
+                required=False,
+            ),
+
             "proveedor": st.column_config.TextColumn("proveedor", disabled=True),
-            "fecha_gasto": st.column_config.DateColumn("fecha", disabled=True),
-            "cantidad": st.column_config.NumberColumn("cantidad", min_value=0.0, step=1.0),
-            "precio_unitario": st.column_config.NumberColumn("gasto estimado", min_value=0.0, step=1.0),
-            "importe": st.column_config.NumberColumn("importe", disabled=True),
+
+            "fecha_gasto": st.column_config.DateColumn(
+                "fecha",
+                format="DD-MM-YYYY",
+                disabled=True,
+            ),
+
+            "cantidad": st.column_config.NumberColumn(
+                "cantidad",
+                min_value=0.0,
+                step=1.0,
+            ),
+
+            "precio_unitario": st.column_config.NumberColumn(
+                "gasto estimado",
+                min_value=0.0,
+                step=0.01,
+                format="%.2f",
+            ),
+
+            #"importe": st.column_config.NumberColumn(
+            #    "importe",
+            #    disabled=True,
+            #    format="%.2f",
+            #),
+
             "receptor": st.column_config.TextColumn("receptor", disabled=True),
             "serie": st.column_config.TextColumn("serie", disabled=True),
             "folio": st.column_config.TextColumn("folio", disabled=True),
             "version": st.column_config.TextColumn("versión", disabled=True),
             "moneda_xml": st.column_config.TextColumn("moneda xml", disabled=True),
-            "tipo_cambio": st.column_config.NumberColumn("tipo cambio", disabled=True),
+
+            "tipo_cambio": st.column_config.NumberColumn(
+                "tipo cambio",
+                disabled=True,
+                format="%.2f",
+            ),
+
             "estado_sat": st.column_config.TextColumn("estado sat", disabled=True),
             "forma_pago": st.column_config.TextColumn("forma pago", disabled=True),
             "metodo_pago": st.column_config.TextColumn("método pago", disabled=True),
             "tipo_comprobante": st.column_config.TextColumn("tipo comprobante", disabled=True),
             "uso_cfdi": st.column_config.TextColumn("uso cfdi", disabled=True),
-            "subtotal_xml": st.column_config.NumberColumn("subtotal xml", disabled=True),
-            "iva_xml": st.column_config.NumberColumn("iva xml", disabled=True),
-            "total_xml": st.column_config.NumberColumn("total xml", disabled=True),
+
+            "subtotal_xml": st.column_config.NumberColumn(
+                "subtotal xml",
+                disabled=True,
+                format="%.2f",
+            ),
+
+            "iva_xml": st.column_config.NumberColumn(
+                "iva xml",
+                disabled=True,
+                format="%.2f",
+            ),
+
+            "total_xml": st.column_config.NumberColumn(
+                "total xml",
+                disabled=True,
+                format="%.2f",
+            ),
         },
     )
 
@@ -1506,9 +1572,9 @@ def mostrar_tab_solicitudes_gastos():
                     if not pd.isna(dt):
                         edited.at[i, "fecha_gasto"] = dt.date()
 
-                edited.at[i, "importe"] = _to_float(importe)
-                edited.at[i, "cantidad"] = _to_int(cantidad)
-                edited.at[i, "precio_unitario"] = _to_float(precio_unitario)
+                #edited.at[i, "importe"] = _to_float(importe)
+                #edited.at[i, "cantidad"] = _to_int(cantidad)
+                #edited.at[i, "precio_unitario"] = _to_float(precio_unitario)
 
                 edited.at[i, "receptor"] = str(receptor).strip()
                 edited.at[i, "folio"] = str(folio).strip()
@@ -1596,3 +1662,112 @@ def mostrar_tab_solicitudes_gastos():
                     st.warning(msg)
                 else:
                     st.error(msg or "no se pudo guardar el detalle")
+    
+    st.divider()
+    st.caption("unidades de negocio por renglón")
+
+    ids_detalle_guardados = []
+    if "id" in edited.columns:
+        ids_detalle_guardados = [
+            int(x)
+            for x in edited["id"].dropna().tolist()
+            if str(x).strip().lower() not in ("", "none", "nan")
+        ]
+
+    if not ids_detalle_guardados:
+        st.info("primero guarda el detalle para poder asignar unidades de negocio.")
+    else:
+        unidades_rows = get_unidades_negocio_ctrl() or []
+        un_map = {int(r["id"]): str(r["nombre"]) for r in unidades_rows if r.get("id") is not None}
+        un_ids = list(un_map.keys())
+
+        detalle_id_un = st.selectbox(
+            "renglón del detalle",
+            options=ids_detalle_guardados,
+            format_func=lambda x: f"id {x} - {str(edited.loc[edited['id'] == x, 'concepto'].values[0])[:30]} - {edited.loc[edited['id'] == x, 'total_xml'].values[0]}",
+            key="sg_detalle_id_un",
+        )
+
+        ids_detalle_guardados = []
+        if "id" in edited.columns:
+            df_detalle_sel = edited.copy()
+
+            df_detalle_sel = df_detalle_sel[
+                (df_detalle_sel["concepto"].fillna("").astype(str).str.strip() != "")
+                &
+                (
+                    pd.to_numeric(df_detalle_sel["total_xml"], errors="coerce").fillna(0) > 0
+                )
+            ]
+
+            ids_detalle_guardados = [
+                int(x)
+                for x in df_detalle_sel["id"].dropna().tolist()
+                if str(x).strip().lower() not in ("", "none", "nan")
+            ]
+
+
+        detalle_un_rows = get_detalle_unidades_ctrl(int(detalle_id_un)) or []
+        df_un = pd.DataFrame(detalle_un_rows)
+
+        if df_un.empty:
+            df_un = pd.DataFrame([{
+                "id_unidad": None,
+                "porcentaje": 100.0,
+            }])
+
+        for c in ["id_unidad", "porcentaje"]:
+            if c not in df_un.columns:
+                df_un[c] = None
+
+        df_un = df_un[["id_unidad", "porcentaje"]].copy()
+
+        edited_un = st.data_editor(
+            df_un,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="sg_un_editor",
+            column_config={
+                "id_unidad": st.column_config.SelectboxColumn(
+                    "unidad de negocio",
+                    options=un_ids,
+                    format_func=lambda x: un_map.get(int(x), "") if x not in (None, "", "nan") else "",
+                    required=True,
+                ),
+                "porcentaje": st.column_config.NumberColumn(
+                    "porcentaje",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=1.0,
+                    required=True,
+                ),
+            },
+        )
+
+        total_pct = round(
+            pd.to_numeric(edited_un["porcentaje"], errors="coerce").fillna(0).sum(),
+            6,
+        )
+
+        st.write(f"total porcentaje: {total_pct}")
+
+        preview = edited_un.copy()
+        preview["unidad"] = preview["id_unidad"].apply(
+            lambda x: un_map.get(int(x), "") if pd.notna(x) and str(x).strip() != "" else ""
+        )
+        st.dataframe(preview[["unidad", "porcentaje"]], use_container_width=True, hide_index=True)
+
+        if st.button("guardar unidades de negocio", key="sg_btn_guardar_un", use_container_width=True):
+            rows_un = edited_un.to_dict(orient="records")
+            res_un = guardar_detalle_unidades_ctrl(
+                solicitud_detalle_id=int(detalle_id_un),
+                rows=rows_un,
+                usuario_id=int(usuario["id"]),
+            )
+
+            if res_un.get("ok"):
+                st.success(res_un.get("msg", "unidades guardadas"))
+                st.rerun()
+            else:
+                st.error(res_un.get("msg", "no se pudieron guardar las unidades"))

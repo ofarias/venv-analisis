@@ -1009,3 +1009,139 @@ def set_dispersion_flag(solicitud_id: int, flag: str, value: bool, user_id: int)
             conn.close()
         except Exception:
             pass
+
+###### Inicia el manejo de unidades de negocio (UDN) para solicitudes ######
+
+def get_unidades_negocio_rows() -> list[dict]:
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        """
+        select id, nombre
+        from Unidades_Negocio
+        where coalesce(estatus, 1) = 1
+        order by nombre
+        """
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def get_detalle_unidades_rows(solicitud_detalle_id: int) -> list[dict]:
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        """
+        select
+            id,
+            solicitud_detalle_id,
+            id_unidad,
+            porcentaje
+        from solicitudes_detalle_un
+        where solicitud_detalle_id = %s
+        order by id
+        """,
+        (int(solicitud_detalle_id),),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+def guardar_detalle_unidades_rows(
+    solicitud_detalle_id: int,
+    rows: list[dict],
+    usuario_id: int,
+) -> None:
+    conn = obtener_conexion()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "select id from solicitudes_detalle where id = %s limit 1",
+            (int(solicitud_detalle_id),)
+        )
+        existe = cur.fetchone()
+        if not existe:
+            raise ValueError("el detalle indicado no existe")
+
+        total = Decimal("0")
+        unidades_vistas = set()
+
+        cleaned: list[tuple[int, Decimal]] = []
+
+        for r in (rows or []):
+            id_unidad = r.get("id_unidad")
+            porcentaje = r.get("porcentaje")
+
+            if id_unidad in (None, "", "nan"):
+                continue
+
+            try:
+                id_unidad = int(id_unidad)
+            except Exception:
+                raise ValueError("hay una unidad de negocio inválida")
+
+            try:
+                porcentaje_dec = Decimal(str(porcentaje or 0))
+            except Exception:
+                raise ValueError("hay un porcentaje inválido")
+
+            if porcentaje_dec <= 0:
+                raise ValueError("todos los porcentajes deben ser mayores a 0")
+
+            if id_unidad in unidades_vistas:
+                raise ValueError("no se permiten unidades de negocio repetidas en el mismo renglón")
+
+            unidades_vistas.add(id_unidad)
+            total += porcentaje_dec
+            cleaned.append((id_unidad, porcentaje_dec))
+
+        if not cleaned:
+            raise ValueError("debes capturar al menos una unidad de negocio")
+
+        if total.quantize(Decimal("1.000000")) != Decimal("100.000000"):
+            raise ValueError("la suma de porcentajes debe ser exactamente 100")
+
+        cur.execute(
+            "delete from solicitudes_detalle_un where solicitud_detalle_id = %s",
+            (int(solicitud_detalle_id),)
+        )
+
+        for id_unidad, porcentaje_dec in cleaned:
+            cur.execute(
+                """
+                insert into solicitudes_detalle_un
+                (
+                    solicitud_detalle_id,
+                    id_unidad,
+                    porcentaje,
+                    creado_por
+                )
+                values (%s, %s, %s, %s)
+                """,
+                (
+                    int(solicitud_detalle_id),
+                    int(id_unidad),
+                    porcentaje_dec,
+                    int(usuario_id),
+                ),
+            )
+
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        
