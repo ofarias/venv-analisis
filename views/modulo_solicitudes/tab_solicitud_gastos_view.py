@@ -514,7 +514,7 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
 
 
 def mostrar_tab_solicitudes_gastos():
-    st.subheader("solicitudes de gastos")
+    st.subheader("Solicitudes de gastos")
 
     usuario = _get_usuario_actual()
     if not usuario:
