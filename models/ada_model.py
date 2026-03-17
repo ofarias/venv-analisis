@@ -318,3 +318,94 @@ def obtener_datoscfd_por_uuid(secrets, uuid: str) -> dict | None:
         except Exception:
             pass
         
+def obtener_xml_por_uuid(secrets, uuid: str) -> tuple[bytes | None, str | None]:
+    uuid = ("" if uuid is None else str(uuid)).strip().upper()
+    if not uuid:
+        return None, None
+
+    sql = """
+        SELECT FIRST 1
+            d.XML,
+            d.ARCHIVO as NOMBREARCHIVO
+        FROM DATOSCFD c
+        JOIN DOCTOSDIG d
+            ON c.ID_DOCTODIG = d.ID_DOCTODIG
+        WHERE UPPER(c.UUID) = ?
+    """
+
+    con = _conn_from_secrets(secrets)
+    try:
+        cur = con.cursor()
+        cur.execute(sql, (uuid,))
+        row = cur.fetchone()
+        if not row:
+            return None, None
+
+        archivo = row[0]
+        nombre = row[1] if len(row) > 1 else None
+
+        if archivo is None:
+            return None, nombre
+
+        if isinstance(archivo, str):
+            archivo = archivo.encode("utf-8")
+
+        nombre = (nombre or f"{uuid}.xml").strip()
+        return bytes(archivo), nombre
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+def obtener_xmls_por_uuids(secrets, uuids: list[str]) -> dict[str, tuple[bytes, str | None]]:
+    uuids_norm = [
+        str(x).strip().upper()
+        for x in (uuids or [])
+        if str(x).strip()
+    ]
+    if not uuids_norm:
+        return {}
+
+    placeholders = ",".join(["?"] * len(uuids_norm))
+
+    sql = f"""
+        SELECT
+            UPPER(c.UUID) AS UUID,
+            d.XML,
+            d.ARCHIVO AS NOMBREARCHIVO
+        FROM DATOSCFD c
+        JOIN DOCTOSDIG d
+            ON c.ID_DOCTODIG = d.ID_DOCTODIG
+        WHERE UPPER(c.UUID) IN ({placeholders})
+    """
+
+    con = _conn_from_secrets(secrets)
+    try:
+        cur = con.cursor()
+        cur.execute(sql, tuple(uuids_norm))
+        rows = cur.fetchall()
+
+        out: dict[str, tuple[bytes, str | None]] = {}
+
+        for row in rows:
+            uuid = (row[0] or "").strip().upper()
+            archivo = row[1]
+            nombre = row[2] if len(row) > 2 else None
+
+            if not uuid or archivo is None:
+                continue
+
+            if isinstance(archivo, str):
+                archivo = archivo.encode("utf-8")
+
+            nombre = (nombre or f"{uuid}.xml").strip()
+            out[uuid] = (bytes(archivo), nombre)
+
+        return out
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass

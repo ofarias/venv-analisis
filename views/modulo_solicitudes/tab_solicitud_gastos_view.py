@@ -45,6 +45,9 @@ UUID_RE = re.compile(
 _HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2212"
 
 
+
+
+
 def _get_app_link_cfg():
     base_url = (st.secrets.get("APP_BASE_URL", "") or "").strip()
     secret = (st.secrets.get("APP_LINK_SECRET", "") or "").strip()
@@ -243,6 +246,7 @@ def _defaults_row():
         "subtotal_xml": 0,
         "iva_xml": 0,
         "total_xml": 0,
+        "rfce": "",
     }
 
 
@@ -403,6 +407,12 @@ def _icono_prepago(concepto: str) -> str:
 def _has_uuid(v) -> bool:
     return bool(str(v or "").strip())
 
+def _requiere_validacion_row(r: dict) -> bool:
+    precio_unitario = _to_float(r.get("precio_unitario"))
+    fiscales = _to_int(r.get("fiscales"))
+    uuid_ok = _has_uuid(r.get("uuid"))
+
+    return (fiscales == 1 and precio_unitario > 0) or uuid_ok
 
 def _is_prepago(concepto: str) -> bool:
     k = (concepto or "").strip().lower()
@@ -459,6 +469,7 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
         ("_monto", "importe"),
         ("pagado_con", "pagado con"),
         ("proveedor", "proveedor"),
+        ("rfce", "rfce"),
     ]
 
     def _render_tabla(titulo: str, filas: list[dict]) -> str:
@@ -1328,6 +1339,7 @@ def mostrar_tab_solicitudes_gastos():
         "uso_cfdi",
         "tiene_pdf",
         "total_unidades",
+        "fiscales",
     ]
 
     if df_det.empty:
@@ -1404,12 +1416,29 @@ def mostrar_tab_solicitudes_gastos():
     df_show["iva_xml_view"] = df_show["iva_xml"].apply(_money_fmt)
     df_show["total_xml_view"] = df_show["total_xml"].apply(_money_fmt)
     df_show["prepago_icon"] = df_show["concepto"].apply(_icono_prepago)
-    df_show["pdf_icon"] = df_show["tiene_pdf"].apply(
-        lambda x: "📄" if int(_to_int(x)) == 1 else ""
+    
+    df_show["pdf_icon"] = df_show.apply(
+        lambda r: (
+            "📄"
+            if _requiere_validacion_row(r.to_dict()) and _to_int(r.get("tiene_pdf")) == 1
+            else ""
+        ),
+        axis=1,
     )
-    df_show["un_icon"] = df_show["total_unidades"].apply(
-        lambda x: "☑️" if round(_to_float(x), 6) == 100.0 else ("⚠️" if _to_float(x) > 0 else "")
+
+    df_show["un_icon"] = df_show.apply(
+        lambda r: (
+            "☑️"
+            if _requiere_validacion_row(r.to_dict()) and round(_to_float(r.get("total_unidades")), 6) == 100.0
+            else (
+                "⚠️"
+                if _requiere_validacion_row(r.to_dict()) and _to_float(r.get("total_unidades")) > 0
+                else ""
+            )
+        ),
+        axis=1,
     )
+
     st.markdown(
         """
         <style>
@@ -1430,13 +1459,14 @@ def mostrar_tab_solicitudes_gastos():
         "un_icon",
         "prepago_icon",
         "concepto",
+        "precio_unitario",
         "uuid",
+        "rfce",
         "subtotal_xml_view",
         "iva_xml_view",
         "total_xml_view",
         "descripcion",
         "cantidad",
-        "precio_unitario",
         "pagado_con",
         "proveedor",
         "receptor",
@@ -1603,9 +1633,11 @@ def mostrar_tab_solicitudes_gastos():
                 total_xml = cfd.get("TOTAL") or cfd.get("total") or 0
                 subtotal_xml = cfd.get("SUBTOTAL") or cfd.get("subtotal") or 0
                 iva_xml = cfd.get("IVA") or cfd.get("iva") or 0
+                rfce = (cfd.get("RFC_EMISOR"))
 
                 edited.at[i, "proveedor"] = str(proveedor).strip()
-
+                edited.at[i, "rfce"] = str(rfce).strip().upper()
+                
                 if fecha is not None and str(fecha).strip() != "":
                     dt = pd.to_datetime(fecha, errors="coerce")
                     if not pd.isna(dt):
@@ -1627,6 +1659,7 @@ def mostrar_tab_solicitudes_gastos():
                 edited.at[i, "metodo_pago"] = str(metodo_pago).strip().upper()
                 edited.at[i, "tipo_comprobante"] = _tipo_comprobante_a_clave(str(tipo_comprobante))
                 edited.at[i, "uso_cfdi"] = str(uso_cfdi).strip().upper()
+                
                 edited.at[i, "total_xml"] = _to_float(total_xml)
                 edited.at[i, "subtotal_xml"] = _to_float(subtotal_xml)
                 edited.at[i, "iva_xml"] = _to_float(iva_xml)
@@ -1634,6 +1667,21 @@ def mostrar_tab_solicitudes_gastos():
                 edited.at[i, "iva_xml_view"] = _money_fmt(iva_xml)
                 edited.at[i, "total_xml_view"] = _money_fmt(total_xml)
                 edited.at[i, "prepago_icon"] = _icono_prepago(edited.at[i, "concepto"])
+
+                row_now = edited.loc[i].to_dict()
+
+                edited.at[i, "pdf_icon"] = (
+                    "📄"
+                    if _requiere_validacion_row(row_now) and _to_int(edited.at[i, "tiene_pdf"]) == 1
+                    else ""
+                )
+
+                total_un_row = _to_float(edited.at[i, "total_unidades"])
+                edited.at[i, "un_icon"] = (
+                    "☑️"
+                    if _requiere_validacion_row(row_now) and round(total_un_row, 6) == 100.0
+                    else ("⚠️" if _requiere_validacion_row(row_now) and total_un_row > 0 else "")
+                )
 
                 changed = True
 
@@ -1696,8 +1744,19 @@ def mostrar_tab_solicitudes_gastos():
 
     val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id))
 
-    if val_det.get("ok"):
-        st.success("validación de comprobación correcta: pdf y unidades completos.")
+    if val_det.get("ok") and estatus_actual in ("autorizada", "dispersion"):
+        if st.button(
+            "enviar a revisión comprobación",
+            use_container_width=True,
+            key="sg_btn_revision_comprobacion",
+        ):
+            cambiar_estatus_ctrl(
+                int(selected_id),
+                "revision comprobacion",
+                int(usuario["id"]),
+            )
+            st.success("estatus actualizado a revisión comprobación")
+            st.rerun()
     else:
         st.warning("la solicitud todavía no cumple validaciones para comprobación.")
         for err in val_det.get("errores", []):
@@ -1764,9 +1823,14 @@ def mostrar_tab_solicitudes_gastos():
     if "id" in edited.columns:
         df_detalle_sel = edited.copy()
         df_detalle_sel = df_detalle_sel[
-            (df_detalle_sel["concepto"].fillna("").astype(str).str.strip() != "")
-            & (pd.to_numeric(df_detalle_sel["total_xml"], errors="coerce").fillna(0) > 0)
-        ]
+            df_detalle_sel.apply(
+                lambda r: (
+                    str(r.get("concepto") or "").strip() != ""
+                    and _requiere_validacion_row(r.to_dict())
+                ),
+                axis=1,
+            )
+        ].copy()
 
         ids_detalle_guardados = [
             int(x)

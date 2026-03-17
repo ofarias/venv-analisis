@@ -33,6 +33,9 @@ from models.solicitudes_model import (
     get_detalle_unidades_rows,
     guardar_detalle_unidades_rows,
     validar_detalle_para_comprobacion,
+    get_xml_by_uuid, 
+    get_pdf_by_uuid,
+    get_xmls_by_uuids,
 )
 
 
@@ -374,3 +377,17 @@ def guardar_detalle_unidades_ctrl(
 
 def validar_detalle_para_comprobacion_ctrl(solicitud_id: int) -> dict:
     return validar_detalle_para_comprobacion(int(solicitud_id))
+
+def get_detalle_contabilidad_ctrl(solicitud_id: int):
+    from models.solicitudes_model import get_detalle_contabilidad_view
+    return get_detalle_contabilidad_view(solicitud_id)
+
+def descargar_xml_ctrl(uuid: str):
+    return get_xml_by_uuid(uuid)
+
+def descargar_xmls_ctrl(uuids: list[str]):
+    return get_xmls_by_uuids(uuids)
+
+def descargar_pdf_ctrl(uuid: str):
+    return get_pdf_by_uuid(uuid)
+

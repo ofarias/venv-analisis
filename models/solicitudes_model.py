@@ -8,7 +8,12 @@ from datetime import date, time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from database.conexion import obtener_conexion
-from models.ada_model import obtener_datoscfd_por_uuid as obtener_datoscfd_por_uuid_ada
+
+from models.ada_model import (
+    obtener_datoscfd_por_uuid as obtener_datoscfd_por_uuid_ada,
+    obtener_xml_por_uuid as obtener_xml_por_uuid_ada,
+    obtener_xmls_por_uuids as obtener_xmls_por_uuids_ada,
+)
 
 @dataclass
 class SolicitudCabecera:
@@ -241,7 +246,6 @@ def get_solicitud_by_id(solicitud_id: int) -> Optional[Dict[str, Any]]:
     conn.close()
     return row
 
-
 def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
     conn = obtener_conexion()
     cur = conn.cursor(dictionary=True)
@@ -290,6 +294,9 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
           d.usuario_forma_pago_id,
           d.fecha_creacion,
 
+          coalesce(scg.fiscales, 0) as fiscales,
+          coalesce(scg.prepago, 0) as prepago,
+
           case
             when d.uuid is not null
              and trim(d.uuid) <> ''
@@ -309,6 +316,8 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
           ), 0) as total_unidades
 
         from solicitudes_detalle d
+        left join solicitud_concepto_gasto scg
+          on trim(scg.concepto) = trim(d.concepto)
         where d.solicitud_id = %s
         order by d.renglon
         """,
@@ -463,6 +472,9 @@ def upsert_detalle_rows(
             presupuesto_detalle_id = _none_if_nan(r.get("presupuesto_detalle_id"))
 
             usuario_forma_pago_id = _none_if_nan(r.get("usuario_forma_pago_id"))
+            
+            # nuevo campo rfc emisor
+            rfce = (_none_if_nan(r.get("rfce")) or "").strip() or None
 
             if detalle_id is None:
                 renglon = _next_renglon(cur, solicitud_id)
@@ -482,7 +494,8 @@ def upsert_detalle_rows(
                       uuid, referencia, archivo_url, notas,
                       presupuesto_id, presupuesto_detalle_id,
                       usuario_forma_pago_id,
-                      creado_por
+                      creado_por, 
+                      rfce
                     )
                     values
                     (
@@ -497,6 +510,7 @@ def upsert_detalle_rows(
                       %s, %s, %s,
                       %s, %s, %s, %s,
                       %s, %s,
+                      %s,
                       %s,
                       %s
                     )
@@ -515,6 +529,7 @@ def upsert_detalle_rows(
                         presupuesto_id, presupuesto_detalle_id,
                         usuario_forma_pago_id,
                         creado_por,
+                        rfce
                     ),
                 )
             else:
@@ -566,7 +581,8 @@ def upsert_detalle_rows(
 
                       presupuesto_id = %s,
                       presupuesto_detalle_id = %s,
-                      usuario_forma_pago_id = %s
+                      usuario_forma_pago_id = %s,
+                      rfce = %s
                     where id = %s
                       and solicitud_id = %s
                     """,
@@ -610,6 +626,7 @@ def upsert_detalle_rows(
                         presupuesto_id,
                         presupuesto_detalle_id,
                         usuario_forma_pago_id,
+                        rfce, 
                         int(detalle_id),
                         int(solicitud_id),
                     ),
@@ -1167,7 +1184,6 @@ def guardar_detalle_unidades_rows(
         except Exception:
             pass
         
-
 def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
     conn = obtener_conexion()
     cur = conn.cursor(dictionary=True)
@@ -1180,6 +1196,7 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
                 d.uuid,
                 d.total_xml,
                 d.precio_unitario,
+                coalesce(scg.fiscales, 0) as fiscales,
                 case
                     when d.uuid is not null and trim(d.uuid) <> '' and exists (
                         select 1
@@ -1200,6 +1217,8 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
                     where u.solicitud_detalle_id = d.id
                 ), 0) as num_unidades
             from solicitudes_detalle d
+            left join solicitud_concepto_gasto scg
+              on scg.concepto collate utf8mb4_unicode_ci = d.concepto collate utf8mb4_unicode_ci
             where d.solicitud_id = %s
             order by d.renglon, d.id
             """,
@@ -1224,9 +1243,16 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         detalle_id = int(r.get("id") or 0)
         concepto = (r.get("concepto") or "").strip()
         uuid = (r.get("uuid") or "").strip()
+        precio_unitario = float(r.get("precio_unitario") or 0)
+        fiscales = int(r.get("fiscales") or 0)
         tiene_pdf_uuid = int(r.get("tiene_pdf_uuid") or 0)
         total_unidades = float(r.get("total_unidades") or 0)
         num_unidades = int(r.get("num_unidades") or 0)
+
+        requiere_validacion = ((fiscales == 1 and precio_unitario > 0) or bool(uuid))
+
+        if not requiere_validacion:
+            continue
 
         if uuid and not tiene_pdf_uuid:
             errores.append(
@@ -1247,3 +1273,71 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         "rows": rows,
         "errores": errores,
     }
+
+def get_detalle_contabilidad_view(solicitud_id: int):
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+
+    cur.execute(
+        """
+        select *
+        from vw_solicitudes_revision_contabilidad
+        where solicitud_id = %s 
+        and (total_xml > 0 or precio_unitario > 0) 
+        order by fecha
+        """,
+        (int(solicitud_id),),
+    )
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return rows
+
+
+
+def get_pdf_by_uuid(uuid: str):
+    conn = obtener_conexion()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        select ARCHIVO, NOMBRE_ARCHIVO
+        from DATOSCFD_PDF
+        where upper(trim(UUID)) = upper(trim(%s))
+        limit 1
+        """,
+        (uuid,),
+    )
+
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        return None, None
+
+    return row[0], row[1]
+
+
+def get_xml_by_uuid(uuid: str) -> tuple[bytes | None, str | None]:
+    uuid_norm = ("" if uuid is None else str(uuid)).strip().upper()
+    if not uuid_norm:
+        return None, None
+
+    return obtener_xml_por_uuid_ada(st.secrets, uuid_norm)
+
+
+def get_xmls_by_uuids(uuids: list[str]) -> dict[str, tuple[bytes, str | None]]:
+    uuids_norm = [
+        str(x).strip().upper()
+        for x in (uuids or [])
+        if str(x).strip()
+    ]
+    if not uuids_norm:
+        return {}
+
+    return obtener_xmls_por_uuids_ada(st.secrets, uuids_norm)

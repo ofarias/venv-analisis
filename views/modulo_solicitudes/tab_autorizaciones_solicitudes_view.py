@@ -391,27 +391,37 @@ def mostrar_tab_autorizaciones_solicitudes():
     else:
         df_det = pd.DataFrame(detalle)
 
-        def _monto(r):
-            total_xml = float(r.get("total_xml") or 0)
-            if total_xml > 0:
-                return total_xml
-            return float(r.get("cantidad") or 0) * float(r.get("precio_unitario") or 0)
+        if "precio_unitario" in df_det.columns:
+            df_det["precio_unitario"] = pd.to_numeric(
+                df_det["precio_unitario"], errors="coerce"
+            ).fillna(0.0)
 
-        df_det["monto"] = df_det.apply(_monto, axis=1)
+            df_det = df_det[df_det["precio_unitario"] > 0].copy()
 
-        cols_det = [
-            "fecha_gasto",
-            "concepto",
-            "uuid",
-            "descripcion",
-            "cantidad",
-            "precio_unitario",
-            "monto",
-            "proveedor",
-        ]
-        cols_exist = [c for c in cols_det if c in df_det.columns]
-        st.dataframe(df_det[cols_exist], use_container_width=True, hide_index=True)
-        st.markdown(f"### total solicitud: ${df_det['monto'].sum():,.2f}")
+        if df_det.empty:
+            st.info("sin detalle con gasto estimado mayor a 0")
+        else:
+            def _monto(r):
+                total_xml = float(r.get("total_xml") or 0)
+                if total_xml > 0:
+                    return total_xml
+                return float(r.get("cantidad") or 0) * float(r.get("precio_unitario") or 0)
+
+            df_det["monto"] = df_det.apply(_monto, axis=1)
+
+            cols_det = [
+                "fecha_gasto",
+                "concepto",
+                "uuid",
+                "descripcion",
+                "cantidad",
+                "precio_unitario",
+                "monto",
+                "proveedor",
+            ]
+            cols_exist = [c for c in cols_det if c in df_det.columns]
+            st.dataframe(df_det[cols_exist], use_container_width=True, hide_index=True)
+            st.markdown(f"### total solicitud: ${df_det['monto'].sum():,.2f}")
 
     st.divider()
 
