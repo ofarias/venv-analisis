@@ -6,6 +6,7 @@ import streamlit as st
 from datetime import date
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, List, Optional, Tuple
+from models.conta45_model import insertar_poliza_solicitud_gasto_desglosada
 
 from models.solicitudes_model import (
     get_usuarios_activos,
@@ -36,6 +37,7 @@ from models.solicitudes_model import (
     get_xml_by_uuid, 
     get_pdf_by_uuid,
     get_xmls_by_uuids,
+    get_detalle_poliza_solicitud,
 )
 
 
@@ -391,3 +393,36 @@ def descargar_xmls_ctrl(uuids: list[str]):
 def descargar_pdf_ctrl(uuid: str):
     return get_pdf_by_uuid(uuid)
 
+def get_detalle_poliza_solicitud_ctrl(solicitud_id: int) -> list[dict]:
+    return get_detalle_poliza_solicitud(int(solicitud_id))
+
+
+def generar_poliza_solicitud_gasto_ctrl(solicitud_id: int, usuario_id: int) -> dict:
+    try:
+        detalle = get_detalle_poliza_solicitud(int(solicitud_id))
+        if not detalle:
+            return {"ok": False, "msg": "no hay detalle para generar la póliza"}
+
+        solicitud = get_solicitud_by_id(int(solicitud_id))
+        if not solicitud:
+            return {"ok": False, "msg": "la solicitud no existe"}
+
+        res = insertar_poliza_solicitud_gasto_desglosada(
+            solicitud=solicitud,
+            detalle=detalle,
+            secrets=st.secrets,
+        )
+
+        if not res.get("ok"):
+            return res
+
+        actualizar_estatus_solicitud(
+            solicitud_id=int(solicitud_id),
+            estatus="poliza",
+            actualizado_por=int(usuario_id),
+        )
+
+        return res
+
+    except Exception as e:
+        return {"ok": False, "msg": f"error al generar póliza de solicitud: {e}"}

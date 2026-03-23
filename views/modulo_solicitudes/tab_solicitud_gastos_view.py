@@ -245,6 +245,7 @@ def _defaults_row():
         "uso_cfdi": "",
         "subtotal_xml": 0,
         "iva_xml": 0,
+        "isr_ret_xml": 0,
         "total_xml": 0,
         "rfce": "",
     }
@@ -285,7 +286,7 @@ def _normalize_df(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
                 else str(x)
             )
 
-    for c in ["importe", "subtotal_xml", "iva_xml", "total_xml", "precio_unitario"]:
+    for c in ["importe", "subtotal_xml", "iva_xml", "isr_ret_xml", "total_xml", "precio_unitario"]:
         if c in d.columns:
             d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0)
 
@@ -431,9 +432,18 @@ def _estatus_badge(e):
         return "🔴 rechazada"
     if e == "eliminada":
         return "⚫ eliminada"
+    if e == "dispersion":
+        return "🟠 dispersion"
+    if e == "contabilidad":
+        return "🔵 contabilidad"
+    if e == "revision comprobacion":
+        return "🟡 revision comprobacion"
+    if e == "poliza":
+        return "🟣 poliza"
     if e == "cerrada":
-        return "🟣 cerrada"
+        return "⚫ cerrada"
     return e
+
 
 
 def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str:
@@ -1458,6 +1468,7 @@ def mostrar_tab_solicitudes_gastos():
         "pdf_icon",
         "un_icon",
         "prepago_icon",
+        "pagado_con",
         "concepto",
         "precio_unitario",
         "uuid",
@@ -1467,7 +1478,6 @@ def mostrar_tab_solicitudes_gastos():
         "total_xml_view",
         "descripcion",
         "cantidad",
-        "pagado_con",
         "proveedor",
         "receptor",
         "serie",
@@ -1633,6 +1643,11 @@ def mostrar_tab_solicitudes_gastos():
                 total_xml = cfd.get("TOTAL") or cfd.get("total") or 0
                 subtotal_xml = cfd.get("SUBTOTAL") or cfd.get("subtotal") or 0
                 iva_xml = cfd.get("IVA") or cfd.get("iva") or 0
+                isr_ret_xml = (
+                    cfd.get("ISR_RET_XML")
+                    or cfd.get("isr_ret_xml")
+                    or 0
+                )
                 rfce = (cfd.get("RFC_EMISOR"))
 
                 edited.at[i, "proveedor"] = str(proveedor).strip()
@@ -1663,6 +1678,8 @@ def mostrar_tab_solicitudes_gastos():
                 edited.at[i, "total_xml"] = _to_float(total_xml)
                 edited.at[i, "subtotal_xml"] = _to_float(subtotal_xml)
                 edited.at[i, "iva_xml"] = _to_float(iva_xml)
+                edited.at[i, "isr_ret_xml"] = _to_float(isr_ret_xml)
+
                 edited.at[i, "subtotal_xml_view"] = _money_fmt(subtotal_xml)
                 edited.at[i, "iva_xml_view"] = _money_fmt(iva_xml)
                 edited.at[i, "total_xml_view"] = _money_fmt(total_xml)

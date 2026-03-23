@@ -7,6 +7,7 @@ import streamlit as st
 from io import BytesIO
 import zipfile
 
+#from controllers.solicitudes_controller import cambiar_estatus_ctrl
 from controllers.solicitudes_controller import (
     listar_solicitudes_ctrl,
     get_solicitud_ctrl,
@@ -14,6 +15,7 @@ from controllers.solicitudes_controller import (
     descargar_xml_ctrl,
     descargar_xmls_ctrl,
     descargar_pdf_ctrl,
+    generar_poliza_solicitud_gasto_ctrl,
 )
 
 ESTATUS_OPTS = [
@@ -26,25 +28,19 @@ ESTATUS_OPTS = [
     "cerrada",
 ]
 
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _get_solicitud_cached(solicitud_id: int):
+    return get_solicitud_ctrl(int(solicitud_id))
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _get_detalle_contabilidad_cached(solicitud_id: int):
+    return get_detalle_contabilidad_ctrl(int(solicitud_id))
+
+
 def _has_uuid(v) -> bool:
     return bool(str(v or "").strip())
-
-def _requiere_validacion_row(r: dict) -> bool:
-    precio_unitario = _to_float(r.get("precio_unitario"))
-    fiscales = _to_int(r.get("fiscales"))
-    uuid_ok = _has_uuid(r.get("uuid"))
-
-    return precio_unitario > 0 or uuid_ok or fiscales == 1
-
-def _get_usuario_actual():
-    return st.session_state.get("usuario") or {}
-
-
-def _money(x) -> str:
-    try:
-        return f"${float(x or 0):,.2f}"
-    except Exception:
-        return "$0.00"
 
 
 def _to_float(x) -> float:
@@ -65,6 +61,31 @@ def _to_int(x) -> int:
         return 0
 
 
+def _requiere_validacion_row(r: dict) -> bool:
+    precio_unitario = _to_float(r.get("precio_unitario"))
+    fiscales = _to_int(r.get("fiscales"))
+    uuid_ok = _has_uuid(r.get("uuid"))
+    return precio_unitario > 0 or uuid_ok or fiscales == 1
+
+
+def _get_usuario_actual():
+    return st.session_state.get("usuario") or {}
+
+
+def _money(x) -> str:
+    try:
+        return f"${float(x or 0):,.2f}"
+    except Exception:
+        return "$0.00"
+
+
+def _money_text(x) -> str:
+    try:
+        return f"$ {float(x or 0):,.2f}"
+    except Exception:
+        return "$ 0.00"
+
+
 def _estatus_badge(e: str) -> str:
     e = (e or "").strip().lower()
     if e == "autorizada":
@@ -82,38 +103,67 @@ def _estatus_badge(e: str) -> str:
     return e
 
 
-def _icon_pdf(v) -> str:
-    try:
-        return "📄" if int(float(v or 0)) == 1 else ""
-    except Exception:
-        return ""
-
-
-def _icon_unidades(v) -> str:
-    total = _to_float(v)
-    if round(total, 6) == 100.0:
-        return "☑️"
-    if total > 0:
-        return "⚠️"
-    return ""
-
-
 def _icon_prepago(concepto: str) -> str:
     concepto = (concepto or "").strip().lower()
-    # solo visual; si quieres usar PREPAGO_MAP aquí, lo conectamos luego
     hints = ["hospedaje", "boletos", "hotel", "avión", "avion"]
     return "💳" if any(h in concepto for h in hints) else ""
 
 
-def _monto_row(r: dict) -> float:
-    total_xml = _to_float(r.get("total_xml"))
-    if total_xml > 0:
-        return total_xml
-    return _to_float(r.get("cantidad")) * _to_float(r.get("precio_unitario"))
+def _es_prepago(concepto: str) -> bool:
+    return _icon_prepago(concepto) == "💳"
+
+
+def _aplicar_prorrateo_visual(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+
+    if "porcentaje" not in d.columns:
+        d["porcentaje"] = 100.0
+
+    d["porcentaje"] = pd.to_numeric(d["porcentaje"], errors="coerce").fillna(100.0)
+
+    for col in ["subtotal_xml", "iva_xml", "isr_ret_xml", "total_xml", "precio_unitario"]:
+        if col not in d.columns:
+            d[col] = 0.0
+        d[col] = pd.to_numeric(d[col], errors="coerce").fillna(0.0)
+
+    factor = d["porcentaje"] / 100.0
+    d["subtotal_xml_prorr"] = d["subtotal_xml"] * factor
+    d["iva_xml_prorr"] = d["iva_xml"] * factor
+    d["isr_ret_xml_prorr"] = d["isr_ret_xml"] * factor
+    d["total_xml_prorr"] = d["total_xml"] * factor
+    d["precio_unitario_prorr"] = d["precio_unitario"] * factor
+
+    d["monto"] = d["total_xml_prorr"].copy()
+    sin_uuid = d["uuid"].isna() | (d["uuid"].astype(str).str.strip() == "")
+    d.loc[sin_uuid, "monto"] = d.loc[sin_uuid, "precio_unitario_prorr"]
+
+    return d
+
+
+def _clear_doc_cache_for_current_request(sel_id: int, uuids: list[str]) -> None:
+    st.session_state.pop("conta_zip_docs_bytes", None)
+    st.session_state.pop("conta_zip_docs_name", None)
+
+    for uuid in uuids:
+        st.session_state.pop(f"xml_bytes_{uuid}", None)
+        st.session_state.pop(f"xml_name_{uuid}", None)
+        st.session_state.pop(f"pdf_bytes_{uuid}", None)
+        st.session_state.pop(f"pdf_name_{uuid}", None)
+
+    _get_solicitud_cached.clear()
+    _get_detalle_contabilidad_cached.clear()
 
 
 def mostrar_tab_revisa_contabilidad():
     st.subheader("revisión contabilidad")
+    msg_ok = st.session_state.pop("conta_poliza_ok", "")
+    msg_err = st.session_state.pop("conta_poliza_err", "")
+
+    if msg_ok:
+        st.success(msg_ok)
+
+    if msg_err:
+        st.error(msg_err)
 
     usuario = _get_usuario_actual()
     roles = [str(x).strip().lower() for x in (usuario.get("roles", []) or [])]
@@ -211,7 +261,7 @@ def mostrar_tab_revisa_contabilidad():
         st.info("captura un id para revisar la solicitud")
         return
 
-    s = get_solicitud_ctrl(int(sel_id))
+    s = _get_solicitud_cached(int(sel_id))
     if not s:
         st.warning("no existe esa solicitud")
         return
@@ -232,13 +282,18 @@ def mostrar_tab_revisa_contabilidad():
         unsafe_allow_html=True,
     )
 
-    detalle = get_detalle_contabilidad_ctrl(int(sel_id)) or []
+    detalle = _get_detalle_contabilidad_cached(int(sel_id)) or []
     if not detalle:
         st.info("sin detalle")
         return
 
     df_det = pd.DataFrame(detalle)
-                
+    if df_det.empty:
+        st.info("sin detalle contable")
+        return
+
+    df_det = _aplicar_prorrateo_visual(df_det)
+
     if "precio_unitario" in df_det.columns:
         df_det["precio_unitario"] = pd.to_numeric(
             df_det["precio_unitario"], errors="coerce"
@@ -250,19 +305,16 @@ def mostrar_tab_revisa_contabilidad():
     if "uuid" not in df_det.columns:
         df_det["uuid"] = ""
 
-    df_det = pd.DataFrame(detalle)
+    if "concepto" not in df_det.columns:
+        df_det["concepto"] = ""
 
-    if df_det.empty:
-        st.info("sin detalle contable")
-        return    
+    df_det["es_prepago"] = df_det["concepto"].fillna("").apply(_es_prepago)
 
-    df_det["monto"] = pd.to_numeric(
-        df_det.get("total_xml", 0), errors="coerce"
-    ).fillna(0.0)
-        
     if "tiene_pdf" in df_det.columns:
         df_det["pdf"] = df_det.apply(
-            lambda r: "📄" if _requiere_validacion_row(r.to_dict()) and _to_int(r.get("tiene_pdf")) == 1 else "",
+            lambda r: "📄"
+            if _requiere_validacion_row(r.to_dict()) and _to_int(r.get("tiene_pdf")) == 1
+            else "",
             axis=1,
         )
     else:
@@ -293,12 +345,15 @@ def mostrar_tab_revisa_contabilidad():
             "cuenta",
             "unidad_negocio",
             "depto",
+            "porcentaje",
             "uuid",
             "rfce",
             "proveedor",
-            "subtotal_xml",
-            "iva_xml",
-            "total_xml",
+            "subtotal_xml_prorr",
+            "iva_xml_prorr",
+            "isr_ret_xml_prorr",
+            "total_xml_prorr",
+            "precio_unitario_prorr",
             "moneda",
             "notas",
         ]
@@ -306,7 +361,26 @@ def mostrar_tab_revisa_contabilidad():
     ]
 
     st.markdown("### detalle de gastos")
-    st.dataframe(df_det[cols_det], use_container_width=True, hide_index=True)
+    df_det_show = df_det[cols_det].copy()
+
+    rename_map = {
+        "concepto_catalogo": "concepto",
+        "unidad_negocio": "unidad_negocio",
+        "porcentaje": "% prorrateo",
+        "subtotal_xml_prorr": "subtotal_xml",
+        "iva_xml_prorr": "iva_xml",
+        "isr_ret_xml_prorr": "isr_ret_xml",
+        "total_xml_prorr": "total_xml",
+        "precio_unitario_prorr": "precio_unitario",
+    }
+
+    df_det_show = df_det_show.rename(columns=rename_map)
+
+    for col in ["subtotal_xml", "iva_xml", "isr_ret_xml", "total_xml", "precio_unitario"]:
+        if col in df_det_show.columns:
+            df_det_show[col] = df_det_show[col].apply(_money_text)
+
+    st.dataframe(df_det_show, use_container_width=True, hide_index=True)
 
     total_general = float(df_det["monto"].sum())
 
@@ -317,13 +391,100 @@ def mostrar_tab_revisa_contabilidad():
     total_no_fiscal = float(
         df_det.loc[df_det["uuid"].isna() | (df_det["uuid"] == ""), "monto"].sum()
     )
-    
+
+    total_no_prepago = float(
+        df_det.loc[~df_det["es_prepago"], "monto"].sum()
+    )
 
     st.markdown("### resumen")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("total fiscal", _money(total_fiscal))
     c2.metric("total no fiscal", _money(total_no_fiscal))
     c3.metric("total general", _money(total_general))
+    c4.metric("gastos no prepagos", _money(total_no_prepago))
+
+    st.markdown("### resumen por concepto (sin prorrateo)")
+
+    df_concepto = df_det.copy()
+
+    if "concepto_catalogo" not in df_concepto.columns:
+        df_concepto["concepto_catalogo"] = df_concepto.get("concepto", "")
+
+    df_concepto["subtotal_xml"] = pd.to_numeric(df_concepto.get("subtotal_xml", 0), errors="coerce").fillna(0.0)
+    df_concepto["iva_xml"] = pd.to_numeric(df_concepto.get("iva_xml", 0), errors="coerce").fillna(0.0)
+    df_concepto["isr_ret_xml"] = pd.to_numeric(df_concepto.get("isr_ret_xml", 0), errors="coerce").fillna(0.0)
+    df_concepto["total_xml"] = pd.to_numeric(df_concepto.get("total_xml", 0), errors="coerce").fillna(0.0)
+    df_concepto["precio_unitario"] = pd.to_numeric(df_concepto.get("precio_unitario", 0), errors="coerce").fillna(0.0)
+    df_concepto["es_prepago"] = df_concepto["concepto"].fillna("").apply(_es_prepago)
+
+    resumen_concepto = (
+        df_concepto.groupby("detalle_id", as_index=False)
+        .agg(
+            concepto=("concepto_catalogo", "first"),
+            cuenta=("cuenta", "first"),
+            proveedor=("proveedor", "first"),
+            uuid=("uuid", "first"),
+            subtotal_xml=("subtotal_xml", "first"),
+            iva_xml=("iva_xml", "first"),
+            isr_ret_xml=("isr_ret_xml", "first"),
+            total_xml=("total_xml", "first"),
+            precio_unitario=("precio_unitario", "first"),
+            moneda=("moneda", "first"),
+            es_prepago=("es_prepago", "first"),
+        )
+    )
+
+    resumen_concepto["monto"] = resumen_concepto.apply(
+        lambda r: _to_float(r.get("total_xml"))
+        if _has_uuid(r.get("uuid"))
+        else _to_float(r.get("precio_unitario")),
+        axis=1,
+    )
+
+    resumen_concepto = (
+        resumen_concepto.groupby(["concepto", "cuenta", "moneda"], as_index=False)
+        .agg(
+            subtotal_xml=("subtotal_xml", "sum"),
+            iva_xml=("iva_xml", "sum"),
+            isr_ret_xml=("isr_ret_xml", "sum"),
+            total_xml=("total_xml", "sum"),
+            precio_unitario=("precio_unitario", "sum"),
+            monto=("monto", "sum"),
+            es_prepago=("es_prepago", "max"),
+        )
+        .sort_values(["concepto", "cuenta", "moneda"])
+    )
+
+    resumen_concepto_show = resumen_concepto.copy()
+
+    for col in ["subtotal_xml", "iva_xml", "isr_ret_xml", "total_xml", "precio_unitario", "monto"]:
+        resumen_concepto_show[col] = resumen_concepto_show[col].apply(_money_text)
+
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDataFrame"] div[role="gridcell"] {
+            font-variant-numeric: tabular-nums;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.dataframe(
+        resumen_concepto_show,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "subtotal_xml": st.column_config.TextColumn("subtotal_xml", width="medium"),
+            "iva_xml": st.column_config.TextColumn("iva_xml", width="medium"),
+            "isr_ret_xml": st.column_config.TextColumn("isr_ret_xml", width="medium"),
+            "total_xml": st.column_config.TextColumn("total_xml", width="medium"),
+            "precio_unitario": st.column_config.TextColumn("precio_unitario", width="medium"),
+            "monto": st.column_config.TextColumn("monto", width="medium"),
+            "es_prepago": None,
+        },
+    )
 
     pendientes_pdf = 0
     pendientes_un = 0
@@ -354,31 +515,32 @@ def mostrar_tab_revisa_contabilidad():
     c4.metric("líneas sin pdf", pendientes_pdf)
     c5.metric("líneas sin unidades al 100", pendientes_un)
 
-    if pendientes_pdf == 0 and pendientes_un == 0:
-        st.success("la solicitud cumple validaciones para pasar a revision comprobacion.")
-
-        if st.button("generar póliza", use_container_width=True):
-
-            from controllers.solicitudes_controller import cambiar_estatus_ctrl
-
-            cambiar_estatus_ctrl(
-                int(sel_id),
-                "poliza",
-                int(usuario.get("id") or 0),
-            )
-
-            st.success("estatus actualizado a póliza")
-            st.rerun()
-    else:
-        st.warning("la solicitud aún tiene pendientes antes de pasar a revision comprobacion.")
-    
-    st.markdown("### documentos")
-
     uuids = sorted({
         str(r.get("uuid") or "").strip().upper()
         for _, r in df_det.iterrows()
         if str(r.get("uuid") or "").strip()
     })
+
+    if pendientes_pdf == 0 and pendientes_un == 0:
+        st.success("la solicitud cumple validaciones para pasar a revision comprobacion.")
+
+        if st.button("generar póliza", use_container_width=True):
+            res = generar_poliza_solicitud_gasto_ctrl(
+                solicitud_id=int(sel_id),
+                usuario_id=int(usuario.get("id") or 0),
+            )
+
+            if res.get("ok"):
+                _clear_doc_cache_for_current_request(int(sel_id), uuids)
+                st.session_state["conta_poliza_ok"] = res.get("msg") or "póliza generada correctamente"
+                st.rerun()
+            else:
+                st.session_state["conta_poliza_err"] = res.get("msg") or "no se pudo generar la póliza"
+                st.rerun()
+    else:
+        st.warning("la solicitud aún tiene pendientes antes de pasar a revision comprobacion.")
+
+    st.markdown("### documentos")
 
     if uuids:
         c_zip1, c_zip2 = st.columns([2, 3])
@@ -423,48 +585,56 @@ def mostrar_tab_revisa_contabilidad():
                     key="conta_download_zip_docs",
                 )
 
-    for _, r in df_det.iterrows():
-        uuid = str(r.get("uuid") or "").strip().upper()
-
-        if not uuid:
-            continue
-
-        xml_bytes, xml_name = descargar_xml_ctrl(uuid)
-        pdf_bytes, pdf_name = descargar_pdf_ctrl(uuid)
-
+    for uuid in uuids:
         c1, c2, c3 = st.columns([3, 1, 1])
 
         with c1:
             st.write(uuid)
 
-        if xml_bytes:
-            with c2:
-                xml_filename = (xml_name or f"{uuid}.xml").strip()
-                if not xml_filename.lower().endswith(".xml"):
-                    xml_filename += ".xml"
+        with c2:
+            if st.button("preparar XML", key=f"prep_xml_{uuid}", use_container_width=True):
+                xml_bytes, xml_name = descargar_xml_ctrl(uuid)
+                if xml_bytes:
+                    xml_filename = (xml_name or f"{uuid}.xml").strip()
+                    if not xml_filename.lower().endswith(".xml"):
+                        xml_filename += ".xml"
+                    st.session_state[f"xml_bytes_{uuid}"] = xml_bytes
+                    st.session_state[f"xml_name_{uuid}"] = xml_filename
 
+            xml_bytes = st.session_state.get(f"xml_bytes_{uuid}")
+            xml_name = st.session_state.get(f"xml_name_{uuid}")
+            if xml_bytes:
                 st.download_button(
                     "XML",
                     data=xml_bytes,
-                    file_name=xml_filename,
+                    file_name=xml_name,
                     mime="text/xml",
                     key=f"xml_{uuid}",
+                    use_container_width=True,
                 )
 
-        if pdf_bytes:
-            with c3:
-                pdf_filename = (pdf_name or f"{uuid}.pdf").strip()
-                if not pdf_filename.lower().endswith(".pdf"):
-                    pdf_filename += ".pdf"
+        with c3:
+            if st.button("preparar PDF", key=f"prep_pdf_{uuid}", use_container_width=True):
+                pdf_bytes, pdf_name = descargar_pdf_ctrl(uuid)
+                if pdf_bytes:
+                    pdf_filename = (pdf_name or f"{uuid}.pdf").strip()
+                    if not pdf_filename.lower().endswith(".pdf"):
+                        pdf_filename += ".pdf"
+                    st.session_state[f"pdf_bytes_{uuid}"] = pdf_bytes
+                    st.session_state[f"pdf_name_{uuid}"] = pdf_filename
 
+            pdf_bytes = st.session_state.get(f"pdf_bytes_{uuid}")
+            pdf_name = st.session_state.get(f"pdf_name_{uuid}")
+            if pdf_bytes:
                 st.download_button(
                     "PDF",
                     data=pdf_bytes,
-                    file_name=pdf_filename,
+                    file_name=pdf_name,
                     mime="application/pdf",
                     key=f"pdf_{uuid}",
+                    use_container_width=True,
                 )
-    
+
     if pendientes_pdf == 0 and pendientes_un == 0:
         st.success("la solicitud está lista para continuar a la creación de póliza.")
     else:

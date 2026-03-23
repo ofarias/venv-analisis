@@ -284,6 +284,7 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
           d.uso_cfdi,
           d.subtotal_xml,
           d.iva_xml,
+          d.isr_ret_xml,
           d.total_xml,
           d.uuid,
           d.referencia,
@@ -461,6 +462,7 @@ def upsert_detalle_rows(
             uso_cfdi = (_none_if_nan(r.get("uso_cfdi")) or "").strip() or None
             subtotal_xml = _none_if_nan(r.get("subtotal_xml"))
             iva_xml = _none_if_nan(r.get("iva_xml"))
+            isr_ret_xml = _none_if_nan(r.get("isr_ret_xml"))
             total_xml = _none_if_nan(r.get("total_xml"))
 
             uuid = (_none_if_nan(r.get("uuid")) or "").strip() or None
@@ -490,7 +492,7 @@ def upsert_detalle_rows(
                       moneda, proveedor, receptor,
                       serie, folio, version, moneda_xml, tipo_cambio, estado_sat,
                       forma_pago, metodo_pago, tipo_comprobante, uso_cfdi,
-                      subtotal_xml, iva_xml, total_xml,
+                      subtotal_xml, iva_xml, isr_ret_xml, total_xml,
                       uuid, referencia, archivo_url, notas,
                       presupuesto_id, presupuesto_detalle_id,
                       usuario_forma_pago_id,
@@ -507,7 +509,7 @@ def upsert_detalle_rows(
                       %s, %s, %s,
                       %s, %s, %s, %s, %s, %s,
                       %s, %s, %s, %s,
-                      %s, %s, %s,
+                      %s, %s, %s, %s,
                       %s, %s, %s, %s,
                       %s, %s,
                       %s,
@@ -524,7 +526,7 @@ def upsert_detalle_rows(
                         moneda, proveedor, receptor,
                         serie, folio, version, moneda_xml, tipo_cambio, estado_sat,
                         forma_pago, metodo_pago, tipo_comprobante, uso_cfdi,
-                        subtotal_xml, iva_xml, total_xml,
+                        subtotal_xml, iva_xml, isr_ret_xml, total_xml,
                         uuid, referencia, archivo_url, notas,
                         presupuesto_id, presupuesto_detalle_id,
                         usuario_forma_pago_id,
@@ -572,6 +574,7 @@ def upsert_detalle_rows(
                       uso_cfdi = %s,
                       subtotal_xml = %s,
                       iva_xml = %s,
+                      isr_ret_xml = %s,
                       total_xml = %s,
 
                       uuid = %s,
@@ -618,6 +621,7 @@ def upsert_detalle_rows(
                         uso_cfdi,
                         subtotal_xml,
                         iva_xml,
+                        isr_ret_xml,
                         total_xml,
                         uuid,
                         referencia,
@@ -1341,3 +1345,32 @@ def get_xmls_by_uuids(uuids: list[str]) -> dict[str, tuple[bytes, str | None]]:
         return {}
 
     return obtener_xmls_por_uuids_ada(st.secrets, uuids_norm)
+
+def get_detalle_poliza_solicitud(solicitud_id: int) -> list[dict]:
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            select
+                v.*
+            from vw_solicitudes_revision_contabilidad v
+            where v.solicitud_id = %s
+              and (
+                    coalesce(v.total_xml, 0) > 0
+                 or coalesce(v.precio_unitario, 0) > 0
+              )
+            order by v.detalle_id, v.depto
+            """,
+            (int(solicitud_id),),
+        )
+        return cur.fetchall()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass

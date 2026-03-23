@@ -24,28 +24,22 @@ def mostrar_modulo_solicitudes_gastos():
 
     if puede_ver_rev_conta:
         labels.append("revisión contabilidad")
-
+        
     tabs = st.tabs(labels)
-
     idx = 0
-
     with tabs[idx]:
         mostrar_tab_solicitudes_gastos()
     idx += 1
-
     with tabs[idx]:
         mostrar_tab_catalogo_conceptos()
     idx += 1
-
     with tabs[idx]:
         mostrar_tab_usuarios_forma_pago()
     idx += 1
-
     if puede_ver_aut:
         with tabs[idx]:
             mostrar_tab_autorizaciones_solicitudes()
         idx += 1
-
     if puede_ver_rev_conta:
         with tabs[idx]:
             mostrar_tab_revisa_contabilidad()

@@ -11,7 +11,29 @@ _PRORRATEOS_CACHE: dict[str, Any] | None = None
 
 _CUENTAS_MM_CACHE: dict[str, bool] = {}
 
-_CUENTAS_MM_CACHE: dict[str, bool] = {}
+def _trunc6_float(v: float) -> float:
+    try:
+        return int(float(v) * 1e6) / 1e6
+    except Exception:
+        return 0.0
+
+def _trunc4_float(v: float) -> float:
+    try:
+        return int(float(v) * 1e4) / 1e4
+    except Exception:
+        return 0.0
+
+def _montomov(v: float) -> float:
+    return _trunc4_float(v)
+    
+def _group_detalle_solicitud_rows(detalle: list[dict]) -> dict[int, list[dict]]:
+    out: dict[int, list[dict]] = {}
+    for r in detalle or []:
+        detalle_id = int(r.get("detalle_id") or 0)
+        if detalle_id <= 0:
+            continue
+        out.setdefault(detalle_id, []).append(r)
+    return out
 
 def obtener_cuenta_costo(cve_doc: str) -> str:
     if not cve_doc:
@@ -173,7 +195,7 @@ def _afectar_saldos(cur, ejercicio: int, periodo: int, partida: Dict[str, Any]) 
             depto_partida = 0
 
         debe_haber = (partida.get("DEBE_HABER") or "").strip().upper()
-        monto = float(partida.get("MONTOMOV") or 0.0)
+        monto = _montomov(partida.get("MONTOMOV") or 0.0)
         if monto == 0:
             return
 
@@ -638,6 +660,238 @@ def _fetch_impuestos_y_cuentas_por_folio(cve_folio: str) -> dict:
     #st.write("[DEBUG] Resultado final de impuestos/cuentas:", out)
 
     return out
+
+def _mk_partidas_solicitud_gasto_desglosada(
+        solicitud: dict,
+        detalle: list[dict],
+    ) -> list[dict]:
+    partidas: list[dict] = []
+ 
+    detalle = [
+        r for r in (detalle or [])
+        if int(float(r.get("prepago") or 0)) == 0
+    ]
+
+    cuenta_iva = _normalize_numcta_masked_to_21("1205-001-000")
+    cuenta_isr_ret = _normalize_numcta_masked_to_21("2150-004-001")
+
+    grupos = _group_detalle_solicitud_rows(detalle)
+
+    for detalle_id, rows in grupos.items():
+        base = rows[0]
+
+        fecha = base.get("fecha")
+        proveedor = str(base.get("proveedor") or "").strip()
+        concepto = str(base.get("concepto_catalogo") or base.get("concepto") or "").strip()
+        uuid = str(base.get("uuid") or "").strip()
+        folio_sol = str(base.get("folio") or solicitud.get("folio") or "").strip()
+        notas = str(base.get("notas") or "").strip()
+
+        cuenta_pago_raw = str(base.get("cuenta_pago") or "").strip()
+        if not cuenta_pago_raw:
+            raise ValueError(
+                f"el detalle {detalle_id} no tiene cuenta contable en el método de pago"
+            )
+
+        cuenta_pago = _normalize_numcta_masked_to_21(cuenta_pago_raw)
+
+        subtotal_xml = _trunc6_float(base.get("subtotal_xml") or 0)
+        iva_xml = _trunc6_float(base.get("iva_xml") or 0)
+        isr_ret_xml = _trunc6_float(base.get("isr_ret_xml") or 0)
+        total_xml = _trunc6_float(base.get("total_xml") or 0)
+        precio_unitario = _trunc6_float(base.get("precio_unitario") or 0)
+
+        es_fiscal = bool(uuid)
+
+        concepto_base = f"solicitud {folio_sol} {concepto} {proveedor}".strip().upper()
+        if notas:
+            concepto_base = f"{concepto_base} {notas}".strip()
+
+        if es_fiscal:
+            ajuste_extra = _trunc6_float(total_xml - subtotal_xml - iva_xml + isr_ret_xml)
+
+            # residuos mínimos por redondeo
+            if abs(ajuste_extra) < 0.01:
+                ajuste_extra = 0.0
+
+            # aquí sí permitimos positivo o negativo:
+            # + positivo  -> impuesto local no guardado
+            # + negativo  -> descuento no guardado
+            monto_gasto = _trunc6_float(subtotal_xml + ajuste_extra)
+            monto_abono = total_xml
+
+            if abs(monto_gasto) < 0.01:
+                monto_gasto = 0.0
+
+            if monto_gasto < 0:
+                raise ValueError(
+                    f"el detalle {detalle_id} generó un gasto negativo; revisa subtotal/iva/isr/total"
+                )
+        else:
+            monto_gasto = precio_unitario
+            monto_abono = precio_unitario
+
+        suma_prorr = 0.0
+
+        for r in rows:
+            cuenta_gasto_raw = str(r.get("cuenta") or "").strip()
+            if not cuenta_gasto_raw:
+                raise ValueError(
+                    f"el detalle {detalle_id} no tiene cuenta contable en solicitud_concepto_gasto"
+                )
+
+            cuenta_gasto = _normalize_numcta_masked_to_21(cuenta_gasto_raw)
+
+            porcentaje = float(r.get("porcentaje") or 0)
+            depto = int(r.get("depto") or 0)
+
+            monto_prorr = _trunc6_float(monto_gasto * (porcentaje / 100.0))
+            suma_prorr += monto_prorr
+
+            if monto_prorr != 0:
+                partidas.append({
+                    "NUM_CTA": cuenta_gasto,
+                    "DEBE_HABER": "D",
+                    "MONTOMOV": monto_prorr,
+                    "CONCEP_PO": concepto_base[:120],
+                    "NUMDEPTO": depto,
+                    "TIPCAMBIO": 1.0,
+                    "CCOSTOS": 0,
+                    "CGRUPOS": 0,
+                })
+
+        # ajuste por diferencia de redondeo
+        diferencia = _trunc6_float(monto_gasto - suma_prorr)
+        if diferencia != 0 and rows:
+            r0 = rows[0]
+            cuenta_gasto = _normalize_numcta_masked_to_21(str(r0.get("cuenta") or "").strip())
+            depto = int(r0.get("depto") or 0)
+
+            partidas.append({
+                "NUM_CTA": cuenta_gasto,
+                "DEBE_HABER": "D",
+                "MONTOMOV": diferencia,
+                "CONCEP_PO": concepto_base[:120],
+                "NUMDEPTO": depto,
+                "TIPCAMBIO": 1.0,
+                "CCOSTOS": 0,
+                "CGRUPOS": 0,
+            })
+
+        # 2) iva acreditable solo si trae uuid
+        if es_fiscal and iva_xml > 0:
+            partidas.append({
+                "NUM_CTA": cuenta_iva,
+                "DEBE_HABER": "D",
+                "MONTOMOV": iva_xml,
+                "CONCEP_PO": f"IVA ACREDITABLE {folio_sol} {proveedor}".strip().upper()[:120],
+                "NUMDEPTO": 0,
+                "TIPCAMBIO": 1.0,
+                "CCOSTOS": 0,
+                "CGRUPOS": 0,
+            })
+            
+        # 2.1) isr retenido solo si trae uuid
+        if es_fiscal and isr_ret_xml > 0:
+            partidas.append({
+                "NUM_CTA": cuenta_isr_ret,
+                "DEBE_HABER": "H",
+                "MONTOMOV": isr_ret_xml,
+                "CONCEP_PO": f"ISR RETENIDO {folio_sol} {proveedor}".strip().upper()[:120],
+                "NUMDEPTO": 0,
+                "TIPCAMBIO": 1.0,
+                "CCOSTOS": 0,
+                "CGRUPOS": 0,
+            })
+
+        # 3) abono a método de pago
+        if monto_abono > 0:
+            partidas.append({
+                "NUM_CTA": cuenta_pago,
+                "DEBE_HABER": "H",
+                "MONTOMOV": monto_abono,
+                "CONCEP_PO": f"PAGO SOLICITUD {folio_sol} {proveedor}".strip().upper()[:120],
+                "NUMDEPTO": 0,
+                "TIPCAMBIO": 1.0,
+                "CCOSTOS": 0,
+                "CGRUPOS": 0,
+            })
+
+    return partidas
+
+def _agrupar_partidas_solicitud_gasto(partidas: list[dict]) -> list[dict]:
+    agrupadas: dict[tuple, dict] = {}
+
+    cuenta_iva = _normalize_numcta_masked_to_21("1200-001-000")
+    cuenta_isr_ret = _normalize_numcta_masked_to_21("2150-004-001")
+
+    for p in partidas or []:
+        num_cta = str(p.get("NUM_CTA") or "").strip()
+        debe_haber = str(p.get("DEBE_HABER") or "").strip().upper()
+        numdepto = int(p.get("NUMDEPTO") or 0)
+        tipcambio = float(p.get("TIPCAMBIO") or 1.0)
+        ccostos = int(p.get("CCOSTOS") or 0)
+        cgrupos = int(p.get("CGRUPOS") or 0)
+        monto = _montomov(p.get("MONTOMOV") or 0.0)
+
+        if not num_cta or not debe_haber or monto == 0:
+            continue
+
+        key = (
+            num_cta,
+            debe_haber,
+            numdepto,
+            tipcambio,
+            ccostos,
+            cgrupos,
+        )
+
+        if key not in agrupadas:
+            agrupadas[key] = {
+                "NUM_CTA": num_cta,
+                "DEBE_HABER": debe_haber,
+                "MONTOMOV": monto,
+                "CONCEP_PO": str(p.get("CONCEP_PO") or "").strip()[:120],
+                "NUMDEPTO": numdepto,
+                "TIPCAMBIO": tipcambio,
+                "CCOSTOS": ccostos,
+                "CGRUPOS": cgrupos,
+            }
+        else:
+            agrupadas[key]["MONTOMOV"] = _montomov(
+                agrupadas[key]["MONTOMOV"] + monto
+            )
+
+    resultado = [
+        v for v in agrupadas.values()
+        if _montomov(v.get("MONTOMOV") or 0.0) != 0
+    ]
+
+    def _orden_partida(p: dict):
+        num_cta = str(p.get("NUM_CTA") or "").strip()
+        debe_haber = str(p.get("DEBE_HABER") or "").strip().upper()
+        numdepto = int(p.get("NUMDEPTO") or 0)
+
+        # 1) gastos
+        if debe_haber == "D" and num_cta not in (cuenta_iva, cuenta_isr_ret):
+            grupo = 1
+        # 2) impuestos
+        elif num_cta in (cuenta_iva, cuenta_isr_ret):
+            grupo = 2
+        # 3) bancos / prepagos / formas de pago
+        else:
+            grupo = 3
+
+        return (
+            grupo,
+            numdepto,
+            num_cta,
+            debe_haber,
+        )
+
+    resultado.sort(key=_orden_partida)
+    return resultado
+
 
 def fetch_cuenta_contable_proveedor(cve_prov: str) -> str | None:
     """
@@ -1325,24 +1579,44 @@ def _insert_encabezado(cur,tipo: str,num_poliz: str,periodo: int,ejercicio: int,
 def _insert_partidas(cur, tipo: str, num_poliz: str, periodo: int, ejercicio: int,
                      fecha: datetime, partidas: List[Dict[str, Any]]) -> None:
     """
-    Inserta renglones en AUXILIAR25. NUM_PART (double) = 1.0, 2.0, …
+    Inserta renglones en AUXILIARxx. NUM_PART (double) = 1.0, 2.0, …
     y afecta SALDOSxx / SALDOSDPxx.
+    Optimizada sin cambiar comportamiento funcional.
     """
-    sufijo = str(ejercicio)[-2:]          # 2026 -> "26"
-    tabla = f"AUXILIAR{sufijo}"             # AUXILIAR26
+    sufijo = str(ejercicio)[-2:]
+    tabla = f"AUXILIAR{sufijo}"
+
+    # 1) precargar multimoneda solo una vez por cuenta única
+    cuentas_unicas = {
+        (p.get("NUM_CTA") or "").strip()
+        for p in partidas
+        if (p.get("NUM_CTA") or "").strip()
+    }
+    mapa_multimoneda = {
+        cta: _es_cuenta_multimoneda(cta)
+        for cta in cuentas_unicas
+    }
 
     num_part = 1.0
+
     for p in partidas:
         numdepto_val = p.get("NUMDEPTO")
         if numdepto_val is None:
             numdepto_val = 0
+
         num_cta = (p.get("NUM_CTA") or "").strip()
         tc_row = float(p.get("TIPCAMBIO") or 1.0)
+        monto_mov = _montomov(p.get("MONTOMOV") or 0.0)
 
-        if _es_cuenta_multimoneda(num_cta):
+        # si por truncado quedó en cero, no insertamos ni afectamos
+        if monto_mov == 0:
+            continue
+
+        if mapa_multimoneda.get(num_cta, False):
             tipc = tc_row
         else:
             tipc = 1.0
+
         cur.execute(f"""
             INSERT INTO {tabla}
               (TIPO_POLI, NUM_POLIZ, NUM_PART, PERIODO, EJERCICIO,
@@ -1353,8 +1627,8 @@ def _insert_partidas(cur, tipo: str, num_poliz: str, periodo: int, ejercicio: in
               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             tipo, num_poliz, num_part, periodo, ejercicio,
-            p.get("NUM_CTA"), fecha, p.get("CONCEP_PO"), p.get("DEBE_HABER"),
-            float(p.get("MONTOMOV") or 0.0),
+            num_cta, fecha, p.get("CONCEP_PO"), p.get("DEBE_HABER"),
+            monto_mov,
             numdepto_val,
             tipc,
             0, int(num_part),
@@ -1362,11 +1636,10 @@ def _insert_partidas(cur, tipo: str, num_poliz: str, periodo: int, ejercicio: in
             -1, -1
         ))
 
-        # aquí afectamos saldos y saldos por depto
         _afectar_saldos(cur, ejercicio, periodo, {
-            "NUM_CTA": p.get("NUM_CTA"),
+            "NUM_CTA": num_cta,
             "DEBE_HABER": p.get("DEBE_HABER"),
-            "MONTOMOV": p.get("MONTOMOV"),
+            "MONTOMOV": monto_mov,
             "NUMDEPTO": numdepto_val,
         })
 
@@ -1402,8 +1675,13 @@ def insertar_poliza_y_auxiliares(row: pd.Series, secrets, prorrateo_id: Optional
             return {"ok": True, "msg": f"DEBUG: no se insertó (método={metodo})."}
 
         # seguridad extra: si por alguna razón no hay partidas
+        partidas = [
+            p for p in partidas
+            if _montomov(p.get("MONTOMOV") or 0.0) != 0
+        ]
+
         if not partidas:
-            return {"ok": False, "msg": "No se generaron partidas (revisa prorrateo/detalle)."}
+            return {"ok": False, "msg": "no se generaron partidas"}
 
         con = _conn_coi_from_secrets(secrets)
         cur = con.cursor()
@@ -1707,3 +1985,105 @@ def inserta_poliza_costo_venta(
 
     except Exception as e:
         return {"ok": False, "msg": f"Error preparando póliza costo de venta: {e}"}
+
+
+def insertar_poliza_solicitud_gasto_desglosada(
+    solicitud: dict,
+    detalle: list[dict],
+    secrets,
+    debug: bool = False,
+) -> dict:
+    try:
+        if not detalle:
+            return {"ok": False, "msg": "no hay detalle para generar la póliza"}
+
+        fecha_src = detalle[0].get("fecha") or solicitud.get("fecha_inicio") or datetime.now()
+        fecha = _as_date(fecha_src)
+        periodo, ejercicio = _periodo_y_ejercicio(fecha)
+        tipo = "Dr"
+
+        folio = str(solicitud.get("folio") or "").strip()
+        empleado = str(solicitud.get("empleado_nombre") or "").strip()
+        clientes = str(solicitud.get("clientes") or "").strip()
+
+        concepto = (
+            f"COMPROBACION VIATICOS SOL. {folio} {empleado} VISITA {clientes}"
+        ).strip().upper()[:120]
+
+        partidas_detalladas = _mk_partidas_solicitud_gasto_desglosada(
+            solicitud=solicitud,
+            detalle=detalle,
+        )
+
+        partidas = _agrupar_partidas_solicitud_gasto(partidas_detalladas)
+
+        for p in partidas:
+            p["CONCEP_PO"] = concepto[:120]
+
+        if not partidas:
+            return {"ok": False, "msg": "no se generaron partidas"}
+        
+        if debug:
+            return {
+                "ok": True,
+                "msg": "debug: no se insertó la póliza",
+                "concepto": concepto,
+                "partidas": partidas,
+            }
+
+        con = _conn_coi_from_secrets(secrets)
+        cur = con.cursor()
+        try:
+            num_poliz = _siguiente_num_poliza(cur, tipo, periodo, ejercicio)
+
+            _insert_encabezado(
+                cur,
+                tipo,
+                num_poliz,
+                periodo,
+                ejercicio,
+                fecha,
+                concepto,
+                uuid=None,
+                num_partidas=len(partidas),
+            )
+
+            _insert_partidas(
+                cur,
+                tipo,
+                num_poliz,
+                periodo,
+                ejercicio,
+                fecha,
+                partidas,
+            )
+
+            con.commit()
+
+            return {
+                "ok": True,
+                "msg": f"póliza {tipo}-{num_poliz}/{periodo}-{ejercicio} creada correctamente",
+                "poliza": {
+                    "tipo": tipo,
+                    "num": num_poliz,
+                    "periodo": periodo,
+                    "ejercicio": ejercicio,
+                },
+            }
+
+        except Exception as e:
+            con.rollback()
+            return {"ok": False, "msg": f"error en inserción COI: {e}"}
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            try:
+                con.close()
+            except Exception:
+                pass
+
+    except Exception as e:
+        return {"ok": False, "msg": f"error preparando póliza de solicitud: {e}"}
+    
