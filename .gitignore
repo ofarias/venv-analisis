@@ -38,3 +38,7 @@ logs/
 respaldo_*.sql
 tmp_*.sql
 estructura_documentos_*.sql
+
+# backups de base de datos
+*.sql
+backup_*.sql

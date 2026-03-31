@@ -75,6 +75,7 @@ else:
     menu_opciones = {}
 
     if "SuperAdmin" in roles:
+        menu_opciones["Solicitudes Contabilida"] = "solicitudesConta"
         menu_opciones["Solicitudes"] = "solicitudes"
         menu_opciones["Dashboard Auxiliar Contable"] = "auxconta"
         menu_opciones["Administracion de Presupuestos"] = "presupuestos"
@@ -129,7 +130,7 @@ else:
         menu_opciones["Tablero CFDI"] = "tab_cfdi"        
         menu_opciones[" Dashboard Prorrateos"] = "dash_prorrateos"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
-        menu_opciones["Solicitudes"] = "solicitudes"
+        menu_opciones["Solicitudes Contabilida"] = "solicitudesConta"
 
     if "Auxiliar Contable" in roles:
         menu_opciones["Dashboard Auxiliar Contable"] = "auxconta"
@@ -256,7 +257,9 @@ else:
         elif modulo =="solicitudes":
             from views.modulo_solicitudes.solicitudes_gastos_view import mostrar_modulo_solicitudes_gastos
             mostrar_modulo_solicitudes_gastos()
-
+        elif modulo =="solicitudesConta":
+            from views.modulo_solicitudes.solicitudes_conta_view import mostrar_modulo_solicitudes_conta
+            mostrar_modulo_solicitudes_conta() 
     else:
         st.warning("⚠️ No tienes roles asignados para acceder a los módulos.")
         ## st.json(roles)
