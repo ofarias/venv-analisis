@@ -831,7 +831,8 @@ def get_formas_pago_usuario_rows(id_usuario: int) -> list[dict]:
               when ultimos4 is not null and trim(ultimos4) <> '' then concat(' | **** ', ultimos4)
               else ''
             end
-          ) as etiqueta
+          ) as etiqueta,
+          cuenta_contable
         from usuarios_forma_pago
         where id_usuario = %s
           and activo = 1
