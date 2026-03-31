@@ -22,7 +22,7 @@ TIPOS_FORMA_PAGO = [
     "Tag Pase Urbano",
     "Tarjeta Combustible",
     "Vales",
-    "Efecticar Viaticos"
+    "Efecticard Viaticos"
 ]
 
 MONEDAS = ["MXN", "USD"]
