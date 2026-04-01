@@ -18,10 +18,13 @@ def mostrar_tab_catalogo_conceptos():
 
     #st.write(usuario.get("roles"))
 
-    if "Admin" not in usuario.get("roles", []):
-        st.info("solo admin puede administrar el catálogo")
-        return
+    roles_permitidos = ["Admin", "Contabilidad"]
 
+    # Verificamos si no tiene ninguno de los roles requeridos
+    if not any(rol in usuario.get("roles", []) for rol in roles_permitidos):
+        st.info("Solo el personal de Admin o Contabilidad puede administrar el catálogo")
+        return
+    
     ver_inactivos = st.checkbox("ver inactivos", value=False, key="cg_ver_inactivos")
 
     rows = listar_conceptos_catalogo_ctrl(incluir_inactivos=ver_inactivos)

@@ -42,11 +42,8 @@ from utils.envio_correo import enviar_correo
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
+
 _HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2212"
-
-
-
-
 
 def _get_app_link_cfg():
     base_url = (st.secrets.get("APP_BASE_URL", "") or "").strip()
