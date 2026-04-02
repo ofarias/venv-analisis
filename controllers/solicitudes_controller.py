@@ -38,6 +38,8 @@ from models.solicitudes_model import (
     get_pdf_by_uuid,
     get_xmls_by_uuids,
     get_detalle_poliza_solicitud,
+    get_comprobante_by_detalle_id,
+    get_comprobantes_by_detalle_ids,
 )
 
 
@@ -426,3 +428,10 @@ def generar_poliza_solicitud_gasto_ctrl(solicitud_id: int, usuario_id: int) -> d
 
     except Exception as e:
         return {"ok": False, "msg": f"error al generar póliza de solicitud: {e}"}
+
+
+def get_comprobante_detalle_ctrl(solicitud_detalle_id: int):
+    return get_comprobante_by_detalle_id(int(solicitud_detalle_id))
+
+def descargar_comprobantes_detalle_ctrl(detalle_ids: list[int]) -> dict[int, dict]:
+    return get_comprobantes_by_detalle_ids([int(x) for x in (detalle_ids or []) if int(x) > 0])

@@ -579,14 +579,15 @@ def buscar_datoscfd_mysql(uuid: str, folio: Optional[str] = None, monto: Optiona
 
 
 def guardar_pdf_datoscfd(
-    pdf_bytes: bytes,
-    nombre_archivo: str,
-    usuario: str,
-    uuid: Optional[str] = None,
-    id_doctodig: Optional[int] = None,
-    metodo_uuid: str = "sin_uuid",
-    status: str = "cargado",
-) -> Dict[str, Any]:
+    pdf_bytes,
+    nombre_archivo,
+    usuario,
+    uuid=None,
+    id_doctodig=None,
+    id_comprobante_detalle=None,
+    metodo_uuid="sin_uuid",
+    status="cargado",
+):
     conn = None
     cursor = None
     try:
@@ -595,15 +596,15 @@ def guardar_pdf_datoscfd(
 
         sql = """
             insert into DATOSCFD_PDF
-              (uuid, id_doctodig, nombre_archivo, archivo, tamano, usuario, metodo_uuid, status)
+              (uuid, id_doctodig, id_comprobante_detalle, nombre_archivo, archivo, tamano, usuario, metodo_uuid, status)
             values
-              (%s, %s, %s, %s, %s, %s, %s, %s)
+              (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
 
         u = (uuid or "").strip().upper() or None
         idd = int(id_doctodig) if id_doctodig else None
 
-        cursor.execute(sql, (u, idd, nombre_archivo, pdf_bytes, len(pdf_bytes), usuario, metodo_uuid, status))
+        cursor.execute(sql, (u, idd, id_comprobante_detalle, nombre_archivo, pdf_bytes, len(pdf_bytes), usuario, metodo_uuid, status))
         conn.commit()
 
         return {"ok": True, "id_pdf": cursor.lastrowid, "uuid": u, "metodo_uuid": metodo_uuid, "status": status}

@@ -297,6 +297,7 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
 
           coalesce(scg.fiscales, 0) as fiscales,
           coalesce(scg.prepago, 0) as prepago,
+          coalesce(scg.comprobante, 0) as comprobante,
 
           case
             when d.uuid is not null
@@ -351,7 +352,7 @@ def get_conceptos_gasto_rows(activo: int = 1):
     cur = conn.cursor(dictionary=True)
     cur.execute(
         """
-        select id, concepto, cuenta, prepago, fiscales
+        select id, concepto, cuenta, prepago, fiscales, comprobante
         from solicitud_concepto_gasto
         where (%s is null) or (activo = %s)
         order by concepto
@@ -699,7 +700,7 @@ def get_conceptos_catalogo_rows(incluir_inactivos: bool = False):
     if incluir_inactivos:
         cur.execute(
             """
-            select id, concepto, cuenta, fiscales, prepago, activo, created_at, updated_at
+            select id, concepto, cuenta, fiscales, prepago, comprobante, activo, created_at, updated_at
             from solicitud_concepto_gasto
             order by id
             """
@@ -707,7 +708,7 @@ def get_conceptos_catalogo_rows(incluir_inactivos: bool = False):
     else:
         cur.execute(
             """
-            select id, concepto, cuenta, fiscales, prepago, activo, created_at, updated_at
+            select id, concepto, cuenta, fiscales, prepago, comprobante, activo, created_at, updated_at
             from solicitud_concepto_gasto
             where activo = 1
             order by id
@@ -741,14 +742,15 @@ def upsert_concepto_catalogo_rows(rows: list[dict], usuario_id: int):
             fiscales = int(r.get("fiscales") or 0)
             prepago = int(r.get("prepago") or 0)
             activo = int(r.get("activo") or 0)
+            comprobante = int(r.get("comprobante") or 0)
 
             if _id is None or _id == 0:
                 cur.execute(
                     """
-                    insert into solicitud_concepto_gasto (concepto, cuenta, fiscales, prepago, activo, created_at, updated_at)
-                    values (%s, %s, %s, %s, %s, now(), now())
+                    insert into solicitud_concepto_gasto (concepto, cuenta, fiscales, prepago, comprobante, activo, created_at, updated_at)
+                    values (%s, %s, %s, %s, %s, %s, now(), now())
                     """,
-                    (concepto, cuenta, fiscales, prepago, activo),
+                    (concepto, cuenta, fiscales, prepago, comprobante, activo),
                 )
             else:
                 cur.execute(
@@ -758,11 +760,12 @@ def upsert_concepto_catalogo_rows(rows: list[dict], usuario_id: int):
                         cuenta = %s,
                         fiscales = %s,
                         prepago = %s,
+                        comprobante = %s,
                         activo = %s,
                         updated_at = now()
                     where id = %s
                     """,
-                    (concepto, cuenta, fiscales, prepago, activo, int(_id)),
+                    (concepto, cuenta, fiscales, prepago, comprobante, activo, int(_id)),
                 )
 
         conn.commit()
@@ -1327,6 +1330,57 @@ def get_pdf_by_uuid(uuid: str):
 
     return row[0], row[1]
 
+def get_comprobantes_by_detalle_ids(detalle_ids: list[int]) -> dict[int, dict]:
+    if not detalle_ids:
+        return {}
+
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        placeholders = ",".join(["%s"] * len(detalle_ids))
+        cur.execute(
+            f"""
+            select
+                ID_PDF,
+                id_comprobante_detalle,
+                ARCHIVO,
+                NOMBRE_ARCHIVO
+            from DATOSCFD_PDF
+            where id_comprobante_detalle in ({placeholders})
+            order by id_comprobante_detalle, ID_PDF desc
+            """,
+            tuple(int(x) for x in detalle_ids),
+        )
+
+        rows = cur.fetchall() or []
+
+        out: dict[int, dict] = {}
+        for r in rows:
+            det_id = int(r.get("id_comprobante_detalle") or 0)
+            if det_id <= 0:
+                continue
+
+            # nos quedamos con el más reciente por detalle
+            if det_id not in out:
+                out[det_id] = {
+                    "id_pdf": r.get("ID_PDF"),
+                    "archivo": r.get("ARCHIVO"),
+                    "nombre_archivo": r.get("NOMBRE_ARCHIVO"),
+                }
+
+        return out
+
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 def get_xml_by_uuid(uuid: str) -> tuple[bytes | None, str | None]:
     uuid_norm = ("" if uuid is None else str(uuid)).strip().upper()
@@ -1375,3 +1429,33 @@ def get_detalle_poliza_solicitud(solicitud_id: int) -> list[dict]:
             conn.close()
         except Exception:
             pass
+
+
+def get_comprobante_by_detalle_id(solicitud_detalle_id: int):
+    conn = obtener_conexion()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        select ID_PDF, ARCHIVO, NOMBRE_ARCHIVO
+        from DATOSCFD_PDF
+        where id_comprobante_detalle = %s
+        order by ID_PDF desc
+        limit 1
+        """,
+        (int(solicitud_detalle_id),),
+    )
+
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "id_pdf": row[0],
+        "archivo": row[1],
+        "nombre_archivo": row[2],
+    }

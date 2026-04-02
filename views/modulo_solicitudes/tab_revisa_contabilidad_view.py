@@ -16,6 +16,7 @@ from controllers.solicitudes_controller import (
     descargar_xmls_ctrl,
     descargar_pdf_ctrl,
     generar_poliza_solicitud_gasto_ctrl,
+    descargar_comprobantes_detalle_ctrl,
 )
 
 ESTATUS_OPTS = [
@@ -520,6 +521,12 @@ def mostrar_tab_revisa_contabilidad():
         for _, r in df_det.iterrows()
         if str(r.get("uuid") or "").strip()
     })
+    
+    detalle_ids = sorted({
+        int(r.get("detalle_id"))
+        for _, r in df_det.iterrows()
+        if r.get("detalle_id") not in (None, "", "nan")
+    })
 
     if pendientes_pdf == 0 and pendientes_un == 0:
         st.success("la solicitud cumple validaciones para pasar a revision comprobacion.")
@@ -542,16 +549,18 @@ def mostrar_tab_revisa_contabilidad():
 
     st.markdown("### documentos")
 
-    if uuids:
+    if uuids or detalle_ids:
         c_zip1, c_zip2 = st.columns([2, 3])
 
         with c_zip1:
-            if st.button("preparar zip xml + pdf", use_container_width=True, key="conta_btn_zip_docs"):
+            if st.button("preparar zip xml + pdf + comprobantes", use_container_width=True, key="conta_btn_zip_docs"):
                 xml_map = descargar_xmls_ctrl(uuids) or {}
+                comprobantes_map = descargar_comprobantes_detalle_ctrl(detalle_ids) or {}
 
                 zip_buffer = BytesIO()
 
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    # xml y pdf por uuid
                     for uuid in uuids:
                         xml_data = xml_map.get(uuid)
                         if xml_data:
@@ -568,16 +577,28 @@ def mostrar_tab_revisa_contabilidad():
                                 pdf_filename += ".pdf"
                             zf.writestr(f"pdf/{pdf_filename}", pdf_bytes)
 
+                    # comprobantes por detalle_id
+                    for detalle_id, comp in comprobantes_map.items():
+                        archivo = comp.get("archivo")
+                        nombre = (comp.get("nombre_archivo") or f"detalle_{detalle_id}").strip()
+
+                        if not archivo:
+                            continue
+
+                        # evita nombres duplicados y deja claro a qué detalle pertenece
+                        nombre_zip = f"detalle_{int(detalle_id)}_{nombre}"
+                        zf.writestr(f"comprobantes/{nombre_zip}", archivo)
+
                 zip_buffer.seek(0)
                 st.session_state["conta_zip_docs_bytes"] = zip_buffer.getvalue()
-                st.session_state["conta_zip_docs_name"] = f"solicitud_{int(sel_id)}_xml_pdf.zip"
+                st.session_state["conta_zip_docs_name"] = f"solicitud_{int(sel_id)}_xml_pdf_comprobantes.zip"
 
         with c_zip2:
             zip_bytes = st.session_state.get("conta_zip_docs_bytes")
             zip_name = st.session_state.get("conta_zip_docs_name")
             if zip_bytes:
                 st.download_button(
-                    "descargar zip xml + pdf",
+                    "descargar zip xml + pdf + comprobantes",
                     data=zip_bytes,
                     file_name=zip_name,
                     mime="application/zip",

@@ -34,6 +34,7 @@ from controllers.solicitudes_controller import (
     listar_solicitudes_ctrl,
     uuid_ya_usado_ctrl,
     validar_detalle_para_comprobacion_ctrl,
+    get_comprobante_detalle_ctrl,
 )
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
@@ -1347,6 +1348,7 @@ def mostrar_tab_solicitudes_gastos():
         "tiene_pdf",
         "total_unidades",
         "fiscales",
+        "comprobante",
     ]
 
     if df_det.empty:
@@ -1831,8 +1833,11 @@ def mostrar_tab_solicitudes_gastos():
                     st.error(msg or "no se pudo guardar el detalle")
 
     st.divider()
-    st.caption("unidades de negocio por renglón")
-
+    #st.caption("unidades de negocio por renglón")
+    st.markdown(
+        "<span style='font-size:20px; color:#2563eb; font-weight:bold;'>Captura de Unidades de Negocio por Gasto (renglón) </span>",
+        unsafe_allow_html=True
+    )
     ids_detalle_guardados = []
     if "id" in edited.columns:
         df_detalle_sel = edited.copy()
@@ -1860,15 +1865,67 @@ def mostrar_tab_solicitudes_gastos():
         un_ids = list(un_map.keys())
 
         detalle_id_un = st.selectbox(
-            "renglón del detalle",
+            "Renglón del Detalle",
             options=ids_detalle_guardados,
             format_func=lambda x: (
                 f"id {x} - "
                 f"{str(df_detalle_sel.loc[df_detalle_sel['id'] == x, 'concepto'].values[0])[:30]} - "
-                f"{df_detalle_sel.loc[df_detalle_sel['id'] == x, 'total_xml'].values[0]}"
+                #f"{df_detalle_sel.loc[df_detalle_sel['id'] == x, 'total_xml'].values[0]}"
+                f"{_money_fmt(df_detalle_sel.loc[df_detalle_sel['id'] == x, 'total_xml'].values[0])}"
             ),
             key="sg_detalle_id_un",
         )
+
+        up_comprobante_img = st.file_uploader(
+            "Vaucher, Vale Azul o Comprobante de pago del gasto en formato jpg, jpeg, png",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=False,
+            key=f"sg_uploader_comprobante_det_{int(detalle_id_un)}",
+        )
+
+        comp_actual = get_comprobante_detalle_ctrl(int(detalle_id_un))
+
+        if comp_actual:
+            nombre_comp = comp_actual.get("nombre_archivo") or "archivo"
+            archivo_comp = comp_actual.get("archivo")
+
+            st.info(f"comprobante actual: {nombre_comp}")
+
+            if archivo_comp:
+                try:
+                    st.markdown(
+                        f"""
+                        <div style="
+                            width: 280px;
+                            height: 380px;
+                            border: 1px solid #ddd;
+                            border-radius: 8px;
+                            overflow: hidden;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            margin-bottom: 10px;
+                            background-color: #fafafa;
+                        ">
+                            <img src="data:image/png;base64,{base64.b64encode(archivo_comp).decode()}"
+                                style="max-width:100%; max-height:100%; object-fit:contain;" />
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    st.caption(nombre_comp)
+                except Exception:
+                    pass
+
+                st.download_button(
+                    "descargar comprobante",
+                    data=archivo_comp,
+                    file_name=nombre_comp,
+                    mime="application/octet-stream",
+                    key=f"sg_btn_descarga_comp_{int(detalle_id_un)}",
+                    use_container_width=True,
+                )
 
         detalle_un_rows = get_detalle_unidades_ctrl(int(detalle_id_un)) or []
         df_un = pd.DataFrame(detalle_un_rows)
@@ -1923,14 +1980,40 @@ def mostrar_tab_solicitudes_gastos():
 
         if st.button("guardar unidades de negocio", key="sg_btn_guardar_un", use_container_width=True):
             rows_un = edited_un.to_dict(orient="records")
+
             res_un = guardar_detalle_unidades_ctrl(
                 solicitud_detalle_id=int(detalle_id_un),
                 rows=rows_un,
                 usuario_id=int(usuario["id"]),
             )
 
-            if res_un.get("ok"):
-                st.success(res_un.get("msg", "unidades guardadas"))
-                st.rerun()
-            else:
+            if not res_un.get("ok"):
                 st.error(res_un.get("msg", "no se pudieron guardar las unidades"))
+            else:
+                # si además cargaron comprobante, se guarda en DATOSCFD_PDF
+                if up_comprobante_img is not None:
+                    try:
+                        archivo_bytes = up_comprobante_img.getvalue()
+                        nombre_archivo = up_comprobante_img.name
+
+                        res_arch = guardar_pdf_datoscfd(
+                            pdf_bytes=archivo_bytes,
+                            nombre_archivo=nombre_archivo,
+                            usuario=username,
+                            uuid=None,
+                            id_doctodig=None,
+                            id_comprobante_detalle=int(detalle_id_un),
+                            metodo_uuid="sin_uuid",
+                            status="cargado",
+                        )
+
+                        if not res_arch.get("ok"):
+                            st.error(res_arch.get("error") or "no se pudo guardar el comprobante")
+                            st.stop()
+
+                    except Exception as e:
+                        st.error(f"error al guardar comprobante: {e}")
+                        st.stop()
+
+                st.success("unidades de negocio guardadas")
+                st.rerun()
