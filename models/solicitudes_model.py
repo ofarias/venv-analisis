@@ -1459,3 +1459,22 @@ def get_comprobante_by_detalle_id(solicitud_detalle_id: int):
         "archivo": row[1],
         "nombre_archivo": row[2],
     }
+
+
+def get_comprobantes_by_solicitud(solicitud_id: int):
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT
+            id_comprobante_detalle,
+            ARCHIVO,
+            NOMBRE_ARCHIVO
+        FROM DATOSCFD_PDF
+        WHERE id_comprobante_detalle IN (
+            SELECT id FROM solicitudes_detalle 
+            WHERE solicitud_id = %s
+        )
+    """, (solicitud_id,))
+
+    return cur.fetchall()

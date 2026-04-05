@@ -35,6 +35,7 @@ from controllers.solicitudes_controller import (
     uuid_ya_usado_ctrl,
     validar_detalle_para_comprobacion_ctrl,
     get_comprobante_detalle_ctrl,
+    get_comprobantes_solicitud_ctrl,
 )
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
@@ -45,6 +46,10 @@ UUID_RE = re.compile(
 )
 
 _HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2212"
+
+@st.cache_data(ttl=3600)
+def _get_sepomex_cached():
+    return get_sepomex_ciudades_catalogo_ctrl(limit=20000)
 
 def _get_app_link_cfg():
     base_url = (st.secrets.get("APP_BASE_URL", "") or "").strip()
@@ -628,7 +633,8 @@ def mostrar_tab_solicitudes_gastos():
                 st.warning("no tienes acceso a esa solicitud")
                 st.rerun()
 
-    sep_rows = get_sepomex_ciudades_catalogo_ctrl(limit=20000) or []
+    #sep_rows = get_sepomex_ciudades_catalogo_ctrl(limit=20000) or []
+    sep_rows = _get_sepomex_cached() or []
     sep_opts = [
         (r["d_codigo"], r["d_asenta"], r["d_estado"], r["d_ciudad"])
         for r in sep_rows
@@ -1177,6 +1183,13 @@ def mostrar_tab_solicitudes_gastos():
     if not selected_id:
         st.info("selecciona una solicitud para capturar detalle.")
         return
+
+    comprobantes_rows = get_comprobantes_solicitud_ctrl(int(selected_id)) or []
+    comprobantes_map = {
+        int(r["id_comprobante_detalle"]): r
+        for r in comprobantes_rows
+        if r.get("id_comprobante_detalle") is not None
+    }
 
     st.subheader("importar xml/pdf a mysql (datoscfd)")
 
@@ -1883,11 +1896,17 @@ def mostrar_tab_solicitudes_gastos():
             key=f"sg_uploader_comprobante_det_{int(detalle_id_un)}",
         )
 
-        comp_actual = get_comprobante_detalle_ctrl(int(detalle_id_un))
+        #comp_actual = get_comprobante_detalle_ctrl(int(detalle_id_un))
+        
+        comp_actual = comprobantes_map.get(int(detalle_id_un))
 
         if comp_actual:
-            nombre_comp = comp_actual.get("nombre_archivo") or "archivo"
-            archivo_comp = comp_actual.get("archivo")
+            nombre_comp = (
+                comp_actual.get("nombre_archivo")
+                or comp_actual.get("NOMBRE_ARCHIVO")
+                or "archivo"
+            )
+            archivo_comp = comp_actual.get("archivo") or comp_actual.get("ARCHIVO")
 
             st.info(f"comprobante actual: {nombre_comp}")
 
@@ -1969,6 +1988,12 @@ def mostrar_tab_solicitudes_gastos():
             6,
         )
         st.write(f"total porcentaje: {total_pct}")
+        st.write("nota: el total debe ser 100% para que el gasto esté completamente asignado a las unidades de negocio.")
+
+        st.markdown(
+            "<span style='font-size:22px; color:#2563eb; font-weight:600;'>Prorrateo Actual:</span>",
+            unsafe_allow_html=True
+        )
 
         preview = edited_un.copy()
         preview["unidad"] = preview["id_unidad"].apply(

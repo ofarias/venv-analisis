@@ -40,6 +40,7 @@ from models.solicitudes_model import (
     get_detalle_poliza_solicitud,
     get_comprobante_by_detalle_id,
     get_comprobantes_by_detalle_ids,
+    get_comprobantes_by_solicitud,
 )
 
 
@@ -435,3 +436,6 @@ def get_comprobante_detalle_ctrl(solicitud_detalle_id: int):
 
 def descargar_comprobantes_detalle_ctrl(detalle_ids: list[int]) -> dict[int, dict]:
     return get_comprobantes_by_detalle_ids([int(x) for x in (detalle_ids or []) if int(x) > 0])
+
+def get_comprobantes_solicitud_ctrl(solicitud_id: int):
+    return get_comprobantes_by_solicitud(solicitud_id)
