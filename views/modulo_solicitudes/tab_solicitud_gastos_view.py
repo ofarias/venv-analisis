@@ -23,6 +23,7 @@ from controllers.solicitudes_controller import (
     eliminar_solicitud_ctrl,
     get_conceptos_gasto_ctrl,
     get_datoscfd_by_uuid_ctrl,
+    get_datoscfd_by_uuids_ctrl,
     get_detalle_ctrl,
     get_detalle_unidades_ctrl,
     get_formas_pago_usuario_ctrl,
@@ -1605,6 +1606,20 @@ def mostrar_tab_solicitudes_gastos():
     st.session_state.setdefault("sg_uuid_cache", {})
     st.session_state.setdefault("sg_uuid_prev", {})
 
+    uuids_validos = sorted({
+        _norm_uuid(r.get("uuid"))
+        for _, r in edited.iterrows()
+        if bool(UUID_RE.fullmatch(_norm_uuid(r.get("uuid"))))
+    })
+
+    uuid_map = {}
+    if uuids_validos:
+        rows_cfd = get_datoscfd_by_uuids_ctrl(uuids_validos) or []
+        for row in rows_cfd:
+            uuid_row = _norm_uuid(row.get("UUID") or row.get("uuid"))
+            if uuid_row:
+                uuid_map[uuid_row] = row
+
     changed = False
 
     for i, r in edited.iterrows():
@@ -1624,10 +1639,18 @@ def mostrar_tab_solicitudes_gastos():
         )
 
         if uuid_now != uuid_prev or falta_datos:
+
             if uuid_now in st.session_state["sg_uuid_cache"]:
                 cfd = st.session_state["sg_uuid_cache"][uuid_now]
             else:
-                cfd = get_datoscfd_by_uuid_ctrl(uuid_now)
+                # primero intenta resolver desde el batch de MySQL
+                cfd = uuid_map.get(uuid_now)
+
+                # si no vino en MySQL, usa fallback individual (ADA / lógica actual)
+                if cfd is None:
+                    cfd = get_datoscfd_by_uuid_ctrl(uuid_now)
+
+                # guarda en caché aunque sea None, para no repetir consulta
                 st.session_state["sg_uuid_cache"][uuid_now] = cfd
 
             if not cfd:

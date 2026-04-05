@@ -1478,3 +1478,35 @@ def get_comprobantes_by_solicitud(solicitud_id: int):
     """, (solicitud_id,))
 
     return cur.fetchall()
+
+
+def get_datoscfd_by_uuids(uuids: list[str]) -> list[dict]:
+    uuids_norm = sorted({
+        ("" if x is None else str(x)).strip().upper()
+        for x in (uuids or [])
+        if str(x).strip()
+    })
+
+    if not uuids_norm:
+        return []
+
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+
+        placeholders = ",".join(["%s"] * len(uuids_norm))
+        sql = f"""
+            select *
+            from DATOSCFD
+            where upper(trim(UUID)) in ({placeholders})
+        """
+        cur.execute(sql, tuple(uuids_norm))
+        rows = cur.fetchall() or []
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+        

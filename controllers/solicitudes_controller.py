@@ -21,6 +21,7 @@ from models.solicitudes_model import (
     delete_detalle_ids,
     get_conceptos_gasto_rows,
     get_datoscfd_by_uuid,
+    get_datoscfd_by_uuids,
     uuid_ya_usado,
     get_conceptos_catalogo_rows,
     upsert_concepto_catalogo_rows,
@@ -439,3 +440,8 @@ def descargar_comprobantes_detalle_ctrl(detalle_ids: list[int]) -> dict[int, dic
 
 def get_comprobantes_solicitud_ctrl(solicitud_id: int):
     return get_comprobantes_by_solicitud(solicitud_id)
+
+def get_datoscfd_by_uuids_ctrl(uuids: list[str]) -> list[dict]:
+    return get_datoscfd_by_uuids(uuids)
+
+    
