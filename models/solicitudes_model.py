@@ -1509,4 +1509,37 @@ def get_datoscfd_by_uuids(uuids: list[str]) -> list[dict]:
         except Exception:
             pass
 
-        
+def get_correos_usuarios_por_rol_model(nombre_rol: str) -> list[str]:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+
+        sql = """
+            select distinct
+                u.email
+            from usuarios u
+            inner join usuarios_roles ur
+                on ur.username = u.username
+            inner join roles r
+                on r.id = ur.id_rol
+            where u.estatus = 'Activo'
+              and r.status = 1
+              and upper(trim(r.nombre)) = upper(trim(%s))
+              and u.email is not null
+              and trim(u.email) <> ''
+        """
+
+        cur.execute(sql, (nombre_rol,))
+        rows = cur.fetchall() or []
+
+        return [
+            str(r.get("email") or "").strip()
+            for r in rows
+            if str(r.get("email") or "").strip()
+        ]
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

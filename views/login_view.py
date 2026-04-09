@@ -40,12 +40,11 @@ def mostrar_login():
                     "id": usuario_db["id"],
                     "username": usuario_db["username"],
                     "nombre": usuario_db["nombre"],
+                    "email": username,
                     "roles": usuario_db["roles"] or [] 
                 }
-                #st.session_state["roles"] = st.session_state["usuario"]["roles"]
                 st.session_state["roles"] = usuario_db["roles"] or []
                 st.session_state["username"] = usuario_db["username"]
-                # 🔐 Guarda también el token de Microsoft
                 st.session_state["microsoft_token"] = access_token
                 
                 ### Para Conrtrol de politicas 

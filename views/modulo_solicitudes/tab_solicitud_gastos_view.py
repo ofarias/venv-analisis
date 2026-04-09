@@ -37,6 +37,7 @@ from controllers.solicitudes_controller import (
     validar_detalle_para_comprobacion_ctrl,
     get_comprobante_detalle_ctrl,
     get_comprobantes_solicitud_ctrl,
+    get_correos_usuarios_por_rol_ctrl,
 )
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
@@ -1024,15 +1025,24 @@ def mostrar_tab_solicitudes_gastos():
                 {_detalle_gastos_a_html(detalle_rows_mail, conceptos_prepago)}
                 </div>
                 """
+                correo_remitente = str(usuario.get("email") or "").strip()
+                correos_jefes_ventas = get_correos_usuarios_por_rol_ctrl("Jefe de Ventas") or []
+                correos_jefes_ventas = list(dict.fromkeys(correos_jefes_ventas))
+                
+                if not correos_jefes_ventas:
+                    ok_mail = False
+                    msg_mail = "no se encontraron correos activos para el rol 'Jefe de Ventas'."
+                else:
+                    token = st.session_state.get("microsoft_token")
+                    ok_mail, msg_mail = enviar_correo(
+                        destinatario=correos_jefes_ventas,
+                        asunto=asunto,
+                        cuerpo_html=cuerpo_html,
+                        remitente=correo_remitente,
+                        token=token,
+                    )
 
-                token = st.session_state.get("microsoft_token")
-                ok_mail, msg_mail = enviar_correo(
-                    destinatario="ofarias@ftcenlinea.com",
-                    asunto=asunto,
-                    cuerpo_html=cuerpo_html,
-                    token=token,
-                )
-
+                
                 if ok_mail:
                     st.success("estatus actualizado: enviada y correo enviado")
                 else:
@@ -1192,7 +1202,7 @@ def mostrar_tab_solicitudes_gastos():
         if r.get("id_comprobante_detalle") is not None
     }
 
-    st.subheader("importar xml/pdf a mysql (datoscfd)")
+    st.subheader("Registrar xml/pdf para comprobación de gastos")
 
     up_files = st.file_uploader(
         "selecciona uno o varios archivos (xml o pdf)",
@@ -1325,7 +1335,11 @@ def mostrar_tab_solicitudes_gastos():
             st.success(msg)
 
     st.divider()
-    st.caption("detalle de gastos")
+    #st.caption("Detalle del Gasto, comprobación de gastos.")
+    st.markdown(
+        "<span style='font-size:20px; color:#2563eb; font-weight:bold;'>Detalle del Gasto, comprobación de gastos.</span>",
+        unsafe_allow_html=True
+    )
 
     detalle_rows = get_detalle_ctrl(int(selected_id))
     df_det = pd.DataFrame(detalle_rows)
@@ -1794,25 +1808,47 @@ def mostrar_tab_solicitudes_gastos():
     t4.metric("Total Prepago", _money_fmt(total_prepago))
     t5.metric("Total Pagado Vendedor", _money_fmt(total_pagado_vendedor))
 
-    val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id))
+    #val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id))
 
-    if val_det.get("ok") and estatus_actual in ("autorizada", "dispersion"):
-        if st.button(
-            "enviar a revisión comprobación",
-            use_container_width=True,
-            key="sg_btn_revision_comprobacion",
-        ):
-            cambiar_estatus_ctrl(
-                int(selected_id),
-                "revision comprobacion",
-                int(usuario["id"]),
-            )
-            st.success("estatus actualizado a revisión comprobación")
-            st.rerun()
-    else:
-        st.warning("la solicitud todavía no cumple validaciones para comprobación.")
-        for err in val_det.get("errores", []):
-            st.write(f"- {err}")
+    #if val_det.get("ok") and estatus_actual in ("autorizada", "dispersion"):
+    #    if st.button(
+    #        "enviar a revisión comprobación",
+    #        use_container_width=True,
+    #        key="sg_btn_revision_comprobacion",
+    #    ):
+    #        cambiar_estatus_ctrl(
+    #            int(selected_id),
+    #            "revision comprobacion",
+    #            int(usuario["id"]),
+    #        )
+    #        st.success("estatus actualizado a revisión comprobación")
+    #        st.rerun()
+    #else:
+    #    st.warning("la solicitud todavía no cumple validaciones para comprobación.")
+    #    for err in val_det.get("errores", []):
+    #        st.write(f"- {err}")
+
+    if estatus_actual == "contabilidad":
+
+        val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id))
+
+        if val_det.get("ok"):
+            if st.button(
+                "enviar a revisión comprobación",
+                use_container_width=True,
+                key="sg_btn_revision_comprobacion",
+            ):
+                cambiar_estatus_ctrl(
+                    int(selected_id),
+                    "revision comprobacion",
+                    int(usuario["id"]),
+                )
+                st.success("estatus actualizado a revisión comprobación")
+                st.rerun()
+        else:
+            st.warning("la solicitud todavía no cumple validaciones para comprobación.")
+            for err in val_det.get("errores", []):
+                st.write(f"- {err}")
 
     csave, cdel = st.columns([2, 1])
 

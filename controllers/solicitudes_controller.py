@@ -42,6 +42,7 @@ from models.solicitudes_model import (
     get_comprobante_by_detalle_id,
     get_comprobantes_by_detalle_ids,
     get_comprobantes_by_solicitud,
+    get_correos_usuarios_por_rol_model,
 )
 
 
@@ -444,4 +445,6 @@ def get_comprobantes_solicitud_ctrl(solicitud_id: int):
 def get_datoscfd_by_uuids_ctrl(uuids: list[str]) -> list[dict]:
     return get_datoscfd_by_uuids(uuids)
 
-    
+
+def get_correos_usuarios_por_rol_ctrl(nombre_rol: str) -> list[str]:
+    return get_correos_usuarios_por_rol_model(nombre_rol)

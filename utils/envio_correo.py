@@ -14,8 +14,48 @@ load_dotenv()
 
 ## token= st.session_state["microsoft_token"]
 
+def enviar_correo(destinatario, asunto, cuerpo_html, token, remitente):
+    if not token:
+        return False, "❌ No se encontró el token de Microsoft Graph."
 
-def enviar_correo(destinatario, asunto, cuerpo_html, token, remitente="sysadmin@biotecsamexico.onmicrosoft.com"):
+    if isinstance(destinatario, list):
+        to_list = [{"emailAddress": {"address": str(email).strip()}} for email in destinatario if str(email).strip()]
+    else:
+        to_list = [{"emailAddress": {"address": str(destinatario).strip()}}]
+
+    url = f"https://graph.microsoft.com/v1.0/users/{remitente}/sendMail"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    mensaje = {
+        "message": {
+            "subject": asunto,
+            "body": {
+                "contentType": "HTML",
+                "content": cuerpo_html
+            },
+            "toRecipients": to_list
+        }
+    }
+
+    response = requests.post(url, headers=headers, data=json.dumps(mensaje))
+
+    debug = {
+        "url": url,
+        "remitente": remitente,
+        "destinatarios": to_list,
+        "status_code": response.status_code,
+        "response_text": response.text,
+    }
+
+    if response.status_code == 202:
+        return True, f"✅ Correo enviado correctamente. DEBUG: {debug}"
+    else:
+        return False, f"❌ Error al enviar el correo. DEBUG: {debug}"
+    
+def enviar_correo_original(destinatario, asunto, cuerpo_html, token, remitente="sysadmin@biotecsamexico.onmicrosoft.com"):
     #token = os.getenv("MICROSOFT_GRAPH_TOKEN")
     if not token:
         return False, "❌ No se encontró el token de Microsoft Graph."

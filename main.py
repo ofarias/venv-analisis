@@ -75,6 +75,7 @@ else:
     menu_opciones = {}
 
     if "SuperAdmin" in roles:
+        menu_opciones["Compras"] = "compras"
         menu_opciones["Solicitudes Contabilidad"] = "solicitudesConta"
         menu_opciones["Solicitudes"] = "solicitudes"
         menu_opciones["Dashboard Auxiliar Contable"] = "auxconta"
@@ -260,6 +261,9 @@ else:
         elif modulo =="solicitudesConta":
             from views.modulo_solicitudes.solicitudes_conta_view import mostrar_modulo_solicitudes_conta
             mostrar_modulo_solicitudes_conta() 
+        elif modulo =="compras":
+            from views.modulo_compras.compras_view import mostrar_modulo_compras
+            mostrar_modulo_compras() 
     else:
         st.warning("⚠️ No tienes roles asignados para acceder a los módulos.")
         ## st.json(roles)
