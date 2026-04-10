@@ -19,13 +19,17 @@ def _get_msal_app():
         authority=AUTHORITY
     )
 
-def get_login_url():
-    """Genera y retorna la URL de autenticación como string."""
+def get_login_url(state: str = None):
+    """Genera y retorna la URL de autenticación como string.
+
+    state: string opcional que Microsoft regresa intacto en el redirect
+           (?code=...&state=...), útil para preservar deeplink params.
+    """
     msal_app = _get_msal_app()
-    auth_request_url = msal_app.get_authorization_request_url(
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
-    )
+    kwargs = dict(scopes=SCOPES, redirect_uri=REDIRECT_URI)
+    if state:
+        kwargs["state"] = state
+    auth_request_url = msal_app.get_authorization_request_url(**kwargs)
     return auth_request_url  # <-- es string, no dict
 
 def handle_redirect(auth_code):

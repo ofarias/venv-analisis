@@ -1,3 +1,5 @@
+#main.py
+
 import sys, os
 import streamlit as st
 from PIL import Image
@@ -5,9 +7,8 @@ from logs.logger import registrar_log
 import base64
 import mimetypes
 
-
 st.set_page_config(layout="wide")
-
+    
 logo_path = "biotecsa.png"
 if os.path.exists(logo_path):
     imagen = Image.open(logo_path)
@@ -16,6 +17,26 @@ if os.path.exists(logo_path):
         st.image(imagen, width=200)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+def _get_modulo_forzado_desde_deeplink() -> str | None:
+    qp = st.query_params
+
+    sg_id = (qp.get("sg_id") or "").strip()
+    token = (qp.get("t") or "").strip()
+
+    if sg_id and token:
+        return "solicitudesConta"
+
+    deeplink_session = st.session_state.get("deeplink_params") or {}
+    if deeplink_session.get("sg_id") and deeplink_session.get("t"):
+        return "solicitudesConta"
+
+    modulo_forzado = st.session_state.get("modulo_forzado")
+    if modulo_forzado:
+        return str(modulo_forzado)
+
+    return None
+
 
 from views.login_view import mostrar_login
 
@@ -151,9 +172,32 @@ else:
         menu_opciones["Solicitudes"] = "solicitudes"
 
 
+    #if menu_opciones:
+    #    seleccion = st.sidebar.selectbox("Módulos disponibles", list(menu_opciones.keys()))
+    #    modulo = menu_opciones[seleccion]
+
     if menu_opciones:
-        seleccion = st.sidebar.selectbox("Módulos disponibles", list(menu_opciones.keys()))
+        opciones_menu = list(menu_opciones.keys())
+
+        modulo_forzado = _get_modulo_forzado_desde_deeplink()
+        idx_default = 0
+
+        if modulo_forzado:
+            for i, nombre_opcion in enumerate(opciones_menu):
+                if menu_opciones[nombre_opcion] == modulo_forzado:
+                    idx_default = i
+                    break
+
+        seleccion = st.sidebar.selectbox(
+            "Módulos disponibles",
+            opciones_menu,
+            index=idx_default,
+        )
+
         modulo = menu_opciones[seleccion]
+
+        if st.session_state.get("modulo_forzado") == modulo:
+            st.session_state["modulo_forzado"] = None
 
         if modulo == "admin_usuarios":
             from views.modulos_admin.admin_usuarios import mostrar_admin_usuarios

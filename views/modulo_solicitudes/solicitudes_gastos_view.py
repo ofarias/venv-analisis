@@ -14,7 +14,7 @@ def mostrar_modulo_solicitudes_gastos():
     usuario = st.session_state.get("usuario") or {}
     roles = [str(x).strip().lower() for x in (usuario.get("roles", []) or [])]
 
-    puede_ver_aut = any(r in roles for r in ["admin", "jefe ventas", "contabilidad", "compras"])
+    puede_ver_aut = any(r in roles for r in ["admin", "Jefe de Ventas", "contabilidad", "compras"])
     puede_ver_rev_conta = any(r in roles for r in ["admin", "contabilidad"])
     
     labels = ["solicitudes", "catálogo conceptos", "formas de pago usuario"]

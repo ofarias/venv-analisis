@@ -1,3 +1,5 @@
+#views/modulo_solicitudes/tab_autorizaciones_solicitudes_view.py
+
 from __future__ import annotations
 
 import streamlit as st
@@ -40,7 +42,7 @@ def _verify_token(token: str, secret: str) -> dict | None:
         return None
 
 
-def _consume_deeplink():
+def _consume_deeplink_old():
     """
     lee query params:
       ?sg_id=123&action=approve|reject&t=token
@@ -94,6 +96,75 @@ def _consume_deeplink():
     except Exception:
         pass
 
+
+def _consume_deeplink():
+    """
+    lee query params o session_state:
+      ?sg_id=123&action=approve|reject&t=token
+    si token es válido y no expiró:
+      - set aut_selected_id
+      - set aut_pending_action
+    """
+    deeplink_session = st.session_state.get("deeplink_params") or {}
+    qp = st.query_params
+
+    qp_sg_id = (
+        deeplink_session.get("sg_id")
+        or qp.get("sg_id", None)
+    )
+    qp_action = (
+        deeplink_session.get("action")
+        or qp.get("action", "")
+        or ""
+    ).strip().lower()
+    qp_token = (
+        deeplink_session.get("t")
+        or qp.get("t", "")
+        or ""
+    ).strip()
+
+    if not qp_sg_id or not qp_token:
+        return
+
+    try:
+        sg_id = int(qp_sg_id)
+    except Exception:
+        return
+
+    secret = str(st.secrets.get("APP_LINK_SECRET", "")).strip()
+    if not secret:
+        st.warning("falta APP_LINK_SECRET en secrets.toml")
+        return
+
+    payload = _verify_token(qp_token, secret)
+    if not payload:
+        st.warning("link inválido (token).")
+        st.session_state.pop("deeplink_params", None)
+        return
+
+    exp = int(payload.get("exp") or 0)
+    if exp <= 0 or int(datetime.utcnow().timestamp()) > exp:
+        st.warning("link expirado.")
+        st.session_state.pop("deeplink_params", None)
+        return
+
+    if int(payload.get("sg_id") or 0) != int(sg_id):
+        st.warning("link inválido (id no coincide).")
+        st.session_state.pop("deeplink_params", None)
+        return
+
+    st.session_state["aut_selected_id"] = int(sg_id)
+
+    if qp_action in ("approve", "reject"):
+        st.session_state["aut_pending_action"] = qp_action
+
+    st.session_state.pop("deeplink_params", None)
+
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+    
 def _get_email_vendedor(solicitud: dict) -> str | None:
     empleado_id = int(solicitud.get("empleado_id") or 0)
     if not empleado_id:
