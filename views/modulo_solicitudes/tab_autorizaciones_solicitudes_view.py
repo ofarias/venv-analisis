@@ -181,11 +181,68 @@ def _get_email_vendedor(solicitud: dict) -> str | None:
             )
     return None
 
+def _enviar_dispersion_correo(
+        *,
+        solicitud: dict,
+        token,
+        concepto_notificado: str,
+        estatus_final: str,
+    ) -> tuple[bool, str]:
+    usuario = st.session_state.get("usuario") or {}
+    remitente = str(usuario.get("email") or "").strip()
 
-def _enviar_rechazo_correo(*, solicitud: dict, motivo: str, token):
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    destinatario = _get_email_vendedor(solicitud)
+    if not destinatario:
+        return False, "no se encontró correo del vendedor (empleado)."
+
     folio = str(solicitud.get("folio") or "").strip()
     vendedor_nombre = str(solicitud.get("empleado_nombre") or "").strip()
+    concepto_notificado = str(concepto_notificado or "").strip()
 
+    asunto = f"actualización de dispersión de solicitud {folio}".strip()
+
+    mensaje_extra = ""
+    if str(estatus_final).strip().lower() == "dispersion":
+        mensaje_extra = (
+            "<p>la dispersión de la solicitud quedó completada y el estatus actual es "
+            "<b>dispersion</b>.</p>"
+        )
+    else:
+        mensaje_extra = (
+            "<p>la solicitud sigue pendiente de completar el resto de la dispersión.</p>"
+        )
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>se actualizó la dispersión de tu solicitud de gastos.</p>
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>vendedor:</b> {vendedor_nombre}<br>
+        <b>concepto dispersado:</b> {concepto_notificado}<br>
+        <b>estatus actual:</b> {estatus_final}
+      </p>
+      {mensaje_extra}
+    </div>
+    """
+
+    return enviar_correo(
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        token=token,
+        remitente=remitente,
+    )
+
+def _enviar_rechazo_correo(*, solicitud: dict, motivo: str, token):
+    usuario = st.session_state.get("usuario") or {}
+    remitente = str(usuario.get("email") or "").strip()
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor_nombre = str(solicitud.get("empleado_nombre") or "").strip()
     destinatario = _get_email_vendedor(solicitud)
     if not destinatario:
         return False, "no se encontró correo del vendedor (empleado)."
@@ -212,10 +269,16 @@ def _enviar_rechazo_correo(*, solicitud: dict, motivo: str, token):
         asunto=asunto,
         cuerpo_html=cuerpo_html,
         token=token,
+        remitente=remitente,
     )
 
+def _enviar_autorizacion_correo(*, solicitud: dict, token, estatus_final: str = "autorizada"):
+    usuario = st.session_state.get("usuario") or {}
+    remitente = str(usuario.get("email") or "").strip()
 
-def _enviar_autorizacion_correo(*, solicitud: dict, token):
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
     folio = str(solicitud.get("folio") or "").strip()
     vendedor_nombre = str(solicitud.get("empleado_nombre") or "").strip()
 
@@ -225,14 +288,20 @@ def _enviar_autorizacion_correo(*, solicitud: dict, token):
 
     asunto = f"solicitud de gastos autorizada {folio}".strip()
 
+    if str(estatus_final).strip().lower() == "dispersion":
+        mensaje_extra = "<p>la solicitud no requiere dispersión adicional, por lo que avanzó automáticamente al estatus <b>dispersion</b>.</p>"
+    else:
+        mensaje_extra = "<p>puedes continuar con el proceso correspondiente.</p>"
+
     cuerpo_html = f"""
     <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
       <p>tu solicitud de gastos fue autorizada.</p>
       <p>
         <b>folio:</b> {folio}<br>
         <b>vendedor:</b> {vendedor_nombre}<br>
+        <b>estatus actual:</b> {estatus_final}
       </p>
-      <p>puedes continuar con el proceso correspondiente.</p>
+      {mensaje_extra}
     </div>
     """
 
@@ -241,11 +310,11 @@ def _enviar_autorizacion_correo(*, solicitud: dict, token):
         asunto=asunto,
         cuerpo_html=cuerpo_html,
         token=token,
+        remitente=remitente,
     )
 
-
-ESTATUS_OPTS = ["todas", "captura", "enviada", "autorizada", "rechazada", "cancelada", "cerrada", "dispersion"]
-
+#ESTATUS_OPTS = ["todas", "captura", "enviada", "autorizada", "rechazada", "cancelada", "cerrada", "dispersion"]
+ESTATUS_OPTS = ["todas", "enviada", "autorizada", "rechazada", "cerrada"]
 
 def _estatus_color_html(e: str) -> str:
     e = (e or "").strip().lower()
@@ -273,10 +342,96 @@ def _estatus_color_html(e: str) -> str:
     </span>
     """
 
-
 def _get_usuario_actual():
     return st.session_state.get("usuario") or {}
 
+def _norm_text(x) -> str:
+    return str(x or "").strip().lower()
+
+
+def _monto_detalle(r: dict) -> float:
+    try:
+        total_xml = float(r.get("total_xml") or 0)
+    except Exception:
+        total_xml = 0.0
+
+    if total_xml > 0:
+        return total_xml
+
+    try:
+        cantidad = float(r.get("cantidad") or 0)
+    except Exception:
+        cantidad = 0.0
+
+    try:
+        precio = float(r.get("precio_unitario") or 0)
+    except Exception:
+        precio = 0.0
+
+    return round(cantidad * precio, 2)
+
+
+def _analizar_requerimientos_dispersion(detalle_rows: list[dict]) -> dict:
+    requiere_gasolina = False
+    requiere_prepagados = False
+
+    for r in detalle_rows or []:
+        concepto = _norm_text(r.get("concepto"))
+        monto = _monto_detalle(r)
+
+        if monto <= 0:
+            continue
+
+        if concepto == "gasolina":
+            requiere_gasolina = True
+            continue
+
+        prepago = False
+        try:
+            prepago = bool(PREPAGO_MAP.get(concepto, False))
+        except Exception:
+            prepago = False
+
+        if prepago:
+            requiere_prepagados = True
+
+    return {
+        "requiere_gasolina": requiere_gasolina,
+        "requiere_prepagados": requiere_prepagados,
+    }
+
+def _get_prepago_map():
+    from database.conexion import obtener_conexion
+
+    cn = obtener_conexion()
+    out = {}
+    try:
+        cur = cn.cursor()
+        cur.execute("select concepto, prepago from solicitud_concepto_gasto")
+        for concepto, prepago in cur.fetchall():
+            k = (concepto or "").strip().lower()
+            out[k] = bool(prepago)
+    finally:
+        try:
+            cn.close()
+        except Exception:
+            pass
+    return out
+
+
+PREPAGO_MAP = _get_prepago_map()
+
+def _resolver_estatus_despues_autorizacion(solicitud_id: int) -> str:
+    detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
+    reqs = _analizar_requerimientos_dispersion(detalle_rows)
+
+    requiere_gasolina = bool(reqs.get("requiere_gasolina"))
+    requiere_prepagados = bool(reqs.get("requiere_prepagados"))
+
+    if requiere_gasolina or requiere_prepagados:
+        return "autorizada"
+
+    return "dispersion"
 
 def mostrar_tab_autorizaciones_solicitudes():
     st.subheader("autorizaciones / contabilidad")
@@ -305,9 +460,27 @@ def mostrar_tab_autorizaciones_solicitudes():
     with c1:
         folio_like = st.text_input("folio contiene", key="aut_folio_like")
     with c2:
-        # contabilidad: por defecto ver autorizadas (para dispersar)
-        default_estatus_idx = 3 if is_conta else 0
-        estatus = st.selectbox("estatus", options=ESTATUS_OPTS, index=default_estatus_idx, key="aut_estatus")
+        if is_admin and is_conta and is_jefe_ventas:
+            estatus_opts = ["todas", "enviada", "autorizada", "rechazada", "cerrada"]
+            default_estatus = "todas"
+        elif is_conta and not is_jefe_ventas:
+            estatus_opts = ["autorizada", "todas"]
+            default_estatus = "autorizada"
+        elif is_jefe_ventas and not is_conta:
+            estatus_opts = ["enviada", "rechazada", "cerrada", "todas"]
+            default_estatus = "enviada"
+        else:
+            estatus_opts = ["todas", "enviada", "autorizada", "rechazada", "cerrada"]
+            default_estatus = "todas"
+
+        default_estatus_idx = estatus_opts.index(default_estatus)
+
+        estatus = st.selectbox(
+            "estatus",
+            options=estatus_opts,
+            index=default_estatus_idx,
+            key="aut_estatus",
+        )
     with c3:
         anio = st.number_input(
             "año",
@@ -409,19 +582,25 @@ def mostrar_tab_autorizaciones_solicitudes():
                     disabled=(pending != "approve"),
                     key="aut_btn_confirm_from_link_approve",
                 ):
-                    cambiar_estatus_ctrl(int(sel_id), "autorizada", int(usuario.get("id") or 0))
+                    nuevo_estatus = _resolver_estatus_despues_autorizacion(int(sel_id))
+                    cambiar_estatus_ctrl(int(sel_id), nuevo_estatus, int(usuario.get("id") or 0))
 
                     token = st.session_state.get("microsoft_token")
-                    ok_mail, msg_mail = _enviar_autorizacion_correo(solicitud=s, token=token)
-
+                    #ok_mail, msg_mail = _enviar_autorizacion_correo(solicitud=s, token=token)
+                    ok_mail, msg_mail = _enviar_autorizacion_correo(
+                        solicitud=s,
+                        token=token,
+                        estatus_final=nuevo_estatus,
+                    )
                     if ok_mail:
-                        st.success("solicitud autorizada y correo enviado al vendedor.")
+                        st.success(f"solicitud actualizada a {nuevo_estatus} y correo enviado al vendedor.")
                     else:
-                        st.warning(f"solicitud autorizada, pero no se pudo enviar correo: {msg_mail}")
+                        st.warning(
+                            f"solicitud actualizada a {nuevo_estatus}, pero no se pudo enviar correo: {msg_mail}"
+                        )
 
                     st.session_state["aut_pending_action"] = ""
                     st.rerun()
-
             with cpa2:
                 if st.button(
                     "continuar a rechazo",
@@ -509,15 +688,22 @@ def mostrar_tab_autorizaciones_solicitudes():
 
         with c1:
             if st.button("autorizar", use_container_width=True, key="aut_btn_aprobar"):
-                cambiar_estatus_ctrl(int(sel_id), "autorizada", int(usuario.get("id") or 0))
+                nuevo_estatus = _resolver_estatus_despues_autorizacion(int(sel_id))
+                cambiar_estatus_ctrl(int(sel_id), nuevo_estatus, int(usuario.get("id") or 0))
 
                 token = st.session_state.get("microsoft_token")
-                ok_mail, msg_mail = _enviar_autorizacion_correo(solicitud=s, token=token)
-
+                #ok_mail, msg_mail = _enviar_autorizacion_correo(solicitud=s, token=token)
+                ok_mail, msg_mail = _enviar_autorizacion_correo(
+                    solicitud=s,
+                    token=token,
+                    estatus_final=nuevo_estatus,
+                )
                 if ok_mail:
-                    st.success("solicitud autorizada y correo enviado al vendedor.")
+                    st.success(f"solicitud actualizada a {nuevo_estatus} y correo enviado al vendedor.")
                 else:
-                    st.warning(f"solicitud autorizada, pero no se pudo enviar correo: {msg_mail}")
+                    st.warning(
+                        f"solicitud actualizada a {nuevo_estatus}, pero no se pudo enviar correo: {msg_mail}"
+                    )
 
                 st.rerun()
 
@@ -550,6 +736,7 @@ def mostrar_tab_autorizaciones_solicitudes():
                             token=token,
                         )
 
+
                         if ok_mail:
                             st.success("solicitud rechazada y correo enviado al vendedor.")
                         else:
@@ -581,6 +768,14 @@ def mostrar_tab_autorizaciones_solicitudes():
         flags = get_dispersion_flags_ctrl(int(sel_id)) or {}
         gas_ok = bool(flags.get("disp_gasolina"))
         pre_ok = bool(flags.get("disp_prepagados"))
+        reqs = _analizar_requerimientos_dispersion(detalle)
+        requiere_gasolina = bool(reqs.get("requiere_gasolina"))
+        requiere_prepagados = bool(reqs.get("requiere_prepagados"))
+
+        st.caption(
+            f"requiere gasolina: {'sí' if requiere_gasolina else 'no'} | "
+            f"requiere otros prepagados: {'sí' if requiere_prepagados else 'no'}"
+        )
 
         c1, c2 = st.columns(2)
 
@@ -606,24 +801,101 @@ def mostrar_tab_autorizaciones_solicitudes():
 
         if st.button("guardar dispersión", use_container_width=True, key=f"btn_guardar_disp_{int(sel_id)}"):
             uid = int(usuario.get("id") or 0)
+            token = st.session_state.get("microsoft_token")
+
+            concepto_notificado = None
 
             # solo guarda lo que le toca a cada rol (admin puede ambos)
             if is_admin or is_conta:
+                flags_prev = get_dispersion_flags_ctrl(int(sel_id)) or {}
+                gas_prev = bool(flags_prev.get("disp_gasolina"))
+
                 set_dispersion_flag_ctrl(int(sel_id), "disp_gasolina", bool(gas2), uid)
 
+                if requiere_gasolina and (not gas_prev) and bool(gas2):
+                    concepto_notificado = "gasolina"
+
             if is_admin or is_compras:
+                flags_prev = get_dispersion_flags_ctrl(int(sel_id)) or {}
+                pre_prev = bool(flags_prev.get("disp_prepagados"))
+
                 set_dispersion_flag_ctrl(int(sel_id), "disp_prepagados", bool(pre2), uid)
+
+                if requiere_prepagados and (not pre_prev) and bool(pre2):
+                    concepto_notificado = "prepagados"
 
             # re-lee flags desde bd para decidir estatus
             flags2 = get_dispersion_flags_ctrl(int(sel_id)) or {}
             gasf = bool(flags2.get("disp_gasolina"))
             pref = bool(flags2.get("disp_prepagados"))
 
-            if gasf and pref:
+            ok_gasolina = (not requiere_gasolina) or gasf
+            ok_prepagados = (not requiere_prepagados) or pref
+
+            estatus_final = "autorizada"
+            if ok_gasolina and ok_prepagados:
                 cambiar_estatus_ctrl(int(sel_id), "dispersion", uid)
-                st.success("dispersión completada. estatus actualizado a dispersada.")
+                estatus_final = "dispersion"
+
+            ok_mail = None
+            msg_mail = None
+
+            if concepto_notificado:
+                ok_mail, msg_mail = _enviar_dispersion_correo(
+                    solicitud=s,
+                    token=token,
+                    concepto_notificado=concepto_notificado,
+                    estatus_final=estatus_final,
+                )
+
+            if estatus_final == "dispersion":
+                if concepto_notificado:
+                    if ok_mail:
+                        st.success(
+                            f"dispersión de {concepto_notificado} guardada. "
+                            "estatus actualizado a dispersion y correo enviado al solicitante."
+                        )
+                    else:
+                        st.warning(
+                            f"dispersión de {concepto_notificado} guardada. "
+                            f"estatus actualizado a dispersion, pero no se pudo enviar correo: {msg_mail}"
+                        )
+                else:
+                    st.success("dispersión completada. estatus actualizado a dispersion.")
             else:
-                st.success("dispersión guardada. aún falta completar el otro paso.")
+                faltantes = []
+                if requiere_gasolina and not gasf:
+                    faltantes.append("gasolina")
+                if requiere_prepagados and not pref:
+                    faltantes.append("prepagados")
+
+                if concepto_notificado:
+                    if ok_mail:
+                        st.success(
+                            f"dispersión de {concepto_notificado} guardada y correo enviado al solicitante. "
+                            + (
+                                "aún falta completar: " + ", ".join(faltantes)
+                                if faltantes else
+                                "la dispersión fue guardada."
+                            )
+                        )
+                    else:
+                        st.warning(
+                            f"dispersión de {concepto_notificado} guardada, pero no se pudo enviar correo: {msg_mail}. "
+                            + (
+                                "aún falta completar: " + ", ".join(faltantes)
+                                if faltantes else
+                                "la dispersión fue guardada."
+                            )
+                        )
+                else:
+                    if faltantes:
+                        st.success(
+                            "dispersión guardada. aún falta completar: "
+                            + ", ".join(faltantes)
+                        )
+                    else:
+                        st.success("dispersión guardada.")
 
             st.rerun()
 

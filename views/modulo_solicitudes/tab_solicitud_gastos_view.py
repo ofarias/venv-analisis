@@ -585,6 +585,39 @@ def mostrar_tab_solicitudes_gastos():
         st.warning("no hay sesión de usuario en st.session_state['usuario']")
         return
 
+    if st.session_state.pop("sg_reset_form", False):
+        keys_to_clear = [
+            "sg_selected_id",
+            "sg_selected_id_widget",
+            "sg_head_loaded_id",
+            "sg_det_df",
+            "sg_det_df_solicitud_id",
+            "sg_det_editor",
+            "sg_uuid_prev",
+            "sg_uuid_cache",
+            "sg_clientes_sel",
+            "sg_ciudades_sel",
+            "sg_clientes_texto",
+            "sg_objetivo",
+            "sg_fecha_ini",
+            "sg_fecha_fin",
+            "sg_hora_salida",
+            "sg_hora_regreso",
+            "sg_confirm_delete",
+            "sg_delete_armed",
+            "sg_delete_target_id",
+            "sg_ids_borrar",
+            "sg_un_editor",
+            "sg_detalle_id_un",
+            "sg_uploader_archivos",
+            "sg_modo_widget",
+            "sg_detalle_id_un",
+            "sg_uploader_comprobante_det_0",
+        ]
+
+        for k in keys_to_clear:
+            st.session_state.pop(k, None)
+
     qp = st.query_params
     qp_sg_id = qp.get("sg_id", None)
     qp_action = (qp.get("action", "") or "").strip().lower()
@@ -701,22 +734,35 @@ def mostrar_tab_solicitudes_gastos():
     else:
         st.text_input("folio", value="(se genera al guardar)", disabled=True)
 
-    empleado_default = solicitud["empleado_id"] if solicitud else usuario["id"]
-    ids_usuarios = [u["id"] for u in usuarios] if usuarios else []
-    idx_default = ids_usuarios.index(empleado_default) if empleado_default in ids_usuarios else 0
+    #empleado_default = solicitud["empleado_id"] if solicitud else usuario["id"]
+    #ids_usuarios = [u["id"] for u in usuarios] if usuarios else []
+    #idx_default = ids_usuarios.index(empleado_default) if empleado_default in ids_usuarios else 0
+
+    #estatus_actual = (solicitud["estatus"] if solicitud else "captura") if modo == "editar" else "captura"
+    #puede_editar_cabecera = estatus_actual in ("captura", "rechazada")
+
+    #empleado_id = st.selectbox(
+    #    "empleado",
+    #    options=ids_usuarios,
+    #    format_func=lambda _id: f"{usuarios_map[_id]['nombre']} ({usuarios_map[_id]['rol']})",
+    #    index=idx_default,
+    #    disabled=not puede_editar_cabecera,
+    #    key="sg_empleado_id",
+    #)
+    #empleado_nombre = usuarios_map[empleado_id]["nombre"]
+
+    empleado_id = int(usuario["id"])
+    empleado_nombre = str(usuario.get("nombre") or "").strip()
 
     estatus_actual = (solicitud["estatus"] if solicitud else "captura") if modo == "editar" else "captura"
     puede_editar_cabecera = estatus_actual in ("captura", "rechazada")
 
-    empleado_id = st.selectbox(
+    st.text_input(
         "empleado",
-        options=ids_usuarios,
-        format_func=lambda _id: f"{usuarios_map[_id]['nombre']} ({usuarios_map[_id]['rol']})",
-        index=idx_default,
-        disabled=not puede_editar_cabecera,
-        key="sg_empleado_id",
+        value=empleado_nombre,
+        disabled=True,
+        key="sg_empleado_nombre_fijo",
     )
-    empleado_nombre = usuarios_map[empleado_id]["nombre"]
 
     c3, c4, c5 = st.columns([3, 1, 1])
 
@@ -1053,25 +1099,25 @@ def mostrar_tab_solicitudes_gastos():
 
                 st.rerun()
 
-            if cbtn3.button(
-                "autorizar",
-                use_container_width=True,
-                disabled=(usuario.get("rol") != "Admin" or estatus_actual != "enviada"),
-                key="sg_btn_approve",
-            ):
-                cambiar_estatus_ctrl(int(selected_id), "autorizada", int(usuario["id"]))
-                st.success("estatus actualizado: autorizada")
-                st.rerun()
-
-            if cbtn4.button(
-                "rechazar",
-                use_container_width=True,
-                disabled=(usuario.get("rol") != "Admin" or estatus_actual != "enviada"),
-                key="sg_btn_reject",
-            ):
-                cambiar_estatus_ctrl(int(selected_id), "rechazada", int(usuario["id"]))
-                st.success("estatus actualizado: rechazada")
-                st.rerun()
+            #if cbtn3.button(
+            #    "autorizar",
+            #    use_container_width=True,
+            #    disabled=(usuario.get("rol") != "Admin" or estatus_actual != "enviada"),
+            #    key="sg_btn_approve",
+            #):
+            #    cambiar_estatus_ctrl(int(selected_id), "autorizada", int(usuario["id"]))
+            #    st.success("estatus actualizado: autorizada")
+            #    st.rerun()
+#
+            #if cbtn4.button(
+            #    "rechazar",
+            #    use_container_width=True,
+            #    disabled=(usuario.get("rol") != "Admin" or estatus_actual != "enviada"),
+            #    key="sg_btn_reject",
+            #):
+            #    cambiar_estatus_ctrl(int(selected_id), "rechazada", int(usuario["id"]))
+            #    st.success("estatus actualizado: rechazada")
+            #    st.rerun()
 
             puede_eliminar = bool(selected_id) and (str(estatus_actual).strip().lower() == "captura")
 
@@ -1189,6 +1235,13 @@ def mostrar_tab_solicitudes_gastos():
                     st.warning("esa solicitud no es tuya o no existe")
 
     st.divider()
+    
+    cnav1, cnav2 = st.columns([1, 4])
+
+    with cnav1:
+        if st.button("🔄 limpiar y crear nueva", use_container_width=True, key="sg_btn_nueva"):
+            st.session_state["sg_reset_form"] = True
+            st.rerun()
 
     selected_id = st.session_state.get("sg_selected_id") or None
     if not selected_id:
@@ -1869,7 +1922,19 @@ def mostrar_tab_solicitudes_gastos():
         )
 
     with csave:
-        if st.button("guardar detalle", use_container_width=True, key="sg_btn_guardar_detalle"):
+
+        puede_guardar_detalle = estatus_actual in ("captura", "dispersion")
+
+        #if st.button("guardar detalle", use_container_width=True, key="sg_btn_guardar_detalle"):
+        if not puede_guardar_detalle:
+            st.warning("solo se permite modificar el detalle en estatus 'captura' o 'dispersion'.")
+
+        if st.button(
+                "guardar detalle",
+                use_container_width=True,
+                key="sg_btn_guardar_detalle",
+                disabled=not puede_guardar_detalle
+            ):
             rows_out = edited.to_dict(orient="records")
             for r in rows_out:
                 r.pop("pagado_con", None)
