@@ -576,6 +576,54 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
 
     return html_pre + "<br>" + html_no + html_total
 
+def _enviar_cierre_a_jefe_ventas(*, solicitud: dict, token, remitente: str) -> tuple[bool, str]:
+    remitente = str(remitente or "").strip()
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    correos_jefes_ventas = get_correos_usuarios_por_rol_ctrl("Jefe de Ventas") or []
+    correos_jefes_ventas = list(dict.fromkeys(
+        str(x).strip()
+        for x in correos_jefes_ventas
+        if str(x).strip()
+    ))
+
+    if not correos_jefes_ventas:
+        return False, "no se encontraron correos activos para el rol 'Jefe de Ventas'."
+
+    folio = str(solicitud.get("folio") or "").strip()
+    empleado_nombre = str(solicitud.get("empleado_nombre") or "").strip()
+    clientes = str(solicitud.get("clientes") or "").strip()
+    ciudades = str(solicitud.get("ciudades") or "").strip()
+    fecha_inicio = str(solicitud.get("fecha_inicio") or "").strip()
+    fecha_fin = str(solicitud.get("fecha_fin") or "").strip()
+
+    asunto = f"solicitud lista para revisión de cierre {folio}".strip()
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>una solicitud de gastos fue cerrada por el solicitante y está lista para revisión.</p>
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>empleado:</b> {empleado_nombre}<br>
+        <b>clientes:</b> {clientes}<br>
+        <b>ciudades:</b> {ciudades}<br>
+        <b>fecha inicio:</b> {fecha_inicio}<br>
+        <b>fecha fin:</b> {fecha_fin}<br>
+        <b>estatus actual:</b> cerrada
+      </p>
+      <p>favor de revisar la comprobación para aceptar o rechazar.</p>
+    </div>
+    """
+
+    return enviar_correo(
+        destinatario=correos_jefes_ventas,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        token=token,
+        remitente=remitente,
+    )
+
 
 def mostrar_tab_solicitudes_gastos():
     st.subheader("Solicitudes de gastos")
@@ -1861,45 +1909,44 @@ def mostrar_tab_solicitudes_gastos():
     t4.metric("Total Prepago", _money_fmt(total_prepago))
     t5.metric("Total Pagado Vendedor", _money_fmt(total_pagado_vendedor))
 
-    #val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id))
-
-    #if val_det.get("ok") and estatus_actual in ("autorizada", "dispersion"):
-    #    if st.button(
-    #        "enviar a revisión comprobación",
-    #        use_container_width=True,
-    #        key="sg_btn_revision_comprobacion",
-    #    ):
-    #        cambiar_estatus_ctrl(
-    #            int(selected_id),
-    #            "revision comprobacion",
-    #            int(usuario["id"]),
-    #        )
-    #        st.success("estatus actualizado a revisión comprobación")
-    #        st.rerun()
-    #else:
-    #    st.warning("la solicitud todavía no cumple validaciones para comprobación.")
-    #    for err in val_det.get("errores", []):
-    #        st.write(f"- {err}")
-
-    if estatus_actual == "contabilidad":
+    if estatus_actual == "dispersion":
 
         val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id))
 
         if val_det.get("ok"):
             if st.button(
-                "enviar a revisión comprobación",
+                "cerrar comprobación",
                 use_container_width=True,
-                key="sg_btn_revision_comprobacion",
+                type="primary",
+                key="sg_btn_cerrar_comprobacion",
             ):
                 cambiar_estatus_ctrl(
                     int(selected_id),
-                    "revision comprobacion",
+                    "cerrada",
                     int(usuario["id"]),
                 )
-                st.success("estatus actualizado a revisión comprobación")
+
+                solicitud_actualizada = get_solicitud_ctrl(int(selected_id)) or solicitud or {}
+                token = st.session_state.get("microsoft_token")
+                correo_remitente = str(usuario.get("email") or "").strip()
+
+                ok_mail, msg_mail = _enviar_cierre_a_jefe_ventas(
+                    solicitud=solicitud_actualizada,
+                    token=token,
+                    remitente=correo_remitente,
+                )
+
+                if ok_mail:
+                    st.success("estatus actualizado a cerrada y correo enviado a jefe de ventas")
+                else:
+                    st.warning(
+                        "estatus actualizado a cerrada, pero no se pudo enviar correo a jefe de ventas. "
+                        f"{msg_mail}"
+                    )
+
                 st.rerun()
         else:
-            st.warning("la solicitud todavía no cumple validaciones para comprobación.")
+            st.warning("la solicitud todavía no cumple validaciones para cerrar la comprobación.")
             for err in val_det.get("errores", []):
                 st.write(f"- {err}")
 
@@ -1925,7 +1972,6 @@ def mostrar_tab_solicitudes_gastos():
 
         puede_guardar_detalle = estatus_actual in ("captura", "dispersion")
 
-        #if st.button("guardar detalle", use_container_width=True, key="sg_btn_guardar_detalle"):
         if not puede_guardar_detalle:
             st.warning("solo se permite modificar el detalle en estatus 'captura' o 'dispersion'.")
 
@@ -1970,7 +2016,7 @@ def mostrar_tab_solicitudes_gastos():
                     st.error(msg or "no se pudo guardar el detalle")
 
     st.divider()
-    #st.caption("unidades de negocio por renglón")
+    
     st.markdown(
         "<span style='font-size:20px; color:#2563eb; font-weight:bold;'>Captura de Unidades de Negocio por Gasto (renglón) </span>",
         unsafe_allow_html=True
@@ -2127,7 +2173,7 @@ def mostrar_tab_solicitudes_gastos():
         )
         st.dataframe(preview[["unidad", "porcentaje"]], use_container_width=True, hide_index=True)
 
-        if st.button("guardar unidades de negocio", key="sg_btn_guardar_un", use_container_width=True):
+        if st.button("guardar unidades de negocio", key="sg_btn_guardar_un", use_container_width=True, disabled=not puede_guardar_detalle):
             rows_un = edited_un.to_dict(orient="records")
 
             res_un = guardar_detalle_unidades_ctrl(

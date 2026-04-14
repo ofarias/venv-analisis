@@ -433,6 +433,78 @@ def _resolver_estatus_despues_autorizacion(solicitud_id: int) -> str:
 
     return "dispersion"
 
+def _enviar_revision_cierre_rechazada_correo(*, solicitud: dict, motivo: str, token):
+    usuario = st.session_state.get("usuario") or {}
+    remitente = str(usuario.get("email") or "").strip()
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor_nombre = str(solicitud.get("empleado_nombre") or "").strip()
+    destinatario = _get_email_vendedor(solicitud)
+    if not destinatario:
+        return False, "no se encontró correo del vendedor (empleado)."
+
+    asunto = f"revisión de cierre rechazada {folio}".strip()
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>la revisión de cierre de tu solicitud de gastos fue rechazada por jefe de ventas.</p>
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>vendedor:</b> {vendedor_nombre}<br>
+        <b>estatus actual:</b> dispersion
+      </p>
+
+      <p><b>comentario de rechazo:</b></p>
+      <div style="border:1px solid #ddd;padding:10px;border-radius:8px;background:#fafafa;white-space:pre-wrap">
+        {motivo.strip()}
+      </div>
+    </div>
+    """
+
+    return enviar_correo(
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        token=token,
+        remitente=remitente,
+    )
+
+def _enviar_revision_cierre_aprobada_correo(*, solicitud: dict, token):
+    usuario = st.session_state.get("usuario") or {}
+    remitente = str(usuario.get("email") or "").strip()
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor_nombre = str(solicitud.get("empleado_nombre") or "").strip()
+    destinatario = _get_email_vendedor(solicitud)
+    if not destinatario:
+        return False, "no se encontró correo del vendedor (empleado)."
+
+    asunto = f"revisión de cierre aprobada {folio}".strip()
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>la revisión de cierre de tu solicitud de gastos fue aprobada por jefe de ventas.</p>
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>vendedor:</b> {vendedor_nombre}<br>
+        <b>estatus actual:</b> contabilidad
+      </p>
+      <p>la solicitud avanzó al área de contabilidad.</p>
+    </div>
+    """
+
+    return enviar_correo(
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        token=token,
+        remitente=remitente,
+    )
+
 def mostrar_tab_autorizaciones_solicitudes():
     st.subheader("autorizaciones / contabilidad")
 
@@ -467,8 +539,8 @@ def mostrar_tab_autorizaciones_solicitudes():
             estatus_opts = ["autorizada", "todas"]
             default_estatus = "autorizada"
         elif is_jefe_ventas and not is_conta:
-            estatus_opts = ["enviada", "rechazada", "cerrada", "todas"]
-            default_estatus = "enviada"
+            estatus_opts = ["pendientes jefe ventas", "enviada", "cerrada", "rechazada", "todas"]
+            default_estatus = "pendientes jefe ventas"
         else:
             estatus_opts = ["todas", "enviada", "autorizada", "rechazada", "cerrada"]
             default_estatus = "todas"
@@ -493,7 +565,8 @@ def mostrar_tab_autorizaciones_solicitudes():
     with c4:
         limit = st.number_input("límite", min_value=50, max_value=2000, value=300, step=50, key="aut_limit")
 
-    estatus_param = "" if estatus == "todas" else estatus
+    #estatus_param = "" if estatus == "todas" else estatus
+    estatus_param = "" if estatus in ("todas", "pendientes jefe ventas") else estatus
 
     rows = listar_solicitudes_ctrl(
         folio_like=folio_like,
@@ -502,6 +575,12 @@ def mostrar_tab_autorizaciones_solicitudes():
         empleado_id=None,
         limit=int(limit),
     ) or []
+    
+    if estatus == "pendientes jefe ventas":
+        rows = [
+            r for r in rows
+            if str(r.get("estatus") or "").strip().lower() in ("enviada", "cerrada")
+        ]
 
     df = pd.DataFrame(rows)
 
@@ -617,6 +696,44 @@ def mostrar_tab_autorizaciones_solicitudes():
                     st.session_state["aut_rechazando"] = False
                     st.rerun()
     #### Finaliza el link del correo
+
+    #### css
+    st.markdown("""
+    <style>
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] button[key="aut_btn_aprobar_cierre"] {
+        background-color: #16a34a;
+        color: white;
+        border: 1px solid #16a34a;
+    }
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] button[key="aut_btn_aprobar_cierre"]:hover {
+        background-color: #15803d;
+        color: white;
+    }
+
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] button[key="aut_btn_rechazar_cierre"] {
+        background-color: #dc2626;
+        color: white;
+        border: 1px solid #dc2626;
+    }
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] button[key="aut_btn_rechazar_cierre"]:hover {
+        background-color: #b91c1c;
+        color: white;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    ### finaliza csss
+
+
+    # -------------------------
+    # revisión final jefe ventas (cerrada -> contabilidad)
+    # -------------------------
+    st.session_state.setdefault("aut_revisando_cierre", False)
+    st.session_state.setdefault("aut_revision_cierre_nonce", 0)
+
+    puede_revision_cierre_jefe = is_jefe_ventas and estatus_actual == "cerrada"
+
+    
 
     st.markdown("### cabecera")
     st.markdown(
@@ -899,8 +1016,76 @@ def mostrar_tab_autorizaciones_solicitudes():
 
             st.rerun()
 
-    if (not puede_accion_jefe) and (not puede_accion_conta):
+    if puede_revision_cierre_jefe:
+        st.markdown("### revisión de cierre por jefe de ventas")
+
+        c5, c6 = st.columns(2)
+
+        with c5:
+            if st.button("✅ aprobar cierre", use_container_width=True, key="aut_btn_aprobar_cierre", type="secondary",):
+                cambiar_estatus_ctrl(int(sel_id), "contabilidad", int(usuario.get("id") or 0))
+
+                token = st.session_state.get("microsoft_token")
+                ok_mail, msg_mail = _enviar_revision_cierre_aprobada_correo(
+                    solicitud=s,
+                    token=token,
+                )
+
+                if ok_mail:
+                    st.success("cierre aprobado. estatus actualizado a contabilidad y correo enviado al solicitante.")
+                else:
+                    st.warning(
+                        f"cierre aprobado. estatus actualizado a contabilidad, pero no se pudo enviar correo: {msg_mail}"
+                    )
+
+                st.rerun()
+
+        with c6:
+            if st.button("🛑 rechazar cierre", use_container_width=True, key="aut_btn_rechazar_cierre", type="primary"):
+                st.session_state["aut_revisando_cierre"] = True
+
+        if st.session_state["aut_revisando_cierre"]:
+            comentario_key = f"aut_comentario_cierre_{st.session_state['aut_revision_cierre_nonce']}"
+            comentario = st.text_area(
+                "comentario de rechazo de cierre",
+                key=comentario_key,
+                height=120,
+                placeholder="describe qué debe corregirse…",
+            )
+
+            c7, c8 = st.columns(2)
+
+            with c7:
+                if st.button("confirmar rechazo de cierre", use_container_width=True, key="aut_btn_confirm_rechazo_cierre"):
+                    if not (comentario or "").strip():
+                        st.warning("captura el comentario del rechazo.")
+                    else:
+                        cambiar_estatus_ctrl(int(sel_id), "dispersion", int(usuario.get("id") or 0))
+
+                        token = st.session_state.get("microsoft_token")
+                        ok_mail, msg_mail = _enviar_revision_cierre_rechazada_correo(
+                            solicitud=s,
+                            motivo=comentario,
+                            token=token,
+                        )
+
+                        if ok_mail:
+                            st.success("cierre rechazado y correo enviado al solicitante.")
+                        else:
+                            st.warning(f"cierre rechazado, pero no se pudo enviar correo: {msg_mail}")
+
+                        st.session_state["aut_revisando_cierre"] = False
+                        st.session_state["aut_revision_cierre_nonce"] += 1
+                        st.rerun()
+
+            with c8:
+                if st.button("cancelar rechazo de cierre", use_container_width=True, key="aut_btn_cancel_rechazo_cierre"):
+                    st.session_state["aut_revisando_cierre"] = False
+                    st.session_state["aut_revision_cierre_nonce"] += 1
+                    st.rerun()
+
+    if (not puede_accion_jefe) and (not puede_revision_cierre_jefe) and (not puede_accion_conta):
         if is_conta and estatus_actual != "autorizada":
             st.info("contabilidad solo puede dispersar solicitudes en estatus autorizada.")
         elif is_jefe_ventas:
-            st.info("solo jefe ventas puede autorizar/rechazar solicitudes enviadas.")
+            st.info("jefe de ventas solo puede autorizar solicitudes enviadas o revisar solicitudes cerradas.")
