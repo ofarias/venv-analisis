@@ -175,7 +175,8 @@ def get_tipos_compra_activos_model():
             SELECT
                 id_tipo_compra,
                 nombre,
-                descripcion
+                descripcion,
+                tipo_formulario
             FROM compras_tipos
             WHERE activo = 1
             ORDER BY nombre

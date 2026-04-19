@@ -1,3 +1,5 @@
+#tab_solicitudes_compras_view.py
+
 import streamlit as st
 
 from controllers.compras_solicitudes_controller import (
@@ -6,11 +8,16 @@ from controllers.compras_solicitudes_controller import (
 from views.modulo_compras.forms.form_producto_view import (
     mostrar_formulario_compra_materias_primas,
 )
-
 from views.modulo_compras.forms.form_estandar_view import (
     mostrar_formulario_compra_estandar,
 )
 
+
+def _get_tipo_formulario(id_tipo_compra: int, tipos: list) -> str:
+    for t in tipos:
+        if int(t.get("id_tipo_compra") or 0) == int(id_tipo_compra):
+            return str(t.get("tipo_formulario") or "").strip().upper()
+    return ""
 
 
 def mostrar_tab_solicitudes_compras():
@@ -39,10 +46,15 @@ def mostrar_tab_solicitudes_compras():
     )
 
     id_tipo_compra = opciones[nombre_tipo]
-
+    tipo_formulario = _get_tipo_formulario(id_tipo_compra, tipos)
+    st.write(f"has seleccionado el tipo de compra: **{nombre_tipo}** con formulario **{tipo_formulario}**")
     st.divider()
 
-    if nombre_tipo == "Materias Primas":
+    if tipo_formulario == "MP":
         mostrar_formulario_compra_materias_primas(id_tipo_compra=id_tipo_compra)
-    else:
+
+    elif tipo_formulario == "STD":
         mostrar_formulario_compra_estandar(id_tipo_compra=id_tipo_compra)
+
+    else:
+        st.warning("este tipo de compra no tiene formulario configurado.")

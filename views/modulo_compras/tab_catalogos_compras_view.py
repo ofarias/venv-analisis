@@ -1,3 +1,4 @@
+#tab_catalogos_compras_view.py
 import pandas as pd
 import streamlit as st
 
@@ -7,6 +8,7 @@ from controllers.compras_catalogos_controller import (
     actualizar_tipo_compra_ctrl,
     cambiar_estatus_tipo_compra_ctrl,
 )
+
 
 
 def _inicializar_session_state():
@@ -97,8 +99,16 @@ def mostrar_tab_catalogos_compras():
             "activo",
             key="compras_tipo_activo"
         )
+        
+        tipo_formulario = st.selectbox(
+            "tipo de formulario",
+            options=["MP", "STD"],
+            key="tipo_formulario"
+        )
 
         c1, c2 = st.columns(2)
+
+ 
 
         with c1:
             if st.session_state.compras_tipo_editar_id is None:
@@ -106,7 +116,8 @@ def mostrar_tab_catalogos_compras():
                     ok, mensaje = crear_tipo_compra_ctrl(
                         nombre=st.session_state.compras_tipo_nombre,
                         descripcion=st.session_state.compras_tipo_descripcion,
-                        activo=1 if st.session_state.compras_tipo_activo else 0
+                        activo=1 if st.session_state.compras_tipo_activo else 0,
+                        tipo_formulario=st.session_state.tipo_formulario,
                     )
 
                     if ok:
@@ -121,7 +132,8 @@ def mostrar_tab_catalogos_compras():
                         id_tipo_compra=st.session_state.compras_tipo_editar_id,
                         nombre=st.session_state.compras_tipo_nombre,
                         descripcion=st.session_state.compras_tipo_descripcion,
-                        activo=1 if st.session_state.compras_tipo_activo else 0
+                        activo=1 if st.session_state.compras_tipo_activo else 0,
+                        tipo_formulario=st.session_state.tipo_formulario,
                     )
 
                     if ok:
