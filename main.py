@@ -170,6 +170,7 @@ else:
 
     if "Compras" in roles:
         menu_opciones["Solicitudes"] = "solicitudes"
+        menu_opciones["Compras"] = "compras"
 
 
     #if menu_opciones:

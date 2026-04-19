@@ -771,3 +771,61 @@ def get_clientes_sae_top(secrets, limit: int = 200) -> list[dict]:
     lista rápida (sin filtro) para autocomplete inicial
     """
     return buscar_clientes_sae(secrets, q="", limit=limit)
+
+
+def buscar_producto_sae(secrets, q: str = "", limit: int = 500) -> list[dict]:
+    """
+    regresa lista de clientes activos: [{clave, nombre, rfc}]
+    filtro opcional por clave/nombre/rfc
+    """
+    q = (q or "").strip()
+    limit = int(limit or 500)
+    if limit <= 0:
+        limit = 50
+
+    con = _conn_sae_from_secrets(secrets)
+    try:
+        cur = con.cursor()
+
+        sql = """
+            select 
+                i.CVE_ART,
+                i.DESCR,
+                i.LIN_PROD
+            from INVE01 i
+            where i.STATUS <> 'B'
+        """.format(limit=limit)
+
+        params = []
+
+        if q:
+            # busca por clave, nombre o rfc
+            sql += """
+              and (
+                    upper(i.CVE_ART) containing upper(?)
+                 or upper(i.DESCR) containing upper(?)
+                 or upper(i.LIN_PROD)   containing upper(?)
+              )
+            """
+            params = [q, q, q]
+
+        sql += " order by i.DESCR"
+
+        cur.execute(sql, tuple(params))
+        cols = [d[0].strip() for d in cur.description]
+        rows = cur.fetchall()
+
+        out = []
+        for row in rows:
+            d = dict(zip(cols, row))
+            out.append({
+                "clave": (d.get("CVE_ART") or "").strip(),
+                "nombre": (d.get("DESCR") or "").strip(),
+                "rfc": (d.get("LIN_PROD") or "").strip(),
+            })
+        return out
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
