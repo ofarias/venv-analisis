@@ -16,7 +16,7 @@ from controllers.solicitudes_controller import (
     cambiar_estatus_ctrl,
     get_detalle_ctrl,
     get_usuarios_activos_ctrl,
-    # nuevo (contabilidad)
+    get_correos_usuarios_por_rol_ctrl,
     get_dispersion_flags_ctrl,
     set_dispersion_flag_ctrl,
 )
@@ -312,6 +312,99 @@ def _enviar_autorizacion_correo(*, solicitud: dict, token, estatus_final: str = 
         token=token,
         remitente=remitente,
     )
+
+def _correos_unicos_validos(correos: list[str]) -> list[str]:
+    out = []
+    seen = set()
+
+    for c in correos or []:
+        correo = str(c or "").strip()
+        if not correo:
+            continue
+
+        key = correo.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        out.append(correo)
+
+    return out
+
+
+def _enviar_correo_requerimiento_dispersion(
+    *,
+    solicitud: dict,
+    token,
+    nombre_rol: str,
+    tipo_requerimiento: str,
+) -> tuple[bool, str]:
+    usuario = st.session_state.get("usuario") or {}
+    remitente = str(usuario.get("email") or "").strip()
+
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    destinatarios = _correos_unicos_validos(
+        get_correos_usuarios_por_rol_ctrl(nombre_rol) or []
+    )
+
+    if not destinatarios:
+        return False, f"no se encontraron correos activos para el rol {nombre_rol}."
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor_nombre = str(solicitud.get("empleado_nombre") or "").strip()
+    cliente = (
+        str(solicitud.get("cliente") or "")
+        or str(solicitud.get("clientes") or "")
+    ).strip()
+
+    ciudad = (
+        str(solicitud.get("ciudad") or "")
+        or str(solicitud.get("ciudades") or "")
+    ).strip()
+
+    asunto = f"solicitud de gastos pendiente de dispersión {folio} - {tipo_requerimiento}".strip()
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>se autorizó una solicitud de gastos que requiere atención de <b>{nombre_rol}</b>.</p>
+
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>vendedor:</b> {vendedor_nombre}<br>
+        <b>cliente:</b> {cliente}<br>
+        <b>ciudad:</b> {ciudad}<br>
+        <b>requerimiento:</b> {tipo_requerimiento}<br>
+        <b>estatus actual:</b> autorizada
+      </p>
+
+      <p>favor de ingresar al módulo de solicitudes para continuar con la dispersión correspondiente.</p>
+    </div>
+    """
+
+    ok_count = 0
+    errores = []
+
+    for destinatario in destinatarios:
+        ok_mail, msg_mail = enviar_correo(
+            destinatario=destinatario,
+            asunto=asunto,
+            cuerpo_html=cuerpo_html,
+            token=token,
+            remitente=remitente,
+        )
+        if ok_mail:
+            ok_count += 1
+        else:
+            errores.append(f"{destinatario}: {msg_mail}")
+
+    if ok_count > 0:
+        if errores:
+            return True, f"correo enviado a {ok_count} destinatario(s), con algunos errores: {' | '.join(errores)}"
+        return True, f"correo enviado a {ok_count} destinatario(s)."
+
+    return False, "no se pudo enviar ningún correo. " + " | ".join(errores)
 
 #ESTATUS_OPTS = ["todas", "captura", "enviada", "autorizada", "rechazada", "cancelada", "cerrada", "dispersion"]
 ESTATUS_OPTS = ["todas", "enviada", "autorizada", "rechazada", "cerrada"]
@@ -805,22 +898,59 @@ def mostrar_tab_autorizaciones_solicitudes():
 
         with c1:
             if st.button("autorizar", use_container_width=True, key="aut_btn_aprobar"):
-                nuevo_estatus = _resolver_estatus_despues_autorizacion(int(sel_id))
+                detalle_rows = get_detalle_ctrl(int(sel_id)) or []
+                reqs = _analizar_requerimientos_dispersion(detalle_rows)
+
+                requiere_gasolina = bool(reqs.get("requiere_gasolina"))
+                requiere_prepagados = bool(reqs.get("requiere_prepagados"))
+
+                nuevo_estatus = "autorizada" if (requiere_gasolina or requiere_prepagados) else "dispersion"
                 cambiar_estatus_ctrl(int(sel_id), nuevo_estatus, int(usuario.get("id") or 0))
 
                 token = st.session_state.get("microsoft_token")
-                #ok_mail, msg_mail = _enviar_autorizacion_correo(solicitud=s, token=token)
+
+                mensajes_ok = []
+                mensajes_warn = []
+
                 ok_mail, msg_mail = _enviar_autorizacion_correo(
                     solicitud=s,
                     token=token,
                     estatus_final=nuevo_estatus,
                 )
                 if ok_mail:
-                    st.success(f"solicitud actualizada a {nuevo_estatus} y correo enviado al vendedor.")
+                    mensajes_ok.append("correo enviado al vendedor")
                 else:
-                    st.warning(
-                        f"solicitud actualizada a {nuevo_estatus}, pero no se pudo enviar correo: {msg_mail}"
+                    mensajes_warn.append(f"no se pudo enviar correo al vendedor: {msg_mail}")
+
+                if requiere_gasolina:
+                    ok_conta, msg_conta = _enviar_correo_requerimiento_dispersion(
+                        solicitud=s,
+                        token=token,
+                        nombre_rol="Contabilidad",
+                        tipo_requerimiento="dispersión de gasolina",
                     )
+                    if ok_conta:
+                        mensajes_ok.append("correo enviado a contabilidad")
+                    else:
+                        mensajes_warn.append(f"no se pudo enviar correo a contabilidad: {msg_conta}")
+
+                if requiere_prepagados:
+                    ok_compras, msg_compras = _enviar_correo_requerimiento_dispersion(
+                        solicitud=s,
+                        token=token,
+                        nombre_rol="Compras",
+                        tipo_requerimiento="dispersión de prepagados",
+                    )
+                    if ok_compras:
+                        mensajes_ok.append("correo enviado a compras")
+                    else:
+                        mensajes_warn.append(f"no se pudo enviar correo a compras: {msg_compras}")
+
+                if mensajes_ok:
+                    st.success(f"solicitud actualizada a {nuevo_estatus}. " + " | ".join(mensajes_ok))
+
+                if mensajes_warn:
+                    st.warning(" | ".join(mensajes_warn))
 
                 st.rerun()
 

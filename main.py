@@ -96,6 +96,7 @@ else:
     menu_opciones = {}
 
     if "SuperAdmin" in roles:
+        menu_opciones["Presupuestos Ventas"] = "presupuestos_ventas"
         menu_opciones["Compras"] = "compras"
         menu_opciones["Solicitudes Contabilidad"] = "solicitudesConta"
         menu_opciones["Solicitudes"] = "solicitudes"
@@ -308,7 +309,10 @@ else:
             mostrar_modulo_solicitudes_conta() 
         elif modulo =="compras":
             from views.modulo_compras.compras_view import mostrar_modulo_compras
-            mostrar_modulo_compras() 
+            mostrar_modulo_compras()
+        elif modulo =="presupuestos_ventas":
+            from views.modulo_presupuesto_ventas.tab_carga_presupuesto_ventas_view import mostrar_tab_carga_presupuesto_ventas
+            mostrar_tab_carga_presupuesto_ventas()
     else:
         st.warning("⚠️ No tienes roles asignados para acceder a los módulos.")
         ## st.json(roles)
