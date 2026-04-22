@@ -475,7 +475,7 @@ def _analizar_requerimientos_dispersion(detalle_rows: list[dict]) -> dict:
         if monto <= 0:
             continue
 
-        if concepto == "gasolina":
+        if concepto == "gasolina (efecticard)":
             requiere_gasolina = True
             continue
 
@@ -1118,7 +1118,7 @@ def mostrar_tab_autorizaciones_solicitudes():
                 set_dispersion_flag_ctrl(int(sel_id), "disp_gasolina", bool(gas2), uid)
 
                 if requiere_gasolina and (not gas_prev) and bool(gas2):
-                    concepto_notificado = "gasolina"
+                    concepto_notificado = "gasolina (efecticard)"
 
             if is_admin or is_compras:
                 flags_prev = get_dispersion_flags_ctrl(int(sel_id)) or {}
