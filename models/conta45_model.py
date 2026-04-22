@@ -688,10 +688,10 @@ def _mk_partidas_solicitud_gasto_desglosada(
         notas = str(base.get("notas") or "").strip()
 
         cuenta_pago_raw = str(base.get("cuenta_pago") or "").strip()
-        if not cuenta_pago_raw:
-            raise ValueError(
-                f"el detalle {detalle_id} no tiene cuenta contable en el método de pago"
-            )
+        #if not cuenta_pago_raw:
+        #    raise ValueError(
+        #        f"el detalle {detalle_id} no tiene cuenta contable en el método de pago"
+        #    )
 
         cuenta_pago = _normalize_numcta_masked_to_21(cuenta_pago_raw)
 
@@ -1988,11 +1988,11 @@ def inserta_poliza_costo_venta(
 
 
 def insertar_poliza_solicitud_gasto_desglosada(
-    solicitud: dict,
-    detalle: list[dict],
-    secrets,
-    debug: bool = False,
-) -> dict:
+        solicitud: dict,
+        detalle: list[dict],
+        secrets,
+        debug: bool = False,
+    ) -> dict:
     try:
         if not detalle:
             return {"ok": False, "msg": "no hay detalle para generar la póliza"}
