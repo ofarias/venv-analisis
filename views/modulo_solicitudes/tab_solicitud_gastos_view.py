@@ -1147,26 +1147,6 @@ def mostrar_tab_solicitudes_gastos():
 
                 st.rerun()
 
-            #if cbtn3.button(
-            #    "autorizar",
-            #    use_container_width=True,
-            #    disabled=(usuario.get("rol") != "Admin" or estatus_actual != "enviada"),
-            #    key="sg_btn_approve",
-            #):
-            #    cambiar_estatus_ctrl(int(selected_id), "autorizada", int(usuario["id"]))
-            #    st.success("estatus actualizado: autorizada")
-            #    st.rerun()
-#
-            #if cbtn4.button(
-            #    "rechazar",
-            #    use_container_width=True,
-            #    disabled=(usuario.get("rol") != "Admin" or estatus_actual != "enviada"),
-            #    key="sg_btn_reject",
-            #):
-            #    cambiar_estatus_ctrl(int(selected_id), "rechazada", int(usuario["id"]))
-            #    st.success("estatus actualizado: rechazada")
-            #    st.rerun()
-
             puede_eliminar = bool(selected_id) and (str(estatus_actual).strip().lower() == "captura")
 
             cbtn5.checkbox(
@@ -1909,7 +1889,7 @@ def mostrar_tab_solicitudes_gastos():
     t4.metric("Total Prepago", _money_fmt(total_prepago))
     t5.metric("Total Pagado Vendedor", _money_fmt(total_pagado_vendedor))
 
-    if estatus_actual == "dispersion":
+    if estatus_actual in ("dispersion", "revision comprobacion"):
 
         val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id))
 
@@ -1970,7 +1950,7 @@ def mostrar_tab_solicitudes_gastos():
 
     with csave:
 
-        puede_guardar_detalle = estatus_actual in ("captura", "dispersion")
+        puede_guardar_detalle = estatus_actual in ("captura", "dispersion", "revision comprobacion")
 
         if not puede_guardar_detalle:
             st.warning("solo se permite modificar el detalle en estatus 'captura' o 'dispersion'.")
@@ -2065,8 +2045,6 @@ def mostrar_tab_solicitudes_gastos():
             accept_multiple_files=False,
             key=f"sg_uploader_comprobante_det_{int(detalle_id_un)}",
         )
-
-        #comp_actual = get_comprobante_detalle_ctrl(int(detalle_id_un))
         
         comp_actual = comprobantes_map.get(int(detalle_id_un))
 

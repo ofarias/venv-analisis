@@ -6,18 +6,21 @@ import pandas as pd
 import streamlit as st
 from io import BytesIO
 import zipfile
+from utils.envio_correo import enviar_correo
 
-#from controllers.solicitudes_controller import cambiar_estatus_ctrl
 from controllers.solicitudes_controller import (
     listar_solicitudes_ctrl,
     get_solicitud_ctrl,
     get_detalle_contabilidad_ctrl,
+    get_usuarios_activos_ctrl,
     descargar_xml_ctrl,
     descargar_xmls_ctrl,
     descargar_pdf_ctrl,
     generar_poliza_solicitud_gasto_ctrl,
     descargar_comprobantes_detalle_ctrl,
+    cambiar_estatus_ctrl
 )
+
 
 ESTATUS_OPTS = [
     "todas",
@@ -154,6 +157,60 @@ def _clear_doc_cache_for_current_request(sel_id: int, uuids: list[str]) -> None:
     _get_solicitud_cached.clear()
     _get_detalle_contabilidad_cached.clear()
 
+
+def _get_email_solicitante(empleado_id: int) -> str:
+    usuarios = get_usuarios_activos_ctrl() or []
+    for u in usuarios:
+        try:
+            if int(u.get("id") or 0) == int(empleado_id):
+                return str(u.get("email") or "").strip()
+        except Exception:
+            pass
+    return ""
+
+
+def _enviar_rechazo_contabilidad_correo(*, solicitud: dict, motivo: str, token) -> tuple[bool, str]:
+    usuario = st.session_state.get("usuario") or {}
+    remitente = str(usuario.get("email") or "").strip()
+
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    destinatario = _get_email_solicitante(int(solicitud.get("empleado_id") or 0))
+    #st.write(f"destinatario email: {destinatario}")  # debug destinatario
+    if not destinatario:
+        return False, "no se encontró correo del solicitante."
+
+    folio = str(solicitud.get("folio") or "").strip()
+    empleado = str(solicitud.get("empleado_nombre") or "").strip()
+    clientes = str(solicitud.get("clientes") or "").strip()
+    ciudades = str(solicitud.get("ciudades") or "").strip()
+
+    asunto = f"solicitud regresada por contabilidad: {folio}"
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>tu solicitud fue regresada por contabilidad para revisión de comprobación.</p>
+
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>empleado:</b> {empleado}<br>
+        <b>clientes:</b> {clientes}<br>
+        <b>ciudades:</b> {ciudades}<br>
+        <b>nuevo estatus:</b> revision comprobacion
+      </p>
+
+      <p><b>motivo de rechazo:</b><br>{motivo}</p>
+    </div>
+    """
+
+    return enviar_correo(
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        token=token,
+        remitente=remitente,
+    )
 
 def mostrar_tab_revisa_contabilidad():
     st.subheader("revisión contabilidad")
@@ -546,6 +603,41 @@ def mostrar_tab_revisa_contabilidad():
                 st.rerun()
     else:
         st.warning("la solicitud aún tiene pendientes antes de pasar a revision comprobacion.")
+
+    st.markdown("### rechazo contable")
+
+    motivo_rechazo = st.text_area(
+        "motivo de rechazo",
+        placeholder="describe el motivo por el cual se regresa la solicitud...",
+        key="conta_motivo_rechazo",
+    )
+
+    if st.button("rechazar a revisión", use_container_width=True):
+        if not motivo_rechazo.strip():
+            st.warning("captura el motivo de rechazo")
+        else:
+            cambiar_estatus_ctrl(
+                int(sel_id),
+                "revision comprobacion",
+                int(usuario.get("id") or 0),
+            )
+
+            token = st.session_state.get("microsoft_token")
+            ok_mail, msg_mail = _enviar_rechazo_contabilidad_correo(
+                solicitud=s,
+                motivo=motivo_rechazo.strip(),
+                token=token,
+            )
+
+            if ok_mail:
+                st.success("solicitud regresada a revisión de comprobación y correo enviado al solicitante")
+            else:
+                st.warning(
+                    "solicitud regresada a revisión de comprobación, pero no se pudo enviar el correo: "
+                    + str(msg_mail)
+                )
+
+            st.rerun()
 
     st.markdown("### documentos")
 

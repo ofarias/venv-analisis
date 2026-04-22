@@ -598,6 +598,64 @@ def _enviar_revision_cierre_aprobada_correo(*, solicitud: dict, token):
         remitente=remitente,
     )
 
+def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token):
+    usuario = st.session_state.get("usuario") or {}
+    remitente = str(usuario.get("email") or "").strip()
+
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    destinatarios = _correos_unicos_validos(
+        get_correos_usuarios_por_rol_ctrl("Contabilidad") or []
+    )
+
+    if not destinatarios:
+        return False, "no se encontraron correos para contabilidad."
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor = str(solicitud.get("empleado_nombre") or "").strip()
+    clientes = str(solicitud.get("clientes") or "").strip()
+    ciudades = str(solicitud.get("ciudades") or "").strip()
+
+    asunto = f"solicitud lista para revisión contable {folio}"
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>una solicitud de gastos fue aprobada en su cierre y ya puede ser revisada por contabilidad.</p>
+
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>vendedor:</b> {vendedor}<br>
+        <b>clientes:</b> {clientes}<br>
+        <b>ciudades:</b> {ciudades}<br>
+        <b>estatus actual:</b> contabilidad
+      </p>
+
+      <p>favor de ingresar al módulo para iniciar la revisión contable.</p>
+    </div>
+    """
+
+    ok_count = 0
+    errores = []
+
+    for dest in destinatarios:
+        ok, msg = enviar_correo(
+            destinatario=dest,
+            asunto=asunto,
+            cuerpo_html=cuerpo_html,
+            token=token,
+            remitente=remitente,
+        )
+        if ok:
+            ok_count += 1
+        else:
+            errores.append(f"{dest}: {msg}")
+
+    if ok_count > 0:
+        return True, f"correo enviado a {ok_count} destinatario(s)"
+    return False, "no se pudo enviar correo: " + " | ".join(errores)
+
+
 def mostrar_tab_autorizaciones_solicitudes():
     st.subheader("autorizaciones / contabilidad")
 
@@ -1156,17 +1214,37 @@ def mostrar_tab_autorizaciones_solicitudes():
                 cambiar_estatus_ctrl(int(sel_id), "contabilidad", int(usuario.get("id") or 0))
 
                 token = st.session_state.get("microsoft_token")
+
+                mensajes_ok = []
+                mensajes_warn = []
+
+                # correo al solicitante
                 ok_mail, msg_mail = _enviar_revision_cierre_aprobada_correo(
                     solicitud=s,
                     token=token,
                 )
 
                 if ok_mail:
-                    st.success("cierre aprobado. estatus actualizado a contabilidad y correo enviado al solicitante.")
+                    mensajes_ok.append("correo enviado al solicitante")
                 else:
-                    st.warning(
-                        f"cierre aprobado. estatus actualizado a contabilidad, pero no se pudo enviar correo: {msg_mail}"
-                    )
+                    mensajes_warn.append(f"no se pudo enviar correo al solicitante: {msg_mail}")
+
+                # 👇 NUEVO: correo a contabilidad
+                ok_conta, msg_conta = _enviar_a_contabilidad_revision_correo(
+                    solicitud=s,
+                    token=token,
+                )
+
+                if ok_conta:
+                    mensajes_ok.append("correo enviado a contabilidad")
+                else:
+                    mensajes_warn.append(f"no se pudo enviar correo a contabilidad: {msg_conta}")
+
+                if mensajes_ok:
+                    st.success("cierre aprobado. " + " | ".join(mensajes_ok))
+
+                if mensajes_warn:
+                    st.warning(" | ".join(mensajes_warn))
 
                 st.rerun()
 
