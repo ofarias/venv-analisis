@@ -656,6 +656,90 @@ def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token):
     return False, "no se pudo enviar correo: " + " | ".join(errores)
 
 
+def _norm_roles_list(values) -> list[str]:
+    roles: list[str] = []
+
+    if isinstance(values, (list, tuple, set)):
+        raw_items = values
+    else:
+        raw_items = [values]
+
+    for item in raw_items:
+        for p in str(item or "").replace(";", ",").split(","):
+            v = p.strip().lower()
+            if v and v not in roles:
+                roles.append(v)
+
+    return roles
+
+
+def _roles_usuario_por_id(usuario_id: int) -> list[str]:
+    usuarios = get_usuarios_activos_ctrl() or []
+
+    for u in usuarios:
+        try:
+            if int(u.get("id") or 0) == int(usuario_id):
+                roles = []
+                roles.extend(_norm_roles_list(u.get("roles")))
+                roles.extend(_norm_roles_list(u.get("rol")))
+                return list(dict.fromkeys(roles))
+        except Exception:
+            pass
+
+    return []
+
+
+def _roles_creador_solicitud(solicitud: dict) -> list[str]:
+    empleado_id = int(solicitud.get("empleado_id") or 0)
+    return _roles_usuario_por_id(empleado_id)
+
+
+def _tiene_rol(roles: list[str], *objetivos: str) -> bool:
+    roles_set = set(_norm_roles_list(roles))
+    objetivos_set = set(_norm_roles_list(objetivos))
+    return bool(roles_set.intersection(objetivos_set))
+
+
+def _tipo_autorizacion_solicitud(solicitud: dict) -> str:
+    roles = _roles_creador_solicitud(solicitud)
+
+    if _tiene_rol(roles, "gerente de ventas", "gerente ventas"):
+        return "sin_autorizacion"
+
+    if _tiene_rol(roles, "jefe de ventas", "supervisor de ventas"):
+        return "autoriza_gerente_ventas"
+
+    return "autoriza_jefe_ventas"
+
+
+def _rol_autorizador_solicitud(solicitud: dict) -> str:
+    tipo = _tipo_autorizacion_solicitud(solicitud)
+
+    if tipo == "autoriza_gerente_ventas":
+        return "Gerente de Ventas"
+
+    if tipo == "autoriza_jefe_ventas":
+        return "Jefe de Ventas"
+
+    return ""
+
+
+def _usuario_puede_autorizar(solicitud: dict, roles_usuario: list[str]) -> bool:
+    roles_usuario = _norm_roles_list(roles_usuario)
+
+    if "admin" in roles_usuario:
+        return True
+
+    tipo = _tipo_autorizacion_solicitud(solicitud)
+
+    if tipo == "autoriza_jefe_ventas":
+        return "jefe de ventas" in roles_usuario
+
+    if tipo == "autoriza_gerente_ventas":
+        return "gerente de ventas" in roles_usuario or "gerente ventas" in roles_usuario
+
+    return False
+
 def mostrar_tab_autorizaciones_solicitudes():
     st.subheader("autorizaciones / contabilidad")
 
@@ -666,13 +750,15 @@ def mostrar_tab_autorizaciones_solicitudes():
     is_jefe_ventas = "jefe de ventas" in roles
     is_conta = "contabilidad" in roles
     is_compras = "compras" in roles
+    is_gerente_ventas = ("gerente de ventas" in roles) or ("gerente ventas" in roles)
+    is_supervisor_ventas = "supervisor de ventas" in roles
 
-    if not (is_admin or is_jefe_ventas or is_conta or is_compras):
+    if not (is_admin or is_gerente_ventas or is_jefe_ventas or is_supervisor_ventas or is_conta or is_compras):
         st.info("sin acceso")
         return
 
-    if is_jefe_ventas:
-        st.info("como jefe de ventas puedes autorizar o rechazar solicitudes en estatus enviada.")
+    if is_jefe_ventas or is_gerente_ventas:
+        st.info("puedes autorizar o rechazar solicitudes según la jerarquía del solicitante.")
 
     st.session_state.setdefault("aut_pending_action", "")
     _consume_deeplink()
@@ -683,15 +769,15 @@ def mostrar_tab_autorizaciones_solicitudes():
     with c1:
         folio_like = st.text_input("folio contiene", key="aut_folio_like")
     with c2:
-        if is_admin and is_conta and is_jefe_ventas:
+        if is_admin and is_conta and (is_jefe_ventas or is_gerente_ventas):
             estatus_opts = ["todas", "enviada", "autorizada", "rechazada", "cerrada"]
             default_estatus = "todas"
-        elif is_conta and not is_jefe_ventas:
+        elif is_conta and not (is_jefe_ventas or is_gerente_ventas):
             estatus_opts = ["autorizada", "todas"]
             default_estatus = "autorizada"
-        elif is_jefe_ventas and not is_conta:
-            estatus_opts = ["pendientes jefe ventas", "enviada", "cerrada", "rechazada", "todas"]
-            default_estatus = "pendientes jefe ventas"
+        elif (is_jefe_ventas or is_gerente_ventas) and not is_conta:
+            estatus_opts = ["pendientes autorización", "enviada", "cerrada", "rechazada", "todas"]
+            default_estatus = "pendientes autorización"
         else:
             estatus_opts = ["todas", "enviada", "autorizada", "rechazada", "cerrada"]
             default_estatus = "todas"
@@ -717,7 +803,7 @@ def mostrar_tab_autorizaciones_solicitudes():
         limit = st.number_input("límite", min_value=50, max_value=2000, value=300, step=50, key="aut_limit")
 
     #estatus_param = "" if estatus == "todas" else estatus
-    estatus_param = "" if estatus in ("todas", "pendientes jefe ventas") else estatus
+    estatus_param = "" if estatus in ("todas", "pendientes autorización") else estatus
 
     rows = listar_solicitudes_ctrl(
         folio_like=folio_like,
@@ -727,7 +813,7 @@ def mostrar_tab_autorizaciones_solicitudes():
         limit=int(limit),
     ) or []
     
-    if estatus == "pendientes jefe ventas":
+    if estatus == "pendientes autorización":
         rows = [
             r for r in rows
             if str(r.get("estatus") or "").strip().lower() in ("enviada", "cerrada")
@@ -797,8 +883,8 @@ def mostrar_tab_autorizaciones_solicitudes():
         st.info("acción solicitada desde correo. confirma para continuar.")
 
         # solo permitir a jefe de ventas en estatus enviada (misma regla que ya tienes)
-        puede_accion_jefe = is_jefe_ventas and estatus_actual == "enviada"
-
+        #puede_accion_jefe = is_jefe_ventas and estatus_actual == "enviada"
+        puede_accion_jefe = (estatus_actual == "enviada" and _usuario_puede_autorizar(s, roles))
         if not puede_accion_jefe:
             st.warning("no tienes permiso para autorizar/rechazar o la solicitud no está en estatus enviada.")
             st.session_state["aut_pending_action"] = ""
@@ -877,13 +963,13 @@ def mostrar_tab_autorizaciones_solicitudes():
 
 
     # -------------------------
-    # revisión final jefe ventas (cerrada -> contabilidad)
+    # revisión final de cierre (cerrada -> contabilidad)
     # -------------------------
     st.session_state.setdefault("aut_revisando_cierre", False)
     st.session_state.setdefault("aut_revision_cierre_nonce", 0)
 
-    puede_revision_cierre_jefe = is_jefe_ventas and estatus_actual == "cerrada"
-
+    #puede_revision_cierre_jefe = is_jefe_ventas and estatus_actual == "cerrada"
+    puede_revision_cierre_jefe = (estatus_actual == "cerrada" and _usuario_puede_autorizar(s, roles))
     
 
     st.markdown("### cabecera")
@@ -949,8 +1035,8 @@ def mostrar_tab_autorizaciones_solicitudes():
     st.session_state.setdefault("aut_rechazando", False)
     st.session_state.setdefault("aut_rechazo_nonce", 0)
 
-    puede_accion_jefe = is_jefe_ventas and estatus_actual == "enviada"
-
+    #puede_accion_jefe = is_jefe_ventas and estatus_actual == "enviada"
+    puede_accion_jefe = (estatus_actual == "enviada" and _usuario_puede_autorizar(s, roles))
     if puede_accion_jefe:
         c1, c2 = st.columns(2)
 
@@ -1205,7 +1291,7 @@ def mostrar_tab_autorizaciones_solicitudes():
             st.rerun()
 
     if puede_revision_cierre_jefe:
-        st.markdown("### revisión de cierre por jefe de ventas")
+        st.markdown("### revisión de cierre")
 
         c5, c6 = st.columns(2)
 
@@ -1295,5 +1381,5 @@ def mostrar_tab_autorizaciones_solicitudes():
     if (not puede_accion_jefe) and (not puede_revision_cierre_jefe) and (not puede_accion_conta):
         if is_conta and estatus_actual != "autorizada":
             st.info("contabilidad solo puede dispersar solicitudes en estatus autorizada.")
-        elif is_jefe_ventas:
-            st.info("jefe de ventas solo puede autorizar solicitudes enviadas o revisar solicitudes cerradas.")
+        elif is_jefe_ventas or is_gerente_ventas:
+            st.info("solo puedes autorizar solicitudes que correspondan a tu nivel de autorización.")

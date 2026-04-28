@@ -42,6 +42,7 @@ from controllers.solicitudes_controller import (
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
 
+MODO_PRUEBA_CORREOS = True
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -576,20 +577,216 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
 
     return html_pre + "<br>" + html_no + html_total
 
-def _enviar_cierre_a_jefe_ventas(*, solicitud: dict, token, remitente: str) -> tuple[bool, str]:
+def _norm_roles_list(values) -> list[str]:
+    roles: list[str] = []
+
+    if isinstance(values, (list, tuple, set)):
+        raw_items = values
+    else:
+        raw_items = [values]
+
+    for item in raw_items:
+        for p in str(item or "").replace(";", ",").split(","):
+            v = p.strip().lower()
+            if v and v not in roles:
+                roles.append(v)
+
+    return roles
+
+
+def _roles_usuario_por_id(usuario_id: int) -> list[str]:
+    usuarios = get_usuarios_activos_ctrl() or []
+
+    for u in usuarios:
+        try:
+            if int(u.get("id") or 0) == int(usuario_id):
+                roles = []
+                roles.extend(_norm_roles_list(u.get("roles")))
+                roles.extend(_norm_roles_list(u.get("rol")))
+                return list(dict.fromkeys(roles))
+        except Exception:
+            pass
+
+    return []
+
+
+def _roles_creador_solicitud(solicitud: dict) -> list[str]:
+    empleado_id = int(solicitud.get("empleado_id") or 0)
+    usuario_actual = st.session_state.get("usuario") or {}
+
+    if empleado_id and int(usuario_actual.get("id") or 0) == empleado_id:
+        roles = []
+        roles.extend(_norm_roles_list(usuario_actual.get("roles")))
+        roles.extend(_norm_roles_list(usuario_actual.get("rol")))
+        if roles:
+            return list(dict.fromkeys(roles))
+
+    return _roles_usuario_por_id(empleado_id)
+
+
+def _tiene_rol(roles: list[str], *objetivos: str) -> bool:
+    roles_set = set(_norm_roles_list(roles))
+    objetivos_set = set(_norm_roles_list(objetivos))
+    return bool(roles_set.intersection(objetivos_set))
+
+
+def _tipo_autorizacion_solicitud(solicitud: dict) -> str:
+    roles = _roles_creador_solicitud(solicitud)
+
+    if _tiene_rol(roles, "gerente de ventas", "gerente ventas"):
+        return "sin_autorizacion"
+
+    if _tiene_rol(roles, "jefe de ventas", "supervisor de ventas"):
+        return "autoriza_gerente_ventas"
+
+    return "autoriza_jefe_ventas"
+
+
+def _rol_autorizador_solicitud(solicitud: dict) -> str:
+    tipo = _tipo_autorizacion_solicitud(solicitud)
+
+    if tipo == "autoriza_gerente_ventas":
+        return "Gerente de Ventas"
+
+    if tipo == "autoriza_jefe_ventas":
+        return "Jefe de Ventas"
+
+    return ""
+
+
+def _resolver_estatus_despues_autorizacion_local(solicitud_id: int) -> str:
+    detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
+    requiere_gasolina = False
+    requiere_prepagados = False
+
+    for r in detalle_rows:
+        concepto = str(r.get("concepto") or "").strip().lower()
+        total_xml = _to_float(r.get("total_xml"))
+        cantidad = _to_float(r.get("cantidad"))
+        precio = _to_float(r.get("precio_unitario"))
+        monto = total_xml if total_xml > 0 else round(cantidad * precio, 2)
+
+        if monto <= 0:
+            continue
+
+        if concepto in ("gasolina", "gasolina (efecticard)"):
+            requiere_gasolina = True
+            continue
+
+        if bool(PREPAGO_MAP.get(concepto, False)):
+            requiere_prepagados = True
+
+    return "autorizada" if (requiere_gasolina or requiere_prepagados) else "dispersion"
+
+
+def _correos_unicos_validos(correos: list[str]) -> list[str]:
+    out = []
+    seen = set()
+
+    for c in correos or []:
+        correo = str(c or "").strip()
+        if not correo:
+            continue
+
+        key = correo.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        out.append(correo)
+
+    return out
+
+
+def _enviar_revision_a_rol_autorizador(*, solicitud: dict, token, remitente: str, nombre_rol: str) -> tuple[bool, str]:
     remitente = str(remitente or "").strip()
     if not remitente:
         return False, "no se encontró correo del remitente."
 
-    correos_jefes_ventas = get_correos_usuarios_por_rol_ctrl("Jefe de Ventas") or []
-    correos_jefes_ventas = list(dict.fromkeys(
-        str(x).strip()
-        for x in correos_jefes_ventas
-        if str(x).strip()
-    ))
+    nombre_rol = str(nombre_rol or "").strip()
+    if not nombre_rol:
+        return False, "la solicitud no requiere autorización."
 
-    if not correos_jefes_ventas:
-        return False, "no se encontraron correos activos para el rol 'Jefe de Ventas'."
+    destinatarios = _correos_unicos_validos(get_correos_usuarios_por_rol_ctrl(nombre_rol) or [])
+    if not destinatarios:
+        return False, f"no se encontraron correos activos para el rol '{nombre_rol}'."
+
+    folio = str(solicitud.get("folio") or "").strip()
+    empleado_nombre = str(solicitud.get("empleado_nombre") or "").strip()
+    clientes = str(solicitud.get("clientes") or "").strip()
+    ciudades = str(solicitud.get("ciudades") or "").strip()
+    fecha_inicio = str(solicitud.get("fecha_inicio") or "").strip()
+    fecha_fin = str(solicitud.get("fecha_fin") or "").strip()
+
+    asunto = f"solicitud de gastos enviada {folio}".strip()
+
+    links = _build_action_links(int(solicitud.get("id") or 0), folio=folio)
+    if links.get("ok"):
+        links_html = f"""
+        <p style="margin:14px 0">
+          <a href="{links['approve']}"
+             style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            autorizar
+          </a>
+          <a href="{links['reject']}"
+             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            rechazar
+          </a>
+          <a href="{links['view']}"
+             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            ver solicitud
+          </a>
+        </p>
+        """
+    else:
+        links_html = "<p><i>no se pudo generar link de autorización.</i></p>"
+
+    detalle_rows_mail = get_detalle_ctrl(int(solicitud.get("id") or 0)) or []
+    cat_conceptos_mail = get_conceptos_gasto_ctrl(activo=1) or []
+    conceptos_prepago = {
+        (x.get("concepto") or "").strip()
+        for x in cat_conceptos_mail
+        if (x.get("concepto") or "").strip() and int(x.get("prepago") or 0) == 1
+    }
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>se envió una solicitud de gastos y requiere autorización de <b>{nombre_rol}</b>.</p>
+      {links_html}
+      <p>
+        <b>empleado:</b> {empleado_nombre}<br>
+        <b>clientes:</b> {clientes}<br>
+        <b>ciudades:</b> {ciudades}<br>
+        <b>fecha inicio:</b> {fecha_inicio}<br>
+        <b>fecha fin:</b> {fecha_fin}<br>
+        <b>folio:</b> {folio}
+      </p>
+      <p><b>detalle de gastos</b></p>
+      {_detalle_gastos_a_html(detalle_rows_mail, conceptos_prepago)}
+    </div>
+    """
+
+    return enviar_correo(
+        destinatario=destinatarios,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        token=token,
+        remitente=remitente,
+    )
+
+
+def _enviar_cierre_a_rol_autorizador(*, solicitud: dict, token, remitente: str, nombre_rol: str) -> tuple[bool, str]:
+    remitente = str(remitente or "").strip()
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    nombre_rol = str(nombre_rol or "").strip()
+    if not nombre_rol:
+        return False, "la solicitud no requiere autorización de cierre."
+
+    destinatarios = _correos_unicos_validos(get_correos_usuarios_por_rol_ctrl(nombre_rol) or [])
+    if not destinatarios:
+        return False, f"no se encontraron correos activos para el rol '{nombre_rol}'."
 
     folio = str(solicitud.get("folio") or "").strip()
     empleado_nombre = str(solicitud.get("empleado_nombre") or "").strip()
@@ -602,7 +799,7 @@ def _enviar_cierre_a_jefe_ventas(*, solicitud: dict, token, remitente: str) -> t
 
     cuerpo_html = f"""
     <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
-      <p>una solicitud de gastos fue cerrada por el solicitante y está lista para revisión.</p>
+      <p>una solicitud de gastos fue cerrada por el solicitante y está lista para revisión de <b>{nombre_rol}</b>.</p>
       <p>
         <b>folio:</b> {folio}<br>
         <b>empleado:</b> {empleado_nombre}<br>
@@ -617,13 +814,51 @@ def _enviar_cierre_a_jefe_ventas(*, solicitud: dict, token, remitente: str) -> t
     """
 
     return enviar_correo(
-        destinatario=correos_jefes_ventas,
+        destinatario=destinatarios,
         asunto=asunto,
         cuerpo_html=cuerpo_html,
         token=token,
         remitente=remitente,
     )
 
+
+def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token, remitente: str) -> tuple[bool, str]:
+    remitente = str(remitente or "").strip()
+    if not remitente:
+        return False, "no se encontró correo del remitente."
+
+    destinatarios = _correos_unicos_validos(get_correos_usuarios_por_rol_ctrl("Contabilidad") or [])
+    if not destinatarios:
+        return False, "no se encontraron correos para contabilidad."
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor = str(solicitud.get("empleado_nombre") or "").strip()
+    clientes = str(solicitud.get("clientes") or "").strip()
+    ciudades = str(solicitud.get("ciudades") or "").strip()
+
+    asunto = f"solicitud lista para revisión contable {folio}"
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>una solicitud de gastos ya puede ser revisada por contabilidad.</p>
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>vendedor:</b> {vendedor}<br>
+        <b>clientes:</b> {clientes}<br>
+        <b>ciudades:</b> {ciudades}<br>
+        <b>estatus actual:</b> contabilidad
+      </p>
+      <p>favor de ingresar al módulo para iniciar la revisión contable.</p>
+    </div>
+    """
+
+    return enviar_correo(
+        destinatario=destinatarios,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        token=token,
+        remitente=remitente,
+    )
 
 def mostrar_tab_solicitudes_gastos():
     st.subheader("Solicitudes de gastos")
@@ -1058,94 +1293,46 @@ def mostrar_tab_solicitudes_gastos():
                 disabled=(estatus_actual not in ("captura", "rechazada")),
                 key="sg_btn_send",
             ):
-                cambiar_estatus_ctrl(int(selected_id), "enviada", int(usuario["id"]))
-
-                folio = str((solicitud or {}).get("folio") or "").strip()
-                asunto = (
-                    f"solicitud de gastos enviada {folio}".strip()
-                    if folio
-                    else "solicitud de gastos enviada"
-                )
-
-                detalle_rows_mail = get_detalle_ctrl(int(selected_id)) or []
-                cat_conceptos_mail = get_conceptos_gasto_ctrl(activo=1) or []
-
-                links = _build_action_links(int(selected_id), folio=folio)
-                if links.get("ok"):
-                    links_html = f"""
-                    <p style="margin:14px 0">
-                      <a href="{links['approve']}"
-                         style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
-                        autorizar
-                      </a>
-                      <a href="{links['reject']}"
-                         style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
-                        rechazar
-                      </a>
-                      <a href="{links['view']}"
-                         style="display:inline-block;margin-left:10px;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
-                        ver solicitud
-                      </a>
-                    </p>
-                    """
-                else:
-                    links_html = (
-                        "<p><i>no se pudo generar link de autorización "
-                        "(falta APP_BASE_URL o APP_LINK_SECRET).</i></p>"
-                    )
-
-                conceptos_prepago = {
-                    (x.get("concepto") or "").strip()
-                    for x in cat_conceptos_mail
-                    if (x.get("concepto") or "").strip() and int(x.get("prepago") or 0) == 1
-                }
-
-                cuerpo_html = f"""
-                <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
-                <p>se envió una solicitud de gastos.</p>
-                {links_html}
-                <p>
-                    <b>empleado:</b> {empleado_nombre}<br>
-                    <b>clientes:</b> {clientes}<br>
-                    <b>ciudades:</b> {ciudades}<br>
-                    <b>fecha inicio:</b> {fecha_inicio.isoformat()}<br>
-                    <b>fecha fin:</b> {fecha_fin.isoformat()}<br>
-                    <b>hora salida:</b> {hora_salida.strftime("%H:%M")}<br>
-                    <b>hora regreso:</b> {hora_regreso.strftime("%H:%M")}<br>
-                    <b>folio:</b> {folio}
-                </p>
-
-                <p><b>detalle de gastos</b></p>
-                {_detalle_gastos_a_html(detalle_rows_mail, conceptos_prepago)}
-                </div>
-                """
+                solicitud_actualizada = get_solicitud_ctrl(int(selected_id)) or solicitud or {}
+                tipo_aut = _tipo_autorizacion_solicitud(solicitud_actualizada)
+                token = st.session_state.get("microsoft_token")
                 correo_remitente = str(usuario.get("email") or "").strip()
-                correos_jefes_ventas = get_correos_usuarios_por_rol_ctrl("Jefe de Ventas") or []
-                correos_jefes_ventas = list(dict.fromkeys(correos_jefes_ventas))
-                
-                if not correos_jefes_ventas:
-                    ok_mail = False
-                    msg_mail = "no se encontraron correos activos para el rol 'Jefe de Ventas'."
-                else:
-                    token = st.session_state.get("microsoft_token")
-                    ok_mail, msg_mail = enviar_correo(
-                        destinatario=correos_jefes_ventas,
-                        asunto=asunto,
-                        cuerpo_html=cuerpo_html,
-                        remitente=correo_remitente,
-                        token=token,
-                    )
 
-                
-                if ok_mail:
-                    st.success("estatus actualizado: enviada y correo enviado")
+                if tipo_aut == "sin_autorizacion":
+                    nuevo_estatus = _resolver_estatus_despues_autorizacion_local(int(selected_id))
+                    cambiar_estatus_ctrl(int(selected_id), nuevo_estatus, int(usuario["id"]))
+                    st.success(f"estatus actualizado automáticamente a {nuevo_estatus}")
                 else:
-                    st.warning(
-                        "estatus actualizado: enviada, pero no se pudo enviar correo. "
-                        f"{msg_mail}"
-                    )
+                    cambiar_estatus_ctrl(int(selected_id), "enviada", int(usuario["id"]))
+                    nombre_rol_aut = _rol_autorizador_solicitud(solicitud_actualizada)
+
+                    if MODO_PRUEBA_CORREOS:
+                        st.info(f"aquí sí enviaría correo a: {correo_remitente} para rol {nombre_rol_aut}")
+                        ok_mail, msg_mail = True, "modo prueba: correo no enviado"
+                    else:
+                        ok_mail, msg_mail = _enviar_revision_a_rol_autorizador(
+                            solicitud=solicitud_actualizada,
+                            token=token,
+                            remitente=correo_remitente,
+                            nombre_rol=nombre_rol_aut,
+                        )
+                    #ok_mail, msg_mail = _enviar_revision_a_rol_autorizador(
+                    #    solicitud=solicitud_actualizada,
+                    #    token=token,
+                    #    remitente=correo_remitente,
+                    #    nombre_rol=nombre_rol_aut,
+                    #)
+
+                    if ok_mail:
+                        st.success(f"estatus actualizado: enviada y correo enviado a {nombre_rol_aut}")
+                    else:
+                        st.warning(
+                            "estatus actualizado: enviada, pero no se pudo enviar correo. "
+                            f"{msg_mail}"
+                        )
 
                 st.rerun()
+
 
             puede_eliminar = bool(selected_id) and (str(estatus_actual).strip().lower() == "captura")
 
@@ -1900,31 +2087,59 @@ def mostrar_tab_solicitudes_gastos():
                 type="primary",
                 key="sg_btn_cerrar_comprobacion",
             ):
-                cambiar_estatus_ctrl(
-                    int(selected_id),
-                    "cerrada",
-                    int(usuario["id"]),
-                )
-
                 solicitud_actualizada = get_solicitud_ctrl(int(selected_id)) or solicitud or {}
+                tipo_aut = _tipo_autorizacion_solicitud(solicitud_actualizada)
                 token = st.session_state.get("microsoft_token")
                 correo_remitente = str(usuario.get("email") or "").strip()
 
-                ok_mail, msg_mail = _enviar_cierre_a_jefe_ventas(
-                    solicitud=solicitud_actualizada,
-                    token=token,
-                    remitente=correo_remitente,
-                )
+                if tipo_aut == "sin_autorizacion":
+                    cambiar_estatus_ctrl(int(selected_id), "contabilidad", int(usuario["id"]))
 
-                if ok_mail:
-                    st.success("estatus actualizado a cerrada y correo enviado a jefe de ventas")
-                else:
-                    st.warning(
-                        "estatus actualizado a cerrada, pero no se pudo enviar correo a jefe de ventas. "
-                        f"{msg_mail}"
+                    ok_conta, msg_conta = _enviar_a_contabilidad_revision_correo(
+                        solicitud=solicitud_actualizada,
+                        token=token,
+                        remitente=correo_remitente,
                     )
 
+                    if ok_conta:
+                        st.success("estatus actualizado a contabilidad y correo enviado a contabilidad")
+                    else:
+                        st.warning(
+                            "estatus actualizado a contabilidad, pero no se pudo enviar correo a contabilidad. "
+                            f"{msg_conta}"
+                        )
+                else:
+                    cambiar_estatus_ctrl(int(selected_id), "cerrada", int(usuario["id"]))
+                    nombre_rol_aut = _rol_autorizador_solicitud(solicitud_actualizada)
+
+                    if MODO_PRUEBA_CORREOS:
+                        st.info(f"aquí sí enviaría correo a: {correo_remitente} para rol {nombre_rol_aut}")
+                        ok_mail, msg_mail = True, "modo prueba: correo no enviado"
+                    else:
+                        ok_mail, msg_mail = _enviar_cierre_a_rol_autorizador(
+                            solicitud=solicitud_actualizada,
+                            token=token,
+                            remitente=correo_remitente,
+                            nombre_rol=nombre_rol_aut,
+                        )
+
+                    ##ok_mail, msg_mail = _enviar_cierre_a_rol_autorizador(
+                    ##    solicitud=solicitud_actualizada,
+                    ##    token=token,
+                    ##    remitente=correo_remitente,
+                    ##    nombre_rol=nombre_rol_aut,
+                    ##)
+
+                    if ok_mail:
+                        st.success(f"estatus actualizado a cerrada y correo enviado a {nombre_rol_aut}")
+                    else:
+                        st.warning(
+                            "estatus actualizado a cerrada, pero no se pudo enviar correo. "
+                            f"{msg_mail}"
+                        )
+
                 st.rerun()
+
         else:
             st.warning("la solicitud todavía no cumple validaciones para cerrar la comprobación.")
             for err in val_det.get("errores", []):

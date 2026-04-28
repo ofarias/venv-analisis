@@ -584,9 +584,6 @@ def _fetch_impuestos_y_cuentas_por_folio(cve_folio: str) -> dict:
         "CTA_IMP1": None, "CTA_IMP2": None, "CTA_IMP3": None, "CTA_IMP4": None,
     }
 
-    #st.write(f"🔎 Debug _fetch_impuestos_y_cuentas_por_folio: CVE_FOLIO = {cve_folio}")
-    #st.write(f"[DEBUG] _fetch_impuestos_y_cuentas_por_folio({cve_folio})")
-
     try:
         # --- 1️⃣ impuestos desde Firebird SAE ---
         sql_imp = """
@@ -688,10 +685,10 @@ def _mk_partidas_solicitud_gasto_desglosada(
         notas = str(base.get("notas") or "").strip()
 
         cuenta_pago_raw = str(base.get("cuenta_pago") or "").strip()
-        #if not cuenta_pago_raw:
-        #    raise ValueError(
-        #        f"el detalle {detalle_id} no tiene cuenta contable en el método de pago"
-        #    )
+        if not cuenta_pago_raw:
+            raise ValueError(
+                f"el detalle {detalle_id} no tiene cuenta contable en el método de pago"
+            )
 
         cuenta_pago = _normalize_numcta_masked_to_21(cuenta_pago_raw)
 

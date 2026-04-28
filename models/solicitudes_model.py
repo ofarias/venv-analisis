@@ -1204,6 +1204,8 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
                 d.uuid,
                 d.total_xml,
                 d.precio_unitario,
+                d.usuario_forma_pago_id,
+                ufp.cuenta_contable as cuenta_pago,
                 coalesce(scg.fiscales, 0) as fiscales,
                 case
                     when d.uuid is not null and trim(d.uuid) <> '' and exists (
@@ -1227,6 +1229,8 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
             from solicitudes_detalle d
             left join solicitud_concepto_gasto scg
               on scg.concepto collate utf8mb4_unicode_ci = d.concepto collate utf8mb4_unicode_ci
+            left join usuarios_forma_pago ufp
+                on ufp.id = d.usuario_forma_pago_id
             where d.solicitud_id = %s
             order by d.renglon, d.id
             """,
@@ -1256,6 +1260,8 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         tiene_pdf_uuid = int(r.get("tiene_pdf_uuid") or 0)
         total_unidades = float(r.get("total_unidades") or 0)
         num_unidades = int(r.get("num_unidades") or 0)
+        usuario_forma_pago_id = r.get("usuario_forma_pago_id")
+        cuenta_pago = str(r.get("cuenta_pago") or "").strip()
 
         requiere_validacion = ((fiscales == 1 and precio_unitario > 0) or bool(uuid))
 
@@ -1274,6 +1280,15 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         elif round(total_unidades, 6) != 100.0:
             errores.append(
                 f"detalle {detalle_id} ({concepto}): las unidades suman {total_unidades} y deben sumar 100"
+            )
+        
+        if not usuario_forma_pago_id:
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): no tiene forma de pago seleccionada"
+            )
+        elif not cuenta_pago:
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): la forma de pago seleccionada no tiene cuenta contable"
             )
 
     return {
