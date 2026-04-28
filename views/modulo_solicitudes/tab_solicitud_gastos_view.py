@@ -42,7 +42,7 @@ from controllers.solicitudes_controller import (
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
 
-MODO_PRUEBA_CORREOS = True
+MODO_PRUEBA_CORREOS = False
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
