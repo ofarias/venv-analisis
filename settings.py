@@ -1,15 +1,11 @@
-import os 
+import os
+import streamlit as st
 
 
 # Configuración general del sistema
 
 # Conexión a la base de datos
-DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",         # ← remplazar
-    "password": "genseg01",       # ← remplazar
-    "database": "documentos"
-}
+DB_CONFIG = st.secrets["MYSQL_DOCUMENTOS"]
 
 # Nombre del sistema
 NOMBRE_SISTEMA = "Sistema de Control Documental"

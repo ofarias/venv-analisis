@@ -166,8 +166,6 @@ def obtener_usuario_y_roles(email):
         WHERE ur.username = %s
     """, (usuario["username"],))
     roles = [r["nombre"] for r in cursor.fetchall()]
-    st.write(usuario["username"])
-    st.stop
     conn.close()
 
     # 3. Devolver los datos
