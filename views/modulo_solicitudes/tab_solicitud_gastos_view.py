@@ -42,7 +42,7 @@ from controllers.solicitudes_controller import (
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
 
-MODO_PRUEBA_CORREOS = False
+MODO_PRUEBA_CORREOS = True 
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -1798,6 +1798,12 @@ def mostrar_tab_solicitudes_gastos():
     remaining_cols = [c for c in df_show.columns if c not in existing_cols]
     df_show = df_show[existing_cols + remaining_cols]
 
+    label_gasto = (
+        "gasto estimado"
+        if str(estatus_actual or "").strip().lower() in ("captura", "rechazada")
+        else "gasto efectuado"
+    )
+
     edited = st.data_editor(
         df_show,
         use_container_width=True,
@@ -1852,8 +1858,14 @@ def mostrar_tab_solicitudes_gastos():
                 min_value=0.0,
                 step=1.0,
             ),
+            #"precio_unitario": st.column_config.NumberColumn(
+            #    "gasto estimado",
+            #    min_value=0.0,
+            #    step=0.01,
+            #    format="%.2f",
+            #),
             "precio_unitario": st.column_config.NumberColumn(
-                "gasto estimado",
+                label_gasto,
                 min_value=0.0,
                 step=0.01,
                 format="%.2f",
@@ -2078,7 +2090,10 @@ def mostrar_tab_solicitudes_gastos():
 
     if estatus_actual in ("dispersion", "revision comprobacion"):
 
-        val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id))
+        val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id)) or {
+            "ok": False,
+            "errores": ["la validación no regresó resultado."]
+        }
 
         if val_det.get("ok"):
             if st.button(
@@ -2219,15 +2234,32 @@ def mostrar_tab_solicitudes_gastos():
     ids_detalle_guardados = []
     if "id" in edited.columns:
         df_detalle_sel = edited.copy()
+        
+        ##df_detalle_sel = df_detalle_sel[
+        ##    df_detalle_sel.apply(
+        ##        lambda r: (
+        ##            str(r.get("concepto") or "").strip() != ""
+        ##            and _requiere_validacion_row(r.to_dict())
+        ##        ),
+        ##        axis=1,
+        ##    )
+        ##].copy()
+
         df_detalle_sel = df_detalle_sel[
             df_detalle_sel.apply(
                 lambda r: (
                     str(r.get("concepto") or "").strip() != ""
-                    and _requiere_validacion_row(r.to_dict())
+                    and (
+                        _to_float(r.get("precio_unitario")) > 0
+                        or _to_float(r.get("total_xml")) > 0
+                        or bool(str(r.get("uuid") or "").strip())
+                    )
                 ),
                 axis=1,
             )
         ].copy()
+        
+
 
         ids_detalle_guardados = [
             int(x)
@@ -2238,6 +2270,12 @@ def mostrar_tab_solicitudes_gastos():
     if not ids_detalle_guardados:
         st.info("primero guarda el detalle para poder asignar unidades de negocio.")
     else:
+        def _monto_renglon(x):
+                row = df_detalle_sel.loc[df_detalle_sel["id"] == x].iloc[0]
+                total_xml = float(row.get("total_xml") or 0)
+                precio = float(row.get("precio_unitario") or 0)
+
+                return total_xml if total_xml > 0 else precio
         unidades_rows = get_unidades_negocio_ctrl() or []
         un_map = {int(r["id"]): str(r["nombre"]) for r in unidades_rows if r.get("id") is not None}
         un_ids = list(un_map.keys())
@@ -2248,8 +2286,7 @@ def mostrar_tab_solicitudes_gastos():
             format_func=lambda x: (
                 f"id {x} - "
                 f"{str(df_detalle_sel.loc[df_detalle_sel['id'] == x, 'concepto'].values[0])[:30]} - "
-                #f"{df_detalle_sel.loc[df_detalle_sel['id'] == x, 'total_xml'].values[0]}"
-                f"{_money_fmt(df_detalle_sel.loc[df_detalle_sel['id'] == x, 'total_xml'].values[0])}"
+                f"{_money_fmt(_monto_renglon(x))}"
             ),
             key="sg_detalle_id_un",
         )

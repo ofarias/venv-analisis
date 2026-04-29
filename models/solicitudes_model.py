@@ -1248,14 +1248,13 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
             pass
 
 def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
-    rows = get_validacion_detalle_solicitud_rows(int(solicitud_id))
+    rows = get_validacion_detalle_solicitud_rows(int(solicitud_id)) or []
     errores = []
 
     for r in rows:
         detalle_id = int(r.get("id") or 0)
         concepto = (r.get("concepto") or "").strip()
         uuid = (r.get("uuid") or "").strip()
-        precio_unitario = float(r.get("precio_unitario") or 0)
         fiscales = int(r.get("fiscales") or 0)
         tiene_pdf_uuid = int(r.get("tiene_pdf_uuid") or 0)
         total_unidades = float(r.get("total_unidades") or 0)
@@ -1263,14 +1262,29 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         usuario_forma_pago_id = r.get("usuario_forma_pago_id")
         cuenta_pago = str(r.get("cuenta_pago") or "").strip()
 
-        requiere_validacion = ((fiscales == 1 and precio_unitario > 0) or bool(uuid))
+        try:
+            precio_unitario = float(r.get("precio_unitario") or 0)
+        except Exception:
+            precio_unitario = 0.0
 
-        if not requiere_validacion:
+        try:
+            total_xml = float(r.get("total_xml") or 0)
+        except Exception:
+            total_xml = 0.0
+
+        monto = total_xml if total_xml > 0 else precio_unitario
+
+        if monto <= 0 and not uuid:
             continue
 
-        if uuid and not tiene_pdf_uuid:
+        if fiscales == 1 and not uuid:
             errores.append(
-                f"detalle {detalle_id} ({concepto}): no tiene PDF cargado en DATOSCFD_PDF para el UUID {uuid}"
+                f"detalle {detalle_id} ({concepto}): es fiscal y no tiene UUID capturado"
+            )
+
+        if fiscales == 1 and uuid and not tiene_pdf_uuid:
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): es fiscal y no tiene PDF cargado en DATOSCFD_PDF para el UUID {uuid}"
             )
 
         if num_unidades <= 0:
@@ -1281,7 +1295,7 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
             errores.append(
                 f"detalle {detalle_id} ({concepto}): las unidades suman {total_unidades} y deben sumar 100"
             )
-        
+
         if not usuario_forma_pago_id:
             errores.append(
                 f"detalle {detalle_id} ({concepto}): no tiene forma de pago seleccionada"
@@ -1301,25 +1315,32 @@ def get_detalle_contabilidad_view(solicitud_id: int):
     conn = obtener_conexion()
     cur = conn.cursor(dictionary=True)
 
-    cur.execute(
-        """
-        select *
-        from vw_solicitudes_revision_contabilidad
-        where solicitud_id = %s 
-        and (total_xml > 0 or precio_unitario > 0) 
-        order by fecha
-        """,
-        (int(solicitud_id),),
-    )
+    try:
+        cur.execute(
+            """
+            select *
+            from vw_solicitudes_revision_contabilidad
+            where solicitud_id = %s
+              and (
+                    coalesce(total_xml, 0) > 0
+                 or coalesce(precio_unitario, 0) > 0
+              )
+            order by fecha
+            """,
+            (int(solicitud_id),),
+        )
 
-    rows = cur.fetchall()
+        return cur.fetchall() or []
 
-    cur.close()
-    conn.close()
-
-    return rows
-
-
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def get_pdf_by_uuid(uuid: str):
     conn = obtener_conexion()

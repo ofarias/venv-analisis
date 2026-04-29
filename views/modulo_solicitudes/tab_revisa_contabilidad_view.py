@@ -342,7 +342,7 @@ def mostrar_tab_revisa_contabilidad():
 
     detalle = _get_detalle_contabilidad_cached(int(sel_id)) or []
     if not detalle:
-        st.info("sin detalle")
+        st.info(f"sin detalle para el id seleccionado: {sel_id}")
         return
 
     df_det = pd.DataFrame(detalle)

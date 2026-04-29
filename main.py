@@ -166,8 +166,9 @@ else:
     if "Ventas" in roles:
         menu_opciones["Solicitudes"] = "solicitudes"
         menu_opciones["🧑🏻‍💻 Navegar"] = "navegar"
-        menu_opciones["Administracion de Presupuestos"] = "presupuestos"
-        menu_opciones["💸 Registro de Gastos"] = "regGasto"
+        menu_opciones["📥 Mis políticas"] = "mis_pendientes"
+        #menu_opciones["Administracion de Presupuestos"] = "presupuestos"
+        #menu_opciones["💸 Registro de Gastos"] = "regGasto"
 
     if "Compras" in roles:
         menu_opciones["Solicitudes"] = "solicitudes"

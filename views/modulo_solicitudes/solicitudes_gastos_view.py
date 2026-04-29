@@ -24,7 +24,7 @@ def mostrar_modulo_solicitudes_gastos():
         "compras",
     ])
     puede_ver_rev_conta = any(r in roles for r in ["admin", "contabilidad"])
-    puede_ver_dashboard = any(r in roles for r in ["financiero", "direccion", "admin"])
+    puede_ver_dashboard = any(r in roles for r in ["financiero", "direccion", "admin", "gerente de ventas", "jefe de ventas", "supervisor de ventas"])
 
     labels = ["solicitudes"]
 
