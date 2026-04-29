@@ -8,6 +8,9 @@ from controllers.solicitudes_controller import (
     listar_conceptos_catalogo_ctrl,
     upsert_concepto_catalogo_ctrl,
     desactivar_conceptos_catalogo_ctrl,
+    get_usuarios_activos_ctrl,
+    get_usuarios_por_concepto_ctrl,
+    sync_usuarios_concepto_ctrl,
 )
 
 
@@ -16,15 +19,12 @@ def mostrar_tab_catalogo_conceptos():
 
     usuario = st.session_state.get("usuario") or {}
 
-    #st.write(usuario.get("roles"))
-
     roles_permitidos = ["Admin", "Contabilidad"]
 
-    # Verificamos si no tiene ninguno de los roles requeridos
     if not any(rol in usuario.get("roles", []) for rol in roles_permitidos):
         st.info("Solo el personal de Admin o Contabilidad puede administrar el catálogo")
         return
-    
+
     ver_inactivos = st.checkbox("ver inactivos", value=False, key="cg_ver_inactivos")
 
     rows = listar_conceptos_catalogo_ctrl(incluir_inactivos=ver_inactivos)
@@ -44,12 +44,10 @@ def mostrar_tab_catalogo_conceptos():
             ]
         )
 
-    # normaliza columnas esperadas
     for c in ["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo"]:
         if c not in df.columns:
             df[c] = None
 
-    # booleans para edición
     df["fiscales"] = df["fiscales"].fillna(0).astype(int).astype(bool)
     df["prepago"] = df["prepago"].fillna(0).astype(int).astype(bool)
     df["activo"] = df["activo"].fillna(1).astype(int).astype(bool)
@@ -111,7 +109,6 @@ def mostrar_tab_catalogo_conceptos():
                 st.error(res.get("msg", "no se pudo guardar"))
 
     with c2:
-        # baja lógica por ids seleccionados
         ids_opts = [
             int(x)
             for x in edited["id"].dropna().tolist()
@@ -130,3 +127,57 @@ def mostrar_tab_catalogo_conceptos():
 
     with c3:
         st.caption("nota: eliminar = desactivar (activo=0).")
+
+    # ── Sección: usuarios a notificar por concepto ──────────────────────────
+    st.divider()
+    st.subheader("usuarios a notificar por concepto")
+    st.caption(
+        "Selecciona un concepto y los usuarios que deben recibir notificación cuando se usa ese concepto en una solicitud."
+    )
+
+    # Solo conceptos activos con ID real para esta sección
+    conceptos_activos = [
+        r for r in (rows or [])
+        if r.get("id") and r.get("activo", 1)
+    ]
+
+    if not conceptos_activos:
+        st.info("No hay conceptos activos en el catálogo.")
+        return
+
+    concepto_opciones = {str(r["id"]): r["concepto"] for r in conceptos_activos}
+    concepto_sel_label = st.selectbox(
+        "concepto",
+        options=list(concepto_opciones.keys()),
+        format_func=lambda k: concepto_opciones[k],
+        key="cg_concepto_sel",
+    )
+
+    if concepto_sel_label is None:
+        return
+
+    concepto_id_sel = int(concepto_sel_label)
+
+    # Usuarios disponibles
+    todos_usuarios = get_usuarios_activos_ctrl()
+    usuario_map = {u["id"]: f"{u['nombre']} ({u['email']})" for u in todos_usuarios}
+
+    # Usuarios ya asignados al concepto
+    asignados_raw = get_usuarios_por_concepto_ctrl(concepto_id_sel)
+    ids_asignados = [int(r["id_usuario"]) for r in asignados_raw]
+
+    nuevos_ids = st.multiselect(
+        "usuarios notificados",
+        options=list(usuario_map.keys()),
+        default=ids_asignados,
+        format_func=lambda uid: usuario_map.get(uid, str(uid)),
+        key=f"cg_usuarios_concepto_{concepto_id_sel}",
+    )
+
+    if st.button("guardar usuarios del concepto", key="cg_guardar_usuarios"):
+        res = sync_usuarios_concepto_ctrl(concepto_id_sel, nuevos_ids)
+        if res.get("ok"):
+            st.success(res.get("msg", "guardado"))
+            st.rerun()
+        else:
+            st.error(res.get("msg", "no se pudo guardar"))

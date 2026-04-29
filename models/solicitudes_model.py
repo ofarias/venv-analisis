@@ -1693,3 +1693,59 @@ def upsert_dispersion_flag_por_concepto(
             conn.close()
         except Exception:
             pass
+
+
+def get_usuarios_por_concepto(concepto_id: int) -> list[dict]:
+    """Devuelve los usuarios activos asignados a un concepto de gasto."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT ia.id_usuario, u.nombre, u.email
+            FROM solicitud_concepto_gasto_informar_a ia
+            JOIN usuarios u ON u.id = ia.id_usuario
+            WHERE ia.id_concepto_gasto = %s AND ia.activo = 1
+            ORDER BY u.nombre
+            """,
+            (int(concepto_id),),
+        )
+        return cur.fetchall() or []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def sync_usuarios_concepto(concepto_id: int, user_ids: list[int]) -> None:
+    """Sincroniza usuarios asignados al concepto: activa nuevos, desactiva removidos."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE solicitud_concepto_gasto_informar_a SET activo = 0 WHERE id_concepto_gasto = %s",
+            (int(concepto_id),),
+        )
+        for uid in user_ids:
+            cur.execute(
+                """
+                INSERT INTO solicitud_concepto_gasto_informar_a
+                    (id_concepto_gasto, id_usuario, activo)
+                VALUES (%s, %s, 1)
+                ON DUPLICATE KEY UPDATE activo = 1
+                """,
+                (int(concepto_id), int(uid)),
+            )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

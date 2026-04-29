@@ -47,6 +47,8 @@ from models.solicitudes_model import (
     solicitud_necesita_dispersion,
     get_dispersion_flags_por_concepto,
     upsert_dispersion_flag_por_concepto,
+    get_usuarios_por_concepto,
+    sync_usuarios_concepto,
 )
 
 
@@ -475,3 +477,15 @@ def upsert_dispersion_flag_por_concepto_ctrl(
     return upsert_dispersion_flag_por_concepto(
         int(solicitud_id), int(concepto_id), bool(dispersado), int(user_id)
     )
+
+
+def get_usuarios_por_concepto_ctrl(concepto_id: int) -> list[dict]:
+    return get_usuarios_por_concepto(int(concepto_id))
+
+
+def sync_usuarios_concepto_ctrl(concepto_id: int, user_ids: list[int]) -> dict:
+    try:
+        sync_usuarios_concepto(int(concepto_id), [int(u) for u in user_ids])
+        return {"ok": True, "msg": "usuarios actualizados"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
