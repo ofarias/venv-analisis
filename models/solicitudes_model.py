@@ -697,23 +697,21 @@ def get_conceptos_catalogo_rows(incluir_inactivos: bool = False):
     conn = obtener_conexion()
     cur = conn.cursor(dictionary=True)
 
-    if incluir_inactivos:
-        cur.execute(
-            """
-            select id, concepto, cuenta, fiscales, prepago, comprobante, activo, created_at, updated_at
-            from solicitud_concepto_gasto
-            order by id
-            """
-        )
-    else:
-        cur.execute(
-            """
-            select id, concepto, cuenta, fiscales, prepago, comprobante, activo, created_at, updated_at
-            from solicitud_concepto_gasto
-            where activo = 1
-            order by id
-            """
-        )
+    where = "" if incluir_inactivos else "WHERE cg.activo = 1"
+    cur.execute(
+        f"""
+        SELECT cg.id, cg.concepto, cg.cuenta, cg.fiscales, cg.prepago, cg.comprobante, cg.activo,
+               cg.created_at, cg.updated_at,
+               GROUP_CONCAT(u.nombre ORDER BY u.nombre SEPARATOR ', ') AS usuarios_informar
+        FROM solicitud_concepto_gasto cg
+        LEFT JOIN solicitud_concepto_gasto_informar_a ia
+               ON ia.id_concepto_gasto = cg.id AND ia.activo = 1
+        LEFT JOIN usuarios u ON u.id = ia.id_usuario
+        {where}
+        GROUP BY cg.id
+        ORDER BY cg.id
+        """
+    )
 
     rows = cur.fetchall()
     cur.close()

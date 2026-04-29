@@ -489,3 +489,27 @@ def sync_usuarios_concepto_ctrl(concepto_id: int, user_ids: list[int]) -> dict:
         return {"ok": True, "msg": "usuarios actualizados"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
+
+
+def sync_usuarios_concepto_por_texto_ctrl(concepto_id: int, texto: str) -> dict:
+    """Recibe nombres separados por comas (o IDs numéricos) y sincroniza los usuarios del concepto."""
+    try:
+        todos = get_usuarios_activos()
+        lookup: dict[str, int] = {}
+        for u in todos:
+            lookup[u["nombre"].strip().lower()] = u["id"]
+            lookup[str(u["id"])] = u["id"]
+
+        ids: list[int] = []
+        for parte in (texto or "").split(","):
+            clave = parte.strip().lower()
+            if not clave:
+                continue
+            uid = lookup.get(clave)
+            if uid is not None:
+                ids.append(uid)
+
+        sync_usuarios_concepto(int(concepto_id), ids)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}

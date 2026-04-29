@@ -8,9 +8,7 @@ from controllers.solicitudes_controller import (
     listar_conceptos_catalogo_ctrl,
     upsert_concepto_catalogo_ctrl,
     desactivar_conceptos_catalogo_ctrl,
-    get_usuarios_activos_ctrl,
-    get_usuarios_por_concepto_ctrl,
-    sync_usuarios_concepto_ctrl,
+    sync_usuarios_concepto_por_texto_ctrl,
 )
 
 
@@ -40,11 +38,12 @@ def mostrar_tab_catalogo_conceptos():
                     "fiscales": 0,
                     "prepago": 0,
                     "activo": 1,
+                    "usuarios_informar": "",
                 }
             ]
         )
 
-    for c in ["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo"]:
+    for c in ["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo", "usuarios_informar"]:
         if c not in df.columns:
             df[c] = None
 
@@ -52,10 +51,11 @@ def mostrar_tab_catalogo_conceptos():
     df["prepago"] = df["prepago"].fillna(0).astype(int).astype(bool)
     df["activo"] = df["activo"].fillna(1).astype(int).astype(bool)
     df["comprobante"] = df["comprobante"].fillna(0).astype(int).astype(bool)
+    df["usuarios_informar"] = df["usuarios_informar"].fillna("").astype(str)
 
-    st.caption("edita y luego guarda cambios")
+    st.caption("edita y luego guarda cambios · columna 'usuarios a informar': nombres separados por coma")
     edited = st.data_editor(
-        df[["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo"]],
+        df[["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo", "usuarios_informar"]],
         hide_index=True,
         use_container_width=True,
         num_rows="dynamic",
@@ -68,6 +68,10 @@ def mostrar_tab_catalogo_conceptos():
             "prepago": st.column_config.CheckboxColumn("prepago"),
             "comprobante": st.column_config.CheckboxColumn("comprobante"),
             "activo": st.column_config.CheckboxColumn("activo"),
+            "usuarios_informar": st.column_config.TextColumn(
+                "usuarios a informar",
+                help="Nombres separados por coma de los usuarios que recibirán notificación al usar este concepto",
+            ),
         },
     )
 
@@ -102,6 +106,17 @@ def mostrar_tab_catalogo_conceptos():
 
             res = upsert_concepto_catalogo_ctrl(rows_out, usuario_id=int(usuario.get("id") or 0))
             if res.get("ok"):
+                # Sync usuarios_informar para filas con ID existente
+                for r in edited.to_dict(orient="records"):
+                    rid = r.get("id")
+                    try:
+                        rid = None if pd.isna(rid) else int(rid)
+                    except Exception:
+                        rid = None
+                    if rid:
+                        texto = str(r.get("usuarios_informar") or "")
+                        sync_usuarios_concepto_por_texto_ctrl(rid, texto)
+
                 st.success(res.get("msg", "guardado"))
                 st.session_state.pop("cg_editor", None)
                 st.rerun()
@@ -127,57 +142,3 @@ def mostrar_tab_catalogo_conceptos():
 
     with c3:
         st.caption("nota: eliminar = desactivar (activo=0).")
-
-    # ── Sección: usuarios a notificar por concepto ──────────────────────────
-    st.divider()
-    st.subheader("usuarios a notificar por concepto")
-    st.caption(
-        "Selecciona un concepto y los usuarios que deben recibir notificación cuando se usa ese concepto en una solicitud."
-    )
-
-    # Solo conceptos activos con ID real para esta sección
-    conceptos_activos = [
-        r for r in (rows or [])
-        if r.get("id") and r.get("activo", 1)
-    ]
-
-    if not conceptos_activos:
-        st.info("No hay conceptos activos en el catálogo.")
-        return
-
-    concepto_opciones = {str(r["id"]): r["concepto"] for r in conceptos_activos}
-    concepto_sel_label = st.selectbox(
-        "concepto",
-        options=list(concepto_opciones.keys()),
-        format_func=lambda k: concepto_opciones[k],
-        key="cg_concepto_sel",
-    )
-
-    if concepto_sel_label is None:
-        return
-
-    concepto_id_sel = int(concepto_sel_label)
-
-    # Usuarios disponibles
-    todos_usuarios = get_usuarios_activos_ctrl()
-    usuario_map = {u["id"]: f"{u['nombre']} ({u['email']})" for u in todos_usuarios}
-
-    # Usuarios ya asignados al concepto
-    asignados_raw = get_usuarios_por_concepto_ctrl(concepto_id_sel)
-    ids_asignados = [int(r["id_usuario"]) for r in asignados_raw]
-
-    nuevos_ids = st.multiselect(
-        "usuarios notificados",
-        options=list(usuario_map.keys()),
-        default=ids_asignados,
-        format_func=lambda uid: usuario_map.get(uid, str(uid)),
-        key=f"cg_usuarios_concepto_{concepto_id_sel}",
-    )
-
-    if st.button("guardar usuarios del concepto", key="cg_guardar_usuarios"):
-        res = sync_usuarios_concepto_ctrl(concepto_id_sel, nuevos_ids)
-        if res.get("ok"):
-            st.success(res.get("msg", "guardado"))
-            st.rerun()
-        else:
-            st.error(res.get("msg", "no se pudo guardar"))
