@@ -35,7 +35,7 @@ from models.solicitudes_model import (
     get_detalle_unidades_rows,
     guardar_detalle_unidades_rows,
     validar_detalle_para_comprobacion,
-    get_xml_by_uuid, 
+    get_xml_by_uuid,
     get_pdf_by_uuid,
     get_xmls_by_uuids,
     get_detalle_poliza_solicitud,
@@ -43,6 +43,10 @@ from models.solicitudes_model import (
     get_comprobantes_by_detalle_ids,
     get_comprobantes_by_solicitud,
     get_correos_usuarios_por_rol_model,
+    get_conceptos_informar_por_solicitud,
+    solicitud_necesita_dispersion,
+    get_dispersion_flags_por_concepto,
+    upsert_dispersion_flag_por_concepto,
 )
 
 
@@ -448,3 +452,26 @@ def get_datoscfd_by_uuids_ctrl(uuids: list[str]) -> list[dict]:
 
 def get_correos_usuarios_por_rol_ctrl(nombre_rol: str) -> list[str]:
     return get_correos_usuarios_por_rol_model(nombre_rol)
+
+
+def get_conceptos_informar_por_solicitud_ctrl(solicitud_id: int) -> list[dict]:
+    return get_conceptos_informar_por_solicitud(int(solicitud_id))
+
+
+def solicitud_necesita_dispersion_ctrl(solicitud_id: int) -> bool:
+    return solicitud_necesita_dispersion(int(solicitud_id))
+
+
+def get_dispersion_flags_por_concepto_ctrl(solicitud_id: int) -> dict[int, bool]:
+    return get_dispersion_flags_por_concepto(int(solicitud_id))
+
+
+def upsert_dispersion_flag_por_concepto_ctrl(
+    solicitud_id: int,
+    concepto_id: int,
+    dispersado: bool,
+    user_id: int,
+) -> bool:
+    return upsert_dispersion_flag_por_concepto(
+        int(solicitud_id), int(concepto_id), bool(dispersado), int(user_id)
+    )

@@ -1543,3 +1543,153 @@ def get_correos_usuarios_por_rol_model(nombre_rol: str) -> list[str]:
             conn.close()
         except Exception:
             pass
+
+
+# ── Tabla solicitudes_dispersion_flags (DDL requerido en BD) ────────────────
+# CREATE TABLE solicitudes_dispersion_flags (
+#     id                INT NOT NULL AUTO_INCREMENT,
+#     solicitud_id      INT NOT NULL,
+#     id_concepto_gasto INT NOT NULL,
+#     dispersado        TINYINT(1) NOT NULL DEFAULT 0,
+#     updated_by        INT,
+#     updated_at        DATETIME,
+#     PRIMARY KEY (id),
+#     UNIQUE KEY uk_sol_concepto (solicitud_id, id_concepto_gasto)
+# );
+# ────────────────────────────────────────────────────────────────────────────
+
+def get_conceptos_informar_por_solicitud(solicitud_id: int) -> list[dict]:
+    """
+    Devuelve una fila por cada par (concepto, usuario) donde el concepto
+    aparece en el detalle de la solicitud con monto > 0 y tiene al menos
+    un usuario activo en solicitud_concepto_gasto_informar_a.
+    """
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT DISTINCT
+                scg.id       AS concepto_id,
+                scg.concepto AS concepto_nombre,
+                u.id         AS usuario_id,
+                u.nombre     AS usuario_nombre,
+                u.email      AS usuario_email
+            FROM solicitudes_detalle sd
+            JOIN solicitud_concepto_gasto scg
+                ON TRIM(scg.concepto) = TRIM(sd.concepto)
+                AND scg.activo = 1
+            JOIN solicitud_concepto_gasto_informar_a ia
+                ON ia.id_concepto_gasto = scg.id
+                AND ia.activo = 1
+            JOIN usuarios u
+                ON u.id = ia.id_usuario
+                AND u.estatus = 'Activo'
+            WHERE sd.solicitud_id = %s
+              AND (
+                COALESCE(sd.total_xml, 0) > 0
+                OR COALESCE(sd.precio_unitario, 0) * COALESCE(sd.cantidad, 1) > 0
+              )
+            ORDER BY scg.concepto, u.nombre
+            """,
+            (int(solicitud_id),),
+        )
+        return cur.fetchall() or []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def solicitud_necesita_dispersion(solicitud_id: int) -> bool:
+    """True si algún concepto de la solicitud tiene usuarios activos en informar_a."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM solicitudes_detalle sd
+            JOIN solicitud_concepto_gasto scg
+                ON TRIM(scg.concepto) = TRIM(sd.concepto)
+                AND scg.activo = 1
+            JOIN solicitud_concepto_gasto_informar_a ia
+                ON ia.id_concepto_gasto = scg.id
+                AND ia.activo = 1
+            JOIN usuarios u
+                ON u.id = ia.id_usuario
+                AND u.estatus = 'Activo'
+            WHERE sd.solicitud_id = %s
+              AND (
+                COALESCE(sd.total_xml, 0) > 0
+                OR COALESCE(sd.precio_unitario, 0) * COALESCE(sd.cantidad, 1) > 0
+              )
+            LIMIT 1
+            """,
+            (int(solicitud_id),),
+        )
+        return cur.fetchone() is not None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_dispersion_flags_por_concepto(solicitud_id: int) -> dict[int, bool]:
+    """Devuelve {concepto_id: dispersado} para la solicitud."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id_concepto_gasto, dispersado
+            FROM solicitudes_dispersion_flags
+            WHERE solicitud_id = %s
+            """,
+            (int(solicitud_id),),
+        )
+        rows = cur.fetchall() or []
+        return {int(r["id_concepto_gasto"]): bool(r["dispersado"]) for r in rows}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def upsert_dispersion_flag_por_concepto(
+    solicitud_id: int,
+    concepto_id: int,
+    dispersado: bool,
+    user_id: int,
+) -> bool:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO solicitudes_dispersion_flags
+                (solicitud_id, id_concepto_gasto, dispersado, updated_by, updated_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                dispersado = VALUES(dispersado),
+                updated_by = VALUES(updated_by),
+                updated_at = NOW()
+            """,
+            (int(solicitud_id), int(concepto_id), 1 if dispersado else 0, int(user_id)),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

@@ -17,8 +17,10 @@ from controllers.solicitudes_controller import (
     get_detalle_ctrl,
     get_usuarios_activos_ctrl,
     get_correos_usuarios_por_rol_ctrl,
-    get_dispersion_flags_ctrl,
-    set_dispersion_flag_ctrl,
+    get_conceptos_informar_por_solicitud_ctrl,
+    solicitud_necesita_dispersion_ctrl,
+    get_dispersion_flags_por_concepto_ctrl,
+    upsert_dispersion_flag_por_concepto_ctrl,
 )
 from utils.envio_correo import enviar_correo
 from textwrap import dedent
@@ -332,79 +334,79 @@ def _correos_unicos_validos(correos: list[str]) -> list[str]:
     return out
 
 
-def _enviar_correo_requerimiento_dispersion(
+def _enviar_correos_autorizacion_informar(
     *,
     solicitud: dict,
     token,
-    nombre_rol: str,
-    tipo_requerimiento: str,
-) -> tuple[bool, str]:
+    conceptos_informar: dict[int, dict],
+) -> tuple[bool, list[str]]:
+    """
+    Por cada concepto con usuarios asignados en informar_a, envía correo
+    a esos usuarios. Si un concepto no tiene usuarios activos usa 'Contabilidad'
+    como fallback.
+    """
     usuario = st.session_state.get("usuario") or {}
     remitente = str(usuario.get("email") or "").strip()
-
     if not remitente:
-        return False, "no se encontró correo del remitente."
-
-    destinatarios = _correos_unicos_validos(
-        get_correos_usuarios_por_rol_ctrl(nombre_rol) or []
-    )
-
-    if not destinatarios:
-        return False, f"no se encontraron correos activos para el rol {nombre_rol}."
+        return False, ["no se encontró correo del remitente."]
 
     folio = str(solicitud.get("folio") or "").strip()
     vendedor_nombre = str(solicitud.get("empleado_nombre") or "").strip()
-    cliente = (
-        str(solicitud.get("cliente") or "")
-        or str(solicitud.get("clientes") or "")
-    ).strip()
 
-    ciudad = (
-        str(solicitud.get("ciudad") or "")
-        or str(solicitud.get("ciudades") or "")
-    ).strip()
+    mensajes: list[str] = []
+    any_ok = False
 
-    asunto = f"solicitud de gastos pendiente de dispersión {folio} - {tipo_requerimiento}".strip()
-
-    cuerpo_html = f"""
-    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
-      <p>se autorizó una solicitud de gastos que requiere atención de <b>{nombre_rol}</b>.</p>
-
-      <p>
-        <b>folio:</b> {folio}<br>
-        <b>vendedor:</b> {vendedor_nombre}<br>
-        <b>cliente:</b> {cliente}<br>
-        <b>ciudad:</b> {ciudad}<br>
-        <b>requerimiento:</b> {tipo_requerimiento}<br>
-        <b>estatus actual:</b> autorizada
-      </p>
-
-      <p>favor de ingresar al módulo de solicitudes para continuar con la dispersión correspondiente.</p>
-    </div>
-    """
-
-    ok_count = 0
-    errores = []
-
-    for destinatario in destinatarios:
-        ok_mail, msg_mail = enviar_correo(
-            destinatario=destinatario,
-            asunto=asunto,
-            cuerpo_html=cuerpo_html,
-            token=token,
-            remitente=remitente,
+    for concepto_id, info in conceptos_informar.items():
+        concepto_nombre = info["concepto_nombre"]
+        destinatarios = _correos_unicos_validos(
+            [u["email"] for u in info["usuarios"] if str(u.get("email") or "").strip()]
         )
-        if ok_mail:
-            ok_count += 1
+
+        if not destinatarios:
+            destinatarios = _correos_unicos_validos(
+                get_correos_usuarios_por_rol_ctrl("Contabilidad") or []
+            )
+            origen = "rol Contabilidad (fallback)"
         else:
-            errores.append(f"{destinatario}: {msg_mail}")
+            origen = f"usuarios asignados a '{concepto_nombre}'"
 
-    if ok_count > 0:
-        if errores:
-            return True, f"correo enviado a {ok_count} destinatario(s), con algunos errores: {' | '.join(errores)}"
-        return True, f"correo enviado a {ok_count} destinatario(s)."
+        if not destinatarios:
+            mensajes.append(f"sin destinatarios para '{concepto_nombre}'")
+            continue
 
-    return False, "no se pudo enviar ningún correo. " + " | ".join(errores)
+        asunto = f"solicitud {folio} requiere dispersión: {concepto_nombre}"
+        cuerpo_html = f"""
+        <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+          <p>se autorizó una solicitud de gastos que requiere dispersión del concepto <b>{concepto_nombre}</b>.</p>
+          <p>
+            <b>folio:</b> {folio}<br>
+            <b>vendedor:</b> {vendedor_nombre}<br>
+            <b>concepto:</b> {concepto_nombre}<br>
+            <b>estatus actual:</b> autorizada
+          </p>
+          <p>favor de ingresar al módulo de solicitudes para continuar con la dispersión correspondiente.</p>
+        </div>
+        """
+
+        ok_count = 0
+        for dest in destinatarios:
+            ok, _ = enviar_correo(
+                destinatario=dest,
+                asunto=asunto,
+                cuerpo_html=cuerpo_html,
+                token=token,
+                remitente=remitente,
+            )
+            if ok:
+                ok_count += 1
+
+        if ok_count > 0:
+            any_ok = True
+            mensajes.append(f"correo enviado a {ok_count} destinatario(s) de {origen}")
+        else:
+            mensajes.append(f"no se pudo enviar correo para '{concepto_nombre}'")
+
+    return any_ok, mensajes
 
 #ESTATUS_OPTS = ["todas", "captura", "enviada", "autorizada", "rechazada", "cancelada", "cerrada", "dispersion"]
 ESTATUS_OPTS = ["todas", "enviada", "autorizada", "rechazada", "cerrada"]
@@ -464,66 +466,24 @@ def _monto_detalle(r: dict) -> float:
     return round(cantidad * precio, 2)
 
 
-def _analizar_requerimientos_dispersion(detalle_rows: list[dict]) -> dict:
-    requiere_gasolina = False
-    requiere_prepagados = False
+def _agrupar_informar_por_concepto(rows: list[dict]) -> dict[int, dict]:
+    """Agrupa filas de get_conceptos_informar_por_solicitud por concepto_id."""
+    result: dict[int, dict] = {}
+    for r in rows or []:
+        cid = int(r["concepto_id"])
+        if cid not in result:
+            result[cid] = {"concepto_nombre": str(r.get("concepto_nombre") or ""), "usuarios": []}
+        result[cid]["usuarios"].append({
+            "id":     int(r["usuario_id"]),
+            "nombre": str(r.get("usuario_nombre") or ""),
+            "email":  str(r.get("usuario_email") or ""),
+        })
+    return result
 
-    for r in detalle_rows or []:
-        concepto = _norm_text(r.get("concepto"))
-        monto = _monto_detalle(r)
-
-        if monto <= 0:
-            continue
-
-        if concepto == "gasolina (efecticard)":
-            requiere_gasolina = True
-            continue
-
-        prepago = False
-        try:
-            prepago = bool(PREPAGO_MAP.get(concepto, False))
-        except Exception:
-            prepago = False
-
-        if prepago:
-            requiere_prepagados = True
-
-    return {
-        "requiere_gasolina": requiere_gasolina,
-        "requiere_prepagados": requiere_prepagados,
-    }
-
-def _get_prepago_map():
-    from database.conexion import obtener_conexion
-
-    cn = obtener_conexion()
-    out = {}
-    try:
-        cur = cn.cursor()
-        cur.execute("select concepto, prepago from solicitud_concepto_gasto")
-        for concepto, prepago in cur.fetchall():
-            k = (concepto or "").strip().lower()
-            out[k] = bool(prepago)
-    finally:
-        try:
-            cn.close()
-        except Exception:
-            pass
-    return out
-
-
-PREPAGO_MAP = _get_prepago_map()
 
 def _resolver_estatus_despues_autorizacion(solicitud_id: int) -> str:
-    detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
-    reqs = _analizar_requerimientos_dispersion(detalle_rows)
-
-    requiere_gasolina = bool(reqs.get("requiere_gasolina"))
-    requiere_prepagados = bool(reqs.get("requiere_prepagados"))
-
-    if requiere_gasolina or requiere_prepagados:
+    if solicitud_necesita_dispersion_ctrl(int(solicitud_id)):
         return "autorizada"
-
     return "dispersion"
 
 def _enviar_revision_cierre_rechazada_correo(*, solicitud: dict, motivo: str, token):
@@ -816,18 +776,33 @@ def mostrar_tab_autorizaciones_solicitudes():
                     cambiar_estatus_ctrl(int(sel_id), nuevo_estatus, int(usuario.get("id") or 0))
 
                     token = st.session_state.get("microsoft_token")
-                    #ok_mail, msg_mail = _enviar_autorizacion_correo(solicitud=s, token=token)
+                    mensajes_ok: list[str] = []
+                    mensajes_warn: list[str] = []
+
                     ok_mail, msg_mail = _enviar_autorizacion_correo(
                         solicitud=s,
                         token=token,
                         estatus_final=nuevo_estatus,
                     )
                     if ok_mail:
-                        st.success(f"solicitud actualizada a {nuevo_estatus} y correo enviado al vendedor.")
+                        mensajes_ok.append("correo enviado al vendedor")
                     else:
-                        st.warning(
-                            f"solicitud actualizada a {nuevo_estatus}, pero no se pudo enviar correo: {msg_mail}"
+                        mensajes_warn.append(f"no se pudo enviar correo al vendedor: {msg_mail}")
+
+                    if nuevo_estatus == "autorizada":
+                        informar_rows_link = get_conceptos_informar_por_solicitud_ctrl(int(sel_id))
+                        conceptos_link = _agrupar_informar_por_concepto(informar_rows_link)
+                        ok_info, msgs_info = _enviar_correos_autorizacion_informar(
+                            solicitud=s,
+                            token=token,
+                            conceptos_informar=conceptos_link,
                         )
+                        (mensajes_ok if ok_info else mensajes_warn).extend(msgs_info)
+
+                    if mensajes_ok:
+                        st.success(f"solicitud actualizada a {nuevo_estatus}. " + " | ".join(mensajes_ok))
+                    if mensajes_warn:
+                        st.warning(" | ".join(mensajes_warn))
 
                     st.session_state["aut_pending_action"] = ""
                     st.rerun()
@@ -956,19 +931,12 @@ def mostrar_tab_autorizaciones_solicitudes():
 
         with c1:
             if st.button("autorizar", use_container_width=True, key="aut_btn_aprobar"):
-                detalle_rows = get_detalle_ctrl(int(sel_id)) or []
-                reqs = _analizar_requerimientos_dispersion(detalle_rows)
-
-                requiere_gasolina = bool(reqs.get("requiere_gasolina"))
-                requiere_prepagados = bool(reqs.get("requiere_prepagados"))
-
-                nuevo_estatus = "autorizada" if (requiere_gasolina or requiere_prepagados) else "dispersion"
+                nuevo_estatus = _resolver_estatus_despues_autorizacion(int(sel_id))
                 cambiar_estatus_ctrl(int(sel_id), nuevo_estatus, int(usuario.get("id") or 0))
 
                 token = st.session_state.get("microsoft_token")
-
-                mensajes_ok = []
-                mensajes_warn = []
+                mensajes_ok: list[str] = []
+                mensajes_warn: list[str] = []
 
                 ok_mail, msg_mail = _enviar_autorizacion_correo(
                     solicitud=s,
@@ -980,33 +948,18 @@ def mostrar_tab_autorizaciones_solicitudes():
                 else:
                     mensajes_warn.append(f"no se pudo enviar correo al vendedor: {msg_mail}")
 
-                if requiere_gasolina:
-                    ok_conta, msg_conta = _enviar_correo_requerimiento_dispersion(
+                if nuevo_estatus == "autorizada":
+                    informar_rows_btn = get_conceptos_informar_por_solicitud_ctrl(int(sel_id))
+                    conceptos_btn = _agrupar_informar_por_concepto(informar_rows_btn)
+                    ok_info, msgs_info = _enviar_correos_autorizacion_informar(
                         solicitud=s,
                         token=token,
-                        nombre_rol="Contabilidad",
-                        tipo_requerimiento="dispersión de gasolina",
+                        conceptos_informar=conceptos_btn,
                     )
-                    if ok_conta:
-                        mensajes_ok.append("correo enviado a contabilidad")
-                    else:
-                        mensajes_warn.append(f"no se pudo enviar correo a contabilidad: {msg_conta}")
-
-                if requiere_prepagados:
-                    ok_compras, msg_compras = _enviar_correo_requerimiento_dispersion(
-                        solicitud=s,
-                        token=token,
-                        nombre_rol="Compras",
-                        tipo_requerimiento="dispersión de prepagados",
-                    )
-                    if ok_compras:
-                        mensajes_ok.append("correo enviado a compras")
-                    else:
-                        mensajes_warn.append(f"no se pudo enviar correo a compras: {msg_compras}")
+                    (mensajes_ok if ok_info else mensajes_warn).extend(msgs_info)
 
                 if mensajes_ok:
                     st.success(f"solicitud actualizada a {nuevo_estatus}. " + " | ".join(mensajes_ok))
-
                 if mensajes_warn:
                     st.warning(" | ".join(mensajes_warn))
 
@@ -1058,151 +1011,75 @@ def mostrar_tab_autorizaciones_solicitudes():
                     st.rerun()
 
     # -------------------------
-    # acciones contabilidad (dispersión)
+    # DISPERSIÓN (usuarios asignados en informar_a)
     # -------------------------
-    puede_accion_conta = is_conta and estatus_actual == "autorizada"
-    puede_dispersion = (is_conta or is_compras) and estatus_actual == "autorizada"
+    informar_rows = get_conceptos_informar_por_solicitud_ctrl(int(sel_id)) if sel_id else []
+    conceptos_informar = _agrupar_informar_por_concepto(informar_rows)
+    current_user_id = int(usuario.get("id") or 0)
+    informar_user_ids = {u["id"] for info in conceptos_informar.values() for u in info["usuarios"]}
 
-    # -------------------------
-    # DISPERSIÓN (contabilidad/compras)
-    # -------------------------
+    puede_dispersion = estatus_actual == "autorizada" and (
+        is_admin or (current_user_id in informar_user_ids)
+    )
+
     if puede_dispersion:
         st.subheader("dispersión")
 
-        # trae flags actuales (necesitas estos ctrl/model abajo)
-        flags = get_dispersion_flags_ctrl(int(sel_id)) or {}
-        gas_ok = bool(flags.get("disp_gasolina"))
-        pre_ok = bool(flags.get("disp_prepagados"))
-        reqs = _analizar_requerimientos_dispersion(detalle)
-        requiere_gasolina = bool(reqs.get("requiere_gasolina"))
-        requiere_prepagados = bool(reqs.get("requiere_prepagados"))
+        if not conceptos_informar:
+            st.info("no hay conceptos con usuarios asignados para dispersión.")
+        else:
+            flags_concepto = get_dispersion_flags_por_concepto_ctrl(int(sel_id)) or {}
+            nuevos_flags: dict[int, bool] = {}
 
-        st.caption(
-            f"requiere gasolina: {'sí' if requiere_gasolina else 'no'} | "
-            f"requiere otros prepagados: {'sí' if requiere_prepagados else 'no'}"
-        )
+            for concepto_id, info in conceptos_informar.items():
+                concepto_nombre = info["concepto_nombre"]
+                is_dispersado = flags_concepto.get(concepto_id, False)
+                assigned_ids = {u["id"] for u in info["usuarios"]}
+                puede_editar = is_admin or (current_user_id in assigned_ids)
 
-        c1, c2 = st.columns(2)
-
-        # antes de los checkbox (después de flags/gas_ok/pre_ok)
-        key_gas = f"disp_chk_gasolina_{int(sel_id)}"
-        key_pre = f"disp_chk_prepagados_{int(sel_id)}"
-
-        with c1:
-            gas2 = st.checkbox(
-                "dispersión gasolina",
-                value=gas_ok,
-                disabled=(not (is_admin or is_conta)),
-                key=key_gas,
-            )
-
-        with c2:
-            pre2 = st.checkbox(
-                "dispersión prepagados",
-                value=pre_ok,
-                disabled=(not (is_admin or is_compras)),
-                key=key_pre,
-            )
-
-        if st.button("guardar dispersión", use_container_width=True, key=f"btn_guardar_disp_{int(sel_id)}"):
-            uid = int(usuario.get("id") or 0)
-            token = st.session_state.get("microsoft_token")
-
-            concepto_notificado = None
-
-            # solo guarda lo que le toca a cada rol (admin puede ambos)
-            if is_admin or is_conta:
-                flags_prev = get_dispersion_flags_ctrl(int(sel_id)) or {}
-                gas_prev = bool(flags_prev.get("disp_gasolina"))
-
-                set_dispersion_flag_ctrl(int(sel_id), "disp_gasolina", bool(gas2), uid)
-
-                if requiere_gasolina and (not gas_prev) and bool(gas2):
-                    concepto_notificado = "gasolina (efecticard)"
-
-            if is_admin or is_compras:
-                flags_prev = get_dispersion_flags_ctrl(int(sel_id)) or {}
-                pre_prev = bool(flags_prev.get("disp_prepagados"))
-
-                set_dispersion_flag_ctrl(int(sel_id), "disp_prepagados", bool(pre2), uid)
-
-                if requiere_prepagados and (not pre_prev) and bool(pre2):
-                    concepto_notificado = "prepagados"
-
-            # re-lee flags desde bd para decidir estatus
-            flags2 = get_dispersion_flags_ctrl(int(sel_id)) or {}
-            gasf = bool(flags2.get("disp_gasolina"))
-            pref = bool(flags2.get("disp_prepagados"))
-
-            ok_gasolina = (not requiere_gasolina) or gasf
-            ok_prepagados = (not requiere_prepagados) or pref
-
-            estatus_final = "autorizada"
-            if ok_gasolina and ok_prepagados:
-                cambiar_estatus_ctrl(int(sel_id), "dispersion", uid)
-                estatus_final = "dispersion"
-
-            ok_mail = None
-            msg_mail = None
-
-            if concepto_notificado:
-                ok_mail, msg_mail = _enviar_dispersion_correo(
-                    solicitud=s,
-                    token=token,
-                    concepto_notificado=concepto_notificado,
-                    estatus_final=estatus_final,
+                nuevos_flags[concepto_id] = st.checkbox(
+                    f"dispersión: {concepto_nombre}",
+                    value=is_dispersado,
+                    disabled=not puede_editar,
+                    key=f"disp_chk_{int(sel_id)}_{concepto_id}",
                 )
 
-            if estatus_final == "dispersion":
-                if concepto_notificado:
-                    if ok_mail:
-                        st.success(
-                            f"dispersión de {concepto_notificado} guardada. "
-                            "estatus actualizado a dispersion y correo enviado al solicitante."
-                        )
-                    else:
-                        st.warning(
-                            f"dispersión de {concepto_notificado} guardada. "
-                            f"estatus actualizado a dispersion, pero no se pudo enviar correo: {msg_mail}"
-                        )
-                else:
-                    st.success("dispersión completada. estatus actualizado a dispersion.")
-            else:
-                faltantes = []
-                if requiere_gasolina and not gasf:
-                    faltantes.append("gasolina")
-                if requiere_prepagados and not pref:
-                    faltantes.append("prepagados")
+            if st.button("guardar dispersión", use_container_width=True, key=f"btn_guardar_disp_{int(sel_id)}"):
+                uid = int(usuario.get("id") or 0)
+                token = st.session_state.get("microsoft_token")
 
-                if concepto_notificado:
-                    if ok_mail:
-                        st.success(
-                            f"dispersión de {concepto_notificado} guardada y correo enviado al solicitante. "
-                            + (
-                                "aún falta completar: " + ", ".join(faltantes)
-                                if faltantes else
-                                "la dispersión fue guardada."
-                            )
-                        )
-                    else:
-                        st.warning(
-                            f"dispersión de {concepto_notificado} guardada, pero no se pudo enviar correo: {msg_mail}. "
-                            + (
-                                "aún falta completar: " + ", ".join(faltantes)
-                                if faltantes else
-                                "la dispersión fue guardada."
-                            )
-                        )
-                else:
-                    if faltantes:
-                        st.success(
-                            "dispersión guardada. aún falta completar: "
-                            + ", ".join(faltantes)
-                        )
-                    else:
-                        st.success("dispersión guardada.")
+                for concepto_id, val in nuevos_flags.items():
+                    info = conceptos_informar[concepto_id]
+                    assigned_ids = {u["id"] for u in info["usuarios"]}
+                    if is_admin or (uid in assigned_ids):
+                        upsert_dispersion_flag_por_concepto_ctrl(int(sel_id), concepto_id, val, uid)
 
-            st.rerun()
+                flags2 = get_dispersion_flags_por_concepto_ctrl(int(sel_id)) or {}
+                all_done = bool(conceptos_informar) and all(
+                    flags2.get(cid, False) for cid in conceptos_informar
+                )
+
+                if all_done:
+                    cambiar_estatus_ctrl(int(sel_id), "dispersion", uid)
+                    ok_mail, msg_mail = _enviar_dispersion_correo(
+                        solicitud=s,
+                        token=token,
+                        concepto_notificado="todos los conceptos",
+                        estatus_final="dispersion",
+                    )
+                    if ok_mail:
+                        st.success("dispersión completada. estatus actualizado a dispersion y correo enviado al solicitante.")
+                    else:
+                        st.warning(f"dispersión completada. estatus actualizado a dispersion, pero no se pudo enviar correo: {msg_mail}")
+                else:
+                    faltantes = [
+                        conceptos_informar[cid]["concepto_nombre"]
+                        for cid in conceptos_informar
+                        if not flags2.get(cid, False)
+                    ]
+                    st.success("dispersión guardada. aún falta completar: " + ", ".join(faltantes))
+
+                st.rerun()
 
     if puede_revision_cierre_jefe:
         st.markdown("### revisión de cierre por jefe de ventas")
@@ -1292,8 +1169,8 @@ def mostrar_tab_autorizaciones_solicitudes():
                     st.session_state["aut_revision_cierre_nonce"] += 1
                     st.rerun()
 
-    if (not puede_accion_jefe) and (not puede_revision_cierre_jefe) and (not puede_accion_conta):
-        if is_conta and estatus_actual != "autorizada":
-            st.info("contabilidad solo puede dispersar solicitudes en estatus autorizada.")
-        elif is_jefe_ventas:
+    if (not puede_accion_jefe) and (not puede_revision_cierre_jefe) and (not puede_dispersion):
+        if is_jefe_ventas:
             st.info("jefe de ventas solo puede autorizar solicitudes enviadas o revisar solicitudes cerradas.")
+        elif estatus_actual == "autorizada" and current_user_id not in informar_user_ids and not is_admin:
+            st.info("no tienes conceptos asignados para dispersar en esta solicitud.")
