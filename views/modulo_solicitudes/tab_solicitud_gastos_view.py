@@ -42,7 +42,8 @@ from controllers.solicitudes_controller import (
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
 
-MODO_PRUEBA_CORREOS = True 
+MODO_PRUEBA_CORREOS = False 
+VALIDAR_FECHA = False
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -1121,19 +1122,19 @@ def mostrar_tab_solicitudes_gastos():
             hoy = date.today()
 
             fi = st.session_state.get("sg_fecha_ini") or hoy
-            if fi < hoy:
-                fi = hoy
-                st.session_state["sg_fecha_ini"] = fi
+            #if fi < hoy:
+            #    fi = hoy
+            #    st.session_state["sg_fecha_ini"] = fi
 
             ff = st.session_state.get("sg_fecha_fin") or fi
-            if ff < fi:
-                ff = fi
-                st.session_state["sg_fecha_fin"] = ff
+            #if ff < fi:
+            #    ff = fi
+            #    st.session_state["sg_fecha_fin"] = ff
 
             fecha_inicio = st.date_input(
                 "fecha inicio",
                 key="sg_fecha_ini",
-                min_value=hoy,
+                #min_value=hoy,
                 disabled=not puede_editar_cabecera,
             )
 
@@ -1143,7 +1144,7 @@ def mostrar_tab_solicitudes_gastos():
             fecha_fin = st.date_input(
                 "fecha fin",
                 key="sg_fecha_fin",
-                min_value=fecha_inicio,
+                #min_value=fecha_inicio,
                 disabled=not puede_editar_cabecera,
             )
         else:
@@ -1165,21 +1166,22 @@ def mostrar_tab_solicitudes_gastos():
             disabled=not puede_editar_cabecera,
         )
 
-        if puede_editar_cabecera and solicitud and solicitud.get("fecha_creacion"):
-            fecha_creacion = solicitud["fecha_creacion"]
-            if isinstance(fecha_creacion, str):
-                fecha_creacion = datetime.fromisoformat(fecha_creacion)
+        if VALIDAR_FECHA and puede_editar_cabecera and solicitud and solicitud.get("fecha_creacion"):
+            if puede_editar_cabecera and solicitud and solicitud.get("fecha_creacion"):
+                fecha_creacion = solicitud["fecha_creacion"]
+                if isinstance(fecha_creacion, str):
+                    fecha_creacion = datetime.fromisoformat(fecha_creacion)
 
-            inicio_datetime = datetime.combine(
-                st.session_state["sg_fecha_ini"],
-                st.session_state["sg_hora_salida"],
-            )
-            if inicio_datetime <= fecha_creacion:
-                st.error(
-                    "la fecha y hora de inicio deben ser posteriores a la fecha de creación "
-                    "de la solicitud."
+                inicio_datetime = datetime.combine(
+                    st.session_state["sg_fecha_ini"],
+                    st.session_state["sg_hora_salida"],
                 )
-                st.stop()
+                if inicio_datetime <= fecha_creacion:
+                    st.error(
+                        "la fecha y hora de inicio deben ser posteriores a la fecha de creación "
+                        "de la solicitud."
+                    )
+                    st.stop()
 
     if fecha_inicio > fecha_fin:
         st.error("fecha inicio no puede ser mayor a fecha fin")
