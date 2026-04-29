@@ -26,7 +26,6 @@ def mostrar_tab_catalogo_conceptos():
 
     ver_inactivos = st.checkbox("ver inactivos", value=False, key="cg_ver_inactivos")
 
-    # Cargar usuarios activos para el multiselect
     usuarios_activos = get_usuarios_activos_ctrl()
     nombres_validos = [u["nombre"] for u in usuarios_activos]
     nombre_a_id: dict[str, int] = {u["nombre"]: u["id"] for u in usuarios_activos}
@@ -57,14 +56,19 @@ def mostrar_tab_catalogo_conceptos():
     df["prepago"] = df["prepago"].fillna(0).astype(int).astype(bool)
     df["activo"] = df["activo"].fillna(1).astype(int).astype(bool)
     df["comprobante"] = df["comprobante"].fillna(0).astype(int).astype(bool)
-    # Convertir cadena separada por comas a lista para ListColumn (display-only)
     df["usuarios_informar"] = df["usuarios_informar"].fillna("").apply(
         lambda x: [n.strip() for n in str(x).split(",") if n.strip()] if x else []
     )
 
-    st.caption("edita conceptos y guarda · los usuarios a informar se gestionan en la sección inferior")
+    # Restaurar checkbox de selección desde session_state
+    sel_concepto_id: int | None = st.session_state.get("cg_editar_concepto_id")
+    df["_sel"] = df["id"].apply(
+        lambda x: bool(pd.notna(x) and sel_concepto_id is not None and int(x) == sel_concepto_id)
+    )
+
+    st.caption("edita conceptos · activa ✏️ en una fila para gestionar usuarios a informar in-place")
     edited = st.data_editor(
-        df[["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo", "usuarios_informar"]],
+        df[["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo", "usuarios_informar", "_sel"]],
         hide_index=True,
         use_container_width=True,
         num_rows="dynamic",
@@ -79,10 +83,34 @@ def mostrar_tab_catalogo_conceptos():
             "activo": st.column_config.CheckboxColumn("activo"),
             "usuarios_informar": st.column_config.ListColumn(
                 "usuarios a informar",
-                help="Usuarios que recibirán notificación al usar este concepto (editar en la sección inferior)",
+                help="Activa ✏️ en la fila para editar los usuarios asignados",
+            ),
+            "_sel": st.column_config.CheckboxColumn(
+                "✏️ usuarios",
+                help="Activa para editar los usuarios a informar de este concepto",
             ),
         },
     )
+
+    # Detectar cambio de selección en el checkbox ✏️
+    if "_sel" in edited.columns:
+        prev_sel = st.session_state.get("cg_editar_concepto_id")
+        checked_ids = [
+            int(r["id"])
+            for _, r in edited.iterrows()
+            if r.get("_sel") is True and pd.notna(r.get("id"))
+        ]
+
+        if not checked_ids:
+            if prev_sel is not None:
+                st.session_state.pop("cg_editar_concepto_id", None)
+                st.rerun()
+        else:
+            new_ids = [i for i in checked_ids if i != prev_sel]
+            target_id = new_ids[0] if new_ids else checked_ids[0]
+            if target_id != prev_sel:
+                st.session_state["cg_editar_concepto_id"] = target_id
+                st.rerun()
 
     c1, c2, c3 = st.columns([2, 2, 3])
 
@@ -141,53 +169,46 @@ def mostrar_tab_catalogo_conceptos():
     with c3:
         st.caption("nota: eliminar = desactivar (activo=0).")
 
-    # ── Gestión de usuarios a informar ─────────────────────────────────────
-    st.divider()
-    st.subheader("usuarios a informar por concepto")
+    # ── Multiselect in-place de usuarios a informar ──────────────────────────
+    sel_id: int | None = st.session_state.get("cg_editar_concepto_id")
+    conceptos_con_id = edited[edited["id"].notna()].copy()
 
-    conceptos_con_id = df[df["id"].notna()].copy()
-    if conceptos_con_id.empty:
-        st.info("Guarda primero los conceptos para poder asignar usuarios.")
-        return
+    if sel_id is not None and not conceptos_con_id.empty:
+        mask = conceptos_con_id["id"].apply(lambda x: pd.notna(x) and int(x) == sel_id)
+        matching = conceptos_con_id[mask]
 
-    # Construir opciones para el selectbox
-    opciones_concepto: dict[str, int] = {
-        f"[{int(row['id'])}] {row['concepto']}": int(row["id"])
-        for _, row in conceptos_con_id.iterrows()
-    }
+        if not matching.empty:
+            concepto_nombre = str(matching.iloc[0].get("concepto") or "")
+            current_cell = matching.iloc[0].get("usuarios_informar")
+            current_names: list[str] = []
+            if isinstance(current_cell, list):
+                current_names = [n for n in current_cell if n in nombre_a_id]
 
-    concepto_label = st.selectbox(
-        "concepto",
-        options=list(opciones_concepto.keys()),
-        key="cg_sel_concepto",
-    )
-    concepto_id_sel: int = opciones_concepto[concepto_label]
+            st.divider()
+            st.caption(f"usuarios a informar · **{concepto_nombre}** (id {sel_id})")
 
-    # Obtener usuarios actuales del concepto seleccionado (desde df cargado)
-    mask = conceptos_con_id["id"].apply(
-        lambda x: int(x) == concepto_id_sel if pd.notna(x) else False
-    )
-    current_cell = conceptos_con_id.loc[mask, "usuarios_informar"].values
-    current_names: list[str] = []
-    if len(current_cell) > 0 and isinstance(current_cell[0], list):
-        # Solo incluir nombres que existan en el catálogo oficial
-        current_names = [n for n in current_cell[0] if n in nombre_a_id]
+            seleccionados: list[str] = st.multiselect(
+                "seleccionar usuarios",
+                options=nombres_validos,
+                default=current_names,
+                key=f"cg_multiselect_{sel_id}",
+                help="Solo se muestran usuarios activos del sistema",
+            )
 
-    seleccionados: list[str] = st.multiselect(
-        "seleccionar usuarios",
-        options=nombres_validos,
-        default=current_names,
-        key=f"cg_multiselect_{concepto_id_sel}",
-        help="Solo se muestran usuarios activos del sistema",
-    )
-
-    if st.button("guardar usuarios a informar", key="cg_save_informar"):
-        # Construir IDs directamente desde el lookup (validación implícita)
-        ids_sel = [nombre_a_id[n] for n in seleccionados if n in nombre_a_id]
-        res = sync_usuarios_concepto_ctrl(concepto_id_sel, ids_sel)
-        if res.get("ok"):
-            st.success("usuarios actualizados")
-            st.session_state.pop("cg_editor", None)
-            st.rerun()
-        else:
-            st.error(res.get("msg", "error al actualizar usuarios"))
+            col_save, col_cancel = st.columns([3, 1])
+            with col_save:
+                if st.button("guardar usuarios a informar", key="cg_save_informar", use_container_width=True):
+                    ids_sel = [nombre_a_id[n] for n in seleccionados if n in nombre_a_id]
+                    res = sync_usuarios_concepto_ctrl(sel_id, ids_sel)
+                    if res.get("ok"):
+                        st.success("usuarios actualizados")
+                        st.session_state.pop("cg_editor", None)
+                        st.rerun()
+                    else:
+                        st.error(res.get("msg", "error al actualizar usuarios"))
+            with col_cancel:
+                if st.button("cancelar", key="cg_cancel_informar", use_container_width=True):
+                    st.session_state.pop("cg_editar_concepto_id", None)
+                    st.rerun()
+    else:
+        st.caption("activa ✏️ en una fila de la tabla para editar usuarios a informar.")
