@@ -8,7 +8,8 @@ from controllers.solicitudes_controller import (
     listar_conceptos_catalogo_ctrl,
     upsert_concepto_catalogo_ctrl,
     desactivar_conceptos_catalogo_ctrl,
-    sync_usuarios_concepto_por_texto_ctrl,
+    get_usuarios_activos_ctrl,
+    sync_usuarios_concepto_ctrl,
 )
 
 
@@ -24,6 +25,11 @@ def mostrar_tab_catalogo_conceptos():
         return
 
     ver_inactivos = st.checkbox("ver inactivos", value=False, key="cg_ver_inactivos")
+
+    # Cargar usuarios activos para el multiselect
+    usuarios_activos = get_usuarios_activos_ctrl()
+    nombres_validos = [u["nombre"] for u in usuarios_activos]
+    nombre_a_id: dict[str, int] = {u["nombre"]: u["id"] for u in usuarios_activos}
 
     rows = listar_conceptos_catalogo_ctrl(incluir_inactivos=ver_inactivos)
     df = pd.DataFrame(rows or [])
@@ -51,9 +57,12 @@ def mostrar_tab_catalogo_conceptos():
     df["prepago"] = df["prepago"].fillna(0).astype(int).astype(bool)
     df["activo"] = df["activo"].fillna(1).astype(int).astype(bool)
     df["comprobante"] = df["comprobante"].fillna(0).astype(int).astype(bool)
-    df["usuarios_informar"] = df["usuarios_informar"].fillna("").astype(str)
+    # Convertir cadena separada por comas a lista para ListColumn (display-only)
+    df["usuarios_informar"] = df["usuarios_informar"].fillna("").apply(
+        lambda x: [n.strip() for n in str(x).split(",") if n.strip()] if x else []
+    )
 
-    st.caption("edita y luego guarda cambios · columna 'usuarios a informar': nombres separados por coma")
+    st.caption("edita conceptos y guarda · los usuarios a informar se gestionan en la sección inferior")
     edited = st.data_editor(
         df[["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo", "usuarios_informar"]],
         hide_index=True,
@@ -68,9 +77,9 @@ def mostrar_tab_catalogo_conceptos():
             "prepago": st.column_config.CheckboxColumn("prepago"),
             "comprobante": st.column_config.CheckboxColumn("comprobante"),
             "activo": st.column_config.CheckboxColumn("activo"),
-            "usuarios_informar": st.column_config.TextColumn(
+            "usuarios_informar": st.column_config.ListColumn(
                 "usuarios a informar",
-                help="Nombres separados por coma de los usuarios que recibirán notificación al usar este concepto",
+                help="Usuarios que recibirán notificación al usar este concepto (editar en la sección inferior)",
             ),
         },
     )
@@ -106,17 +115,6 @@ def mostrar_tab_catalogo_conceptos():
 
             res = upsert_concepto_catalogo_ctrl(rows_out, usuario_id=int(usuario.get("id") or 0))
             if res.get("ok"):
-                # Sync usuarios_informar para filas con ID existente
-                for r in edited.to_dict(orient="records"):
-                    rid = r.get("id")
-                    try:
-                        rid = None if pd.isna(rid) else int(rid)
-                    except Exception:
-                        rid = None
-                    if rid:
-                        texto = str(r.get("usuarios_informar") or "")
-                        sync_usuarios_concepto_por_texto_ctrl(rid, texto)
-
                 st.success(res.get("msg", "guardado"))
                 st.session_state.pop("cg_editor", None)
                 st.rerun()
@@ -142,3 +140,54 @@ def mostrar_tab_catalogo_conceptos():
 
     with c3:
         st.caption("nota: eliminar = desactivar (activo=0).")
+
+    # ── Gestión de usuarios a informar ─────────────────────────────────────
+    st.divider()
+    st.subheader("usuarios a informar por concepto")
+
+    conceptos_con_id = df[df["id"].notna()].copy()
+    if conceptos_con_id.empty:
+        st.info("Guarda primero los conceptos para poder asignar usuarios.")
+        return
+
+    # Construir opciones para el selectbox
+    opciones_concepto: dict[str, int] = {
+        f"[{int(row['id'])}] {row['concepto']}": int(row["id"])
+        for _, row in conceptos_con_id.iterrows()
+    }
+
+    concepto_label = st.selectbox(
+        "concepto",
+        options=list(opciones_concepto.keys()),
+        key="cg_sel_concepto",
+    )
+    concepto_id_sel: int = opciones_concepto[concepto_label]
+
+    # Obtener usuarios actuales del concepto seleccionado (desde df cargado)
+    mask = conceptos_con_id["id"].apply(
+        lambda x: int(x) == concepto_id_sel if pd.notna(x) else False
+    )
+    current_cell = conceptos_con_id.loc[mask, "usuarios_informar"].values
+    current_names: list[str] = []
+    if len(current_cell) > 0 and isinstance(current_cell[0], list):
+        # Solo incluir nombres que existan en el catálogo oficial
+        current_names = [n for n in current_cell[0] if n in nombre_a_id]
+
+    seleccionados: list[str] = st.multiselect(
+        "seleccionar usuarios",
+        options=nombres_validos,
+        default=current_names,
+        key=f"cg_multiselect_{concepto_id_sel}",
+        help="Solo se muestran usuarios activos del sistema",
+    )
+
+    if st.button("guardar usuarios a informar", key="cg_save_informar"):
+        # Construir IDs directamente desde el lookup (validación implícita)
+        ids_sel = [nombre_a_id[n] for n in seleccionados if n in nombre_a_id]
+        res = sync_usuarios_concepto_ctrl(concepto_id_sel, ids_sel)
+        if res.get("ok"):
+            st.success("usuarios actualizados")
+            st.session_state.pop("cg_editor", None)
+            st.rerun()
+        else:
+            st.error(res.get("msg", "error al actualizar usuarios"))
