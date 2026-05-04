@@ -38,6 +38,7 @@ from controllers.solicitudes_controller import (
     get_comprobante_detalle_ctrl,
     get_comprobantes_solicitud_ctrl,
     get_correos_usuarios_por_rol_ctrl,
+    eliminar_detalles_sin_monto_ctrl,
 )
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
@@ -51,9 +52,9 @@ UUID_RE = re.compile(
 
 _HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2212"
 
-@st.cache_data(ttl=3600)
-def _get_sepomex_cached():
-    return get_sepomex_ciudades_catalogo_ctrl(limit=20000)
+#@st.cache_data(ttl=3600)
+#def _get_sepomex_cached():
+#    return get_sepomex_ciudades_catalogo_ctrl(limit=20000)
 
 def _get_app_link_cfg():
     base_url = (st.secrets.get("APP_BASE_URL", "") or "").strip()
@@ -655,29 +656,50 @@ def _rol_autorizador_solicitud(solicitud: dict) -> str:
     return ""
 
 
+def _get_dispersion_map_local():
+    from database.conexion import obtener_conexion
+
+    cn = obtener_conexion()
+    out = {}
+
+    try:
+        cur = cn.cursor()
+        cur.execute("select concepto, dispersion from solicitud_concepto_gasto")
+
+        for concepto, dispersion in cur.fetchall():
+            k = str(concepto or "").strip().lower()
+            out[k] = bool(dispersion)
+
+    finally:
+        try:
+            cn.close()
+        except Exception:
+            pass
+
+    return out
+
 def _resolver_estatus_despues_autorizacion_local(solicitud_id: int) -> str:
     detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
-    requiere_gasolina = False
-    requiere_prepagados = False
+    requiere_dispersion = False
+
+    dispersion_map = _get_dispersion_map_local()
 
     for r in detalle_rows:
         concepto = str(r.get("concepto") or "").strip().lower()
         total_xml = _to_float(r.get("total_xml"))
         cantidad = _to_float(r.get("cantidad"))
         precio = _to_float(r.get("precio_unitario"))
+
         monto = total_xml if total_xml > 0 else round(cantidad * precio, 2)
 
         if monto <= 0:
             continue
 
-        if concepto in ("gasolina", "gasolina (efecticard)"):
-            requiere_gasolina = True
-            continue
+        if bool(dispersion_map.get(concepto, False)):
+            requiere_dispersion = True
+            break
 
-        if bool(PREPAGO_MAP.get(concepto, False)):
-            requiere_prepagados = True
-
-    return "autorizada" if (requiere_gasolina or requiere_prepagados) else "dispersion"
+    return "autorizada" if requiere_dispersion else "dispersion"
 
 
 def _correos_unicos_validos(correos: list[str]) -> list[str]:
@@ -953,7 +975,8 @@ def mostrar_tab_solicitudes_gastos():
                 st.rerun()
 
     #sep_rows = get_sepomex_ciudades_catalogo_ctrl(limit=20000) or []
-    sep_rows = _get_sepomex_cached() or []
+    #sep_rows = _get_sepomex_cached() or []
+    sep_rows = []
     sep_opts = [
         (r["d_codigo"], r["d_asenta"], r["d_estado"], r["d_ciudad"])
         for r in sep_rows
@@ -1000,11 +1023,12 @@ def mostrar_tab_solicitudes_gastos():
         )
         st.session_state["sg_clientes_sel"] = []
 
-        ciudades_prev = solicitud.get("ciudades") or ""
-        prev_list = [x.strip() for x in ciudades_prev.replace("\n", ",").split(",") if x.strip()]
-        prev_set = {x.upper() for x in prev_list}
-        default_ciudades = [opt for opt in sep_opts if _to_store(opt).upper() in prev_set]
-        st.session_state["sg_ciudades_sel"] = default_ciudades
+        #ciudades_prev = solicitud.get("ciudades") or ""
+        #prev_list = [x.strip() for x in ciudades_prev.replace("\n", ",").split(",") if x.strip()]
+        #prev_set = {x.upper() for x in prev_list}
+        #default_ciudades = [opt for opt in sep_opts if _to_store(opt).upper() in prev_set]
+        #st.session_state["sg_ciudades_sel"] = default_ciudades
+        st.session_state["sg_ciudades_sel"] = []
         st.session_state["sg_head_loaded_id"] = int(selected_id)
 
     usuarios = get_usuarios_activos_ctrl() or []
@@ -1051,40 +1075,26 @@ def mostrar_tab_solicitudes_gastos():
     c3, c4, c5 = st.columns([3, 1, 1])
 
     with c3:
-        sae_rows = buscar_clientes_sae_ctrl(q="", limit=50)
+        sae_rows = buscar_clientes_sae_ctrl(q="", limit=500)
         sae_opts = []
+        sae_estado_map = {}
+
         for r in sae_rows or []:
             clave = (r.get("clave") or "").strip()
             nombre = (r.get("nombre") or "").strip()
-            if clave and nombre:
-                sae_opts.append(f"{clave} - {nombre}")
-            elif clave:
-                sae_opts.append(clave)
-            elif nombre:
-                sae_opts.append(nombre)
+            estado = (r.get("estado") or "").strip()
+
+            partes = [x for x in [clave, nombre, estado] if x]
+            label = " - ".join(partes)
+
+            if label:
+                sae_opts.append(label)
+                sae_estado_map[label] = estado
 
         st.multiselect(
-            "clientes (selecciona del catálogo si aplica)",
+            "clientes (clave - nombre - estado)",
             options=sae_opts,
             key="sg_clientes_sel",
-            disabled=not puede_editar_cabecera,
-        )
-
-        st.multiselect(
-            "ciudades se muestran por (cp - asentamiento - estado - ciudad)",
-            options=sep_opts,
-            format_func=_fmt_sep,
-            key="sg_ciudades_sel",
-            disabled=not puede_editar_cabecera,
-        )
-
-        ciudades_sel = st.session_state.get("sg_ciudades_sel") or []
-        ciudades = ", ".join(_to_store(opt) for opt in ciudades_sel)
-
-        st.text_area(
-            "clientes (texto libre, separados por coma o enter)",
-            height=90,
-            key="sg_clientes_texto",
             disabled=not puede_editar_cabecera,
         )
 
@@ -1093,6 +1103,24 @@ def mostrar_tab_solicitudes_gastos():
             for x in (st.session_state.get("sg_clientes_sel") or [])
             if str(x).strip()
         ]
+
+        estados_sel = []
+        seen_estados = set()
+        for x in seleccion_norm:
+            estado = sae_estado_map.get(x, "").strip()
+            if estado and estado.lower() not in seen_estados:
+                seen_estados.add(estado.lower())
+                estados_sel.append(estado)
+
+        ciudades = ", ".join(estados_sel)
+
+        st.text_area(
+            "Prospectos o proyectos (escribe libremente, separados por comas o saltos de línea)",
+            height=90,
+            key="sg_clientes_texto",
+            disabled=not puede_editar_cabecera,
+        )
+
         libres = _split_clientes_texto(st.session_state.get("sg_clientes_texto", "") or "")
 
         merged = []
@@ -1122,31 +1150,35 @@ def mostrar_tab_solicitudes_gastos():
             hoy = date.today()
 
             fi = st.session_state.get("sg_fecha_ini") or hoy
-            #if fi < hoy:
-            #    fi = hoy
-            #    st.session_state["sg_fecha_ini"] = fi
+            if VALIDAR_FECHA:
+                if fi < hoy:
+                    fi = hoy
+                    st.session_state["sg_fecha_ini"] = fi
 
             ff = st.session_state.get("sg_fecha_fin") or fi
-            #if ff < fi:
-            #    ff = fi
-            #    st.session_state["sg_fecha_fin"] = ff
+            if VALIDAR_FECHA:
+                if ff < fi:
+                    ff = fi
+                    st.session_state["sg_fecha_fin"] = ff
 
             fecha_inicio = st.date_input(
                 "fecha inicio",
                 key="sg_fecha_ini",
-                #min_value=hoy,
+                min_value=hoy if VALIDAR_FECHA else None,
                 disabled=not puede_editar_cabecera,
             )
 
-            if (st.session_state.get("sg_fecha_fin") or fecha_inicio) < fecha_inicio:
-                st.session_state["sg_fecha_fin"] = fecha_inicio
+            if VALIDAR_FECHA:
+                if (st.session_state.get("sg_fecha_fin") or fecha_inicio) < fecha_inicio:
+                    st.session_state["sg_fecha_fin"] = fecha_inicio
 
             fecha_fin = st.date_input(
                 "fecha fin",
                 key="sg_fecha_fin",
-                #min_value=fecha_inicio,
+                min_value=fecha_inicio if VALIDAR_FECHA else None,
                 disabled=not puede_editar_cabecera,
             )
+
         else:
             fecha_inicio = st.date_input("fecha inicio", key="sg_fecha_ini", disabled=True)
             fecha_fin = st.date_input("fecha fin", key="sg_fecha_fin", disabled=True)
@@ -1299,11 +1331,46 @@ def mostrar_tab_solicitudes_gastos():
                 tipo_aut = _tipo_autorizacion_solicitud(solicitud_actualizada)
                 token = st.session_state.get("microsoft_token")
                 correo_remitente = str(usuario.get("email") or "").strip()
-
+                res_limpia = eliminar_detalles_sin_monto_ctrl(
+                    int(selected_id),
+                    int(usuario["id"]),
+                )
+                if not res_limpia.get("ok"):
+                    st.warning(
+                        "no se pudieron eliminar los conceptos sin monto: "
+                        f"{res_limpia.get('msg', '')}"
+                    )
+                    st.stop()
                 if tipo_aut == "sin_autorizacion":
                     nuevo_estatus = _resolver_estatus_despues_autorizacion_local(int(selected_id))
                     cambiar_estatus_ctrl(int(selected_id), nuevo_estatus, int(usuario["id"]))
-                    st.success(f"estatus actualizado automáticamente a {nuevo_estatus}")
+
+                    mensajes_ok = []
+                    mensajes_warn = []
+
+                    if nuevo_estatus == "autorizada":
+                        ok_disp, msg_disp = _enviar_revision_a_rol_autorizador(
+                            solicitud=solicitud_actualizada,
+                            token=token,
+                            remitente=correo_remitente,
+                            nombre_rol="dispersion compras",
+                        )
+
+                        if ok_disp:
+                            mensajes_ok.append("correo enviado a dispersion compras")
+                        else:
+                            mensajes_warn.append(f"no se pudo enviar correo a dispersion compras: {msg_disp}")
+
+                    if mensajes_ok:
+                        st.success(
+                            f"estatus actualizado automáticamente a {nuevo_estatus}. "
+                            + " | ".join(mensajes_ok)
+                        )
+                    else:
+                        st.success(f"estatus actualizado automáticamente a {nuevo_estatus}")
+
+                    if mensajes_warn:
+                        st.warning(" | ".join(mensajes_warn))
                 else:
                     cambiar_estatus_ctrl(int(selected_id), "enviada", int(usuario["id"]))
                     nombre_rol_aut = _rol_autorizador_solicitud(solicitud_actualizada)
@@ -1758,6 +1825,14 @@ def mostrar_tab_solicitudes_gastos():
         """,
         unsafe_allow_html=True,
     )
+    
+    mostrar_gasto_efectuado = str(estatus_actual or "").strip().lower() != "captura"
+
+    if mostrar_gasto_efectuado:
+        df_show["desviacion"] = (
+            pd.to_numeric(df_show["precio_unitario"], errors="coerce").fillna(0.0)
+            - pd.to_numeric(df_show["importe"], errors="coerce").fillna(0.0)
+        )
 
     ordered_cols = [
         "id",
@@ -1768,6 +1843,15 @@ def mostrar_tab_solicitudes_gastos():
         "pagado_con",
         "concepto",
         "precio_unitario",
+    ]
+
+    if mostrar_gasto_efectuado:
+        ordered_cols += [
+            "importe",
+            "desviacion",
+        ]
+
+    ordered_cols += [
         "uuid",
         "rfce",
         "subtotal_xml_view",
@@ -1790,20 +1874,38 @@ def mostrar_tab_solicitudes_gastos():
         "subtotal_xml",
         "iva_xml",
         "total_xml",
-        "importe",
         "usuario_forma_pago_id",
         "tiene_pdf",
         "total_unidades",
     ]
 
+
     existing_cols = [c for c in ordered_cols if c in df_show.columns]
     remaining_cols = [c for c in df_show.columns if c not in existing_cols]
     df_show = df_show[existing_cols + remaining_cols]
 
-    label_gasto = (
-        "gasto estimado"
-        if str(estatus_actual or "").strip().lower() in ("captura", "rechazada")
-        else "gasto efectuado"
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDataEditor"] [data-testid="stDataFrameResizableColumnHeader"]:has(div[title="pdf"]),
+        div[data-testid="stDataEditor"] [data-testid="stDataFrameResizableColumnHeader"]:has(div[title="UN"]),
+        div[data-testid="stDataEditor"] [data-testid="stDataFrameResizableColumnHeader"]:has(div[title="Prep"]) {
+            width: 55px !important;
+            min-width: 55px !important;
+            max-width: 55px !important;
+        }
+
+        div[data-testid="stDataEditor"] td[aria-colindex="3"],
+        div[data-testid="stDataEditor"] td[aria-colindex="4"],
+        div[data-testid="stDataEditor"] td[aria-colindex="5"] {
+            width: 55px !important;
+            min-width: 55px !important;
+            max-width: 55px !important;
+            text-align: center !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
     edited = st.data_editor(
@@ -1860,16 +1962,24 @@ def mostrar_tab_solicitudes_gastos():
                 min_value=0.0,
                 step=1.0,
             ),
-            #"precio_unitario": st.column_config.NumberColumn(
-            #    "gasto estimado",
-            #    min_value=0.0,
-            #    step=0.01,
-            #    format="%.2f",
-            #),
+           
             "precio_unitario": st.column_config.NumberColumn(
-                label_gasto,
+                "gasto estimado",
                 min_value=0.0,
+                disabled=(str(estatus_actual or "").strip().lower() != "captura"),
                 step=0.01,
+                format="%.2f",
+            ),
+
+            "importe": st.column_config.NumberColumn(
+                "gasto efectuado",
+                min_value=0.0,
+                format="%.2f",
+            ),
+
+            "desviacion": st.column_config.NumberColumn(
+                "desviación",
+                disabled=True,
                 format="%.2f",
             ),
             "receptor": st.column_config.TextColumn("receptor", disabled=True),
@@ -1892,7 +2002,6 @@ def mostrar_tab_solicitudes_gastos():
             "subtotal_xml": None,
             "iva_xml": None,
             "total_xml": None,
-            "importe": None,
             "usuario_forma_pago_id": None,
         },
     )
@@ -2053,10 +2162,13 @@ def mostrar_tab_solicitudes_gastos():
         st.rerun()
 
     df_tot = edited.copy()
-    for col in ["precio_unitario", "total_xml"]:
+    #for col in ["precio_unitario", "total_xml"]:
+    for col in ["precio_unitario", "total_xml", "importe"]:
         if col not in df_tot.columns:
             df_tot[col] = 0
         df_tot[col] = pd.to_numeric(df_tot[col], errors="coerce").fillna(0.0)
+        total_gasto_efectuado = float(df_tot["importe"].sum())
+        total_desviacion = float((df_tot["precio_unitario"] - df_tot["importe"]).sum())
 
     if "uuid" not in df_tot.columns:
         df_tot["uuid"] = ""
@@ -2083,12 +2195,18 @@ def mostrar_tab_solicitudes_gastos():
     )
 
     st.markdown("### resumen de totales")
-    t1, t2, t3, t4, t5 = st.columns(5)
+    if mostrar_gasto_efectuado:
+        t1, t2, t3, t4, t5, t6, t7 = st.columns(7)
+    else:
+        t1, t2, t3, t4, t5 = st.columns(5)
     t1.metric("Total Fiscal", _money_fmt(total_fiscal))
     t2.metric("Total No Fiscal", _money_fmt(total_no_fiscal))
     t3.metric("Total General", _money_fmt(total_general))
     t4.metric("Total Prepago", _money_fmt(total_prepago))
     t5.metric("Total Pagado Vendedor", _money_fmt(total_pagado_vendedor))
+    if mostrar_gasto_efectuado:
+        t6.metric("Total Gasto Efectuado", _money_fmt(total_gasto_efectuado))
+        t7.metric("Desviación", _money_fmt(total_desviacion))
 
     if estatus_actual in ("dispersion", "revision comprobacion"):
 
@@ -2204,6 +2322,7 @@ def mostrar_tab_solicitudes_gastos():
                 r.pop("un_icon", None)
                 r.pop("tiene_pdf", None)
                 r.pop("total_unidades", None)
+                r.pop("desviacion", None)
             
             res = guardar_detalle_ctrl(
                 solicitud_id=int(selected_id),
@@ -2389,21 +2508,6 @@ def mostrar_tab_solicitudes_gastos():
             pd.to_numeric(edited_un["porcentaje"], errors="coerce").fillna(0).sum(),
             6,
         )
-        st.write(f"total porcentaje: {total_pct}")
-        st.write("nota: el total debe ser 100% para que el gasto esté completamente asignado a las unidades de negocio.")
-
-        st.markdown(
-            "<span style='font-size:22px; color:#2563eb; font-weight:600;'>Prorrateo Actual:</span>",
-            unsafe_allow_html=True
-        )
-
-        preview = edited_un.copy()
-        preview["unidad"] = preview["id_unidad"].apply(
-            lambda x: un_map.get(int(x), "")
-            if pd.notna(x) and str(x).strip() != ""
-            else ""
-        )
-        st.dataframe(preview[["unidad", "porcentaje"]], use_container_width=True, hide_index=True)
 
         if st.button("guardar unidades de negocio", key="sg_btn_guardar_un", use_container_width=True, disabled=not puede_guardar_detalle):
             rows_un = edited_un.to_dict(orient="records")
@@ -2444,3 +2548,20 @@ def mostrar_tab_solicitudes_gastos():
 
                 st.success("unidades de negocio guardadas")
                 st.rerun()
+        st.write(f"total porcentaje: {total_pct}")
+        st.write("nota: el total debe ser 100% para que el gasto esté completamente asignado a las unidades de negocio.")
+
+        st.markdown(
+            "<span style='font-size:22px; color:#2563eb; font-weight:600;'>Prorrateo Actual:</span>",
+            unsafe_allow_html=True
+        )
+
+        preview = edited_un.copy()
+        preview["unidad"] = preview["id_unidad"].apply(
+            lambda x: un_map.get(int(x), "")
+            if pd.notna(x) and str(x).strip() != ""
+            else ""
+        )
+        st.dataframe(preview[["unidad", "porcentaje"]], use_container_width=True, hide_index=True)
+
+        

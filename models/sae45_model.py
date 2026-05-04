@@ -726,7 +726,14 @@ def buscar_clientes_sae(secrets, q: str = "", limit: int = 500) -> list[dict]:
             select 
                 c.CLAVE,
                 c.NOMBRE,
-                c.RFC
+                c.RFC, 
+                c.calle as estado,
+                c.municipio,
+                c.estado AS estado_cliente,
+                case when 
+                    c.localidad_envio is null or c.localidad_envio = '' then c.localidad_envio
+                    else calle 
+                end as Envio
             from CLIE01 c
             where c.STATUS <> 'B'
         """.format(limit=limit)
@@ -757,6 +764,9 @@ def buscar_clientes_sae(secrets, q: str = "", limit: int = 500) -> list[dict]:
                 "clave": (d.get("CLAVE") or "").strip(),
                 "nombre": (d.get("NOMBRE") or "").strip(),
                 "rfc": (d.get("RFC") or "").strip(),
+                "calle": (d.get("CALLE") or "").strip(),
+                "municipio": (d.get("MUNICIPIO") or "").strip(),
+                "estado": (d.get("ESTADO") or "").strip(),
             })
         return out
     finally:

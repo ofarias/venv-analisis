@@ -39,25 +39,27 @@ def mostrar_tab_catalogo_conceptos():
                     "cuenta": "",
                     "fiscales": 0,
                     "prepago": 0,
+                    "dispersion": 0,
                     "activo": 1,
                 }
             ]
         )
 
     # normaliza columnas esperadas
-    for c in ["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo"]:
+    for c in ["id", "concepto", "cuenta", "fiscales", "prepago", "dispersion", "comprobante", "activo"]:
         if c not in df.columns:
             df[c] = None
 
     # booleans para edición
     df["fiscales"] = df["fiscales"].fillna(0).astype(int).astype(bool)
     df["prepago"] = df["prepago"].fillna(0).astype(int).astype(bool)
+    df["dispersion"] = df["dispersion"].fillna(0).astype(int).astype(bool)
     df["activo"] = df["activo"].fillna(1).astype(int).astype(bool)
     df["comprobante"] = df["comprobante"].fillna(0).astype(int).astype(bool)
 
     st.caption("edita y luego guarda cambios")
     edited = st.data_editor(
-        df[["id", "concepto", "cuenta", "fiscales", "prepago", "comprobante", "activo"]],
+        df[["id", "concepto", "cuenta", "fiscales", "prepago", "dispersion", "comprobante", "activo"]],
         hide_index=True,
         use_container_width=True,
         num_rows="dynamic",
@@ -68,6 +70,7 @@ def mostrar_tab_catalogo_conceptos():
             "cuenta": st.column_config.TextColumn("cuenta", required=True),
             "fiscales": st.column_config.CheckboxColumn("fiscales"),
             "prepago": st.column_config.CheckboxColumn("prepago"),
+            "dispersion": st.column_config.CheckboxColumn("dispersion"),
             "comprobante": st.column_config.CheckboxColumn("comprobante"),
             "activo": st.column_config.CheckboxColumn("activo"),
         },
@@ -97,6 +100,7 @@ def mostrar_tab_catalogo_conceptos():
                         "cuenta": cuenta,
                         "fiscales": 1 if bool(r.get("fiscales")) else 0,
                         "prepago": 1 if bool(r.get("prepago")) else 0,
+                        "dispersion": 1 if bool(r.get("dispersion")) else 0,
                         "comprobante": 1 if bool(r.get("comprobante")) else 0,
                         "activo": 1 if bool(r.get("activo")) else 0,
                     }

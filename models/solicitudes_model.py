@@ -297,6 +297,7 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
 
           coalesce(scg.fiscales, 0) as fiscales,
           coalesce(scg.prepago, 0) as prepago,
+          coalesce(scg.dispersion, 0) as dispersion,
           coalesce(scg.comprobante, 0) as comprobante,
 
           case
@@ -352,7 +353,7 @@ def get_conceptos_gasto_rows(activo: int = 1):
     cur = conn.cursor(dictionary=True)
     cur.execute(
         """
-        select id, concepto, cuenta, prepago, fiscales, comprobante
+        select id, concepto, cuenta, prepago, dispersion, fiscales, comprobante
         from solicitud_concepto_gasto
         where (%s is null) or (activo = %s)
         order by concepto
@@ -700,7 +701,7 @@ def get_conceptos_catalogo_rows(incluir_inactivos: bool = False):
     if incluir_inactivos:
         cur.execute(
             """
-            select id, concepto, cuenta, fiscales, prepago, comprobante, activo, created_at, updated_at
+            select id, concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo, created_at, updated_at
             from solicitud_concepto_gasto
             order by id
             """
@@ -708,7 +709,7 @@ def get_conceptos_catalogo_rows(incluir_inactivos: bool = False):
     else:
         cur.execute(
             """
-            select id, concepto, cuenta, fiscales, prepago, comprobante, activo, created_at, updated_at
+            select id, concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo, created_at, updated_at
             from solicitud_concepto_gasto
             where activo = 1
             order by id
@@ -741,16 +742,17 @@ def upsert_concepto_catalogo_rows(rows: list[dict], usuario_id: int):
             cuenta = (r.get("cuenta") or "").strip()
             fiscales = int(r.get("fiscales") or 0)
             prepago = int(r.get("prepago") or 0)
+            dispersion = int(r.get("dispersion") or 0)
             activo = int(r.get("activo") or 0)
             comprobante = int(r.get("comprobante") or 0)
 
             if _id is None or _id == 0:
                 cur.execute(
                     """
-                    insert into solicitud_concepto_gasto (concepto, cuenta, fiscales, prepago, comprobante, activo, created_at, updated_at)
-                    values (%s, %s, %s, %s, %s, %s, now(), now())
+                    insert into solicitud_concepto_gasto (concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo, created_at, updated_at)
+                    values (%s, %s, %s, %s, %s, %s, %s, now(), now())
                     """,
-                    (concepto, cuenta, fiscales, prepago, comprobante, activo),
+                    (concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo),
                 )
             else:
                 cur.execute(
@@ -760,12 +762,13 @@ def upsert_concepto_catalogo_rows(rows: list[dict], usuario_id: int):
                         cuenta = %s,
                         fiscales = %s,
                         prepago = %s,
+                        dispersion = %s,
                         comprobante = %s,
                         activo = %s,
                         updated_at = now()
                     where id = %s
                     """,
-                    (concepto, cuenta, fiscales, prepago, comprobante, activo, int(_id)),
+                    (concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo, int(_id)),
                 )
 
         conn.commit()
@@ -1204,8 +1207,6 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
                 d.uuid,
                 d.total_xml,
                 d.precio_unitario,
-                d.usuario_forma_pago_id,
-                ufp.cuenta_contable as cuenta_pago,
                 coalesce(scg.fiscales, 0) as fiscales,
                 case
                     when d.uuid is not null and trim(d.uuid) <> '' and exists (
@@ -1229,8 +1230,6 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
             from solicitudes_detalle d
             left join solicitud_concepto_gasto scg
               on scg.concepto collate utf8mb4_unicode_ci = d.concepto collate utf8mb4_unicode_ci
-            left join usuarios_forma_pago ufp
-                on ufp.id = d.usuario_forma_pago_id
             where d.solicitud_id = %s
             order by d.renglon, d.id
             """,
@@ -1248,43 +1247,27 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
             pass
 
 def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
-    rows = get_validacion_detalle_solicitud_rows(int(solicitud_id)) or []
+    rows = get_validacion_detalle_solicitud_rows(int(solicitud_id))
     errores = []
 
     for r in rows:
         detalle_id = int(r.get("id") or 0)
         concepto = (r.get("concepto") or "").strip()
         uuid = (r.get("uuid") or "").strip()
+        precio_unitario = float(r.get("precio_unitario") or 0)
         fiscales = int(r.get("fiscales") or 0)
         tiene_pdf_uuid = int(r.get("tiene_pdf_uuid") or 0)
         total_unidades = float(r.get("total_unidades") or 0)
         num_unidades = int(r.get("num_unidades") or 0)
-        usuario_forma_pago_id = r.get("usuario_forma_pago_id")
-        cuenta_pago = str(r.get("cuenta_pago") or "").strip()
 
-        try:
-            precio_unitario = float(r.get("precio_unitario") or 0)
-        except Exception:
-            precio_unitario = 0.0
+        requiere_validacion = ((fiscales == 1 and precio_unitario > 0) or bool(uuid))
 
-        try:
-            total_xml = float(r.get("total_xml") or 0)
-        except Exception:
-            total_xml = 0.0
-
-        monto = total_xml if total_xml > 0 else precio_unitario
-
-        if monto <= 0 and not uuid:
+        if not requiere_validacion:
             continue
 
-        if fiscales == 1 and not uuid:
+        if uuid and not tiene_pdf_uuid:
             errores.append(
-                f"detalle {detalle_id} ({concepto}): es fiscal y no tiene UUID capturado"
-            )
-
-        if fiscales == 1 and uuid and not tiene_pdf_uuid:
-            errores.append(
-                f"detalle {detalle_id} ({concepto}): es fiscal y no tiene PDF cargado en DATOSCFD_PDF para el UUID {uuid}"
+                f"detalle {detalle_id} ({concepto}): no tiene PDF cargado en DATOSCFD_PDF para el UUID {uuid}"
             )
 
         if num_unidades <= 0:
@@ -1294,15 +1277,6 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         elif round(total_unidades, 6) != 100.0:
             errores.append(
                 f"detalle {detalle_id} ({concepto}): las unidades suman {total_unidades} y deben sumar 100"
-            )
-
-        if not usuario_forma_pago_id:
-            errores.append(
-                f"detalle {detalle_id} ({concepto}): no tiene forma de pago seleccionada"
-            )
-        elif not cuenta_pago:
-            errores.append(
-                f"detalle {detalle_id} ({concepto}): la forma de pago seleccionada no tiene cuenta contable"
             )
 
     return {
@@ -1315,32 +1289,25 @@ def get_detalle_contabilidad_view(solicitud_id: int):
     conn = obtener_conexion()
     cur = conn.cursor(dictionary=True)
 
-    try:
-        cur.execute(
-            """
-            select *
-            from vw_solicitudes_revision_contabilidad
-            where solicitud_id = %s
-              and (
-                    coalesce(total_xml, 0) > 0
-                 or coalesce(precio_unitario, 0) > 0
-              )
-            order by fecha
-            """,
-            (int(solicitud_id),),
-        )
+    cur.execute(
+        """
+        select *
+        from vw_solicitudes_revision_contabilidad
+        where solicitud_id = %s 
+        and (total_xml > 0 or precio_unitario > 0) 
+        order by fecha
+        """,
+        (int(solicitud_id),),
+    )
 
-        return cur.fetchall() or []
+    rows = cur.fetchall()
 
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
+    cur.close()
+    conn.close()
+
+    return rows
+
+
 
 def get_pdf_by_uuid(uuid: str):
     conn = obtener_conexion()
@@ -1577,5 +1544,48 @@ def get_correos_usuarios_por_rol_model(nombre_rol: str) -> list[str]:
     finally:
         try:
             conn.close()
+        except Exception:
+            pass
+
+def eliminar_detalles_sin_monto_model(solicitud_id: int) -> dict:
+    from database.conexion import obtener_conexion
+
+    cn = obtener_conexion()
+    try:
+        cur = cn.cursor()
+
+        sql = """
+            delete from solicitudes_detalle
+            where solicitud_id = %s
+              and coalesce(precio_unitario, 0) = 0
+              and coalesce(total_xml, 0) = 0
+              and coalesce(importe, 0) = 0
+        """
+
+        cur.execute(sql, (int(solicitud_id),))
+        eliminados = cur.rowcount
+        cn.commit()
+
+        return {
+            "ok": True,
+            "eliminados": eliminados,
+            "msg": f"detalles eliminados: {eliminados}",
+        }
+
+    except Exception as e:
+        try:
+            cn.rollback()
+        except Exception:
+            pass
+
+        return {
+            "ok": False,
+            "eliminados": 0,
+            "msg": str(e),
+        }
+
+    finally:
+        try:
+            cn.close()
         except Exception:
             pass

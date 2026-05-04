@@ -43,11 +43,10 @@ from models.solicitudes_model import (
     get_comprobantes_by_detalle_ids,
     get_comprobantes_by_solicitud,
     get_correos_usuarios_por_rol_model,
+    eliminar_detalles_sin_monto_model,
 )
 
-
 from models.sae45_model import buscar_clientes_sae
-
 
 def _d(x: Any, default: str = "0") -> Decimal:
     if x in (None, ""):
@@ -448,3 +447,6 @@ def get_datoscfd_by_uuids_ctrl(uuids: list[str]) -> list[dict]:
 
 def get_correos_usuarios_por_rol_ctrl(nombre_rol: str) -> list[str]:
     return get_correos_usuarios_por_rol_model(nombre_rol)
+
+def eliminar_detalles_sin_monto_ctrl(solicitud_id: int, usuario_id: int | None = None) -> dict:
+    return eliminar_detalles_sin_monto_model(solicitud_id)
