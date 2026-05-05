@@ -1092,76 +1092,138 @@ def mostrar_tab_autorizaciones_solicitudes():
     # -------------------------
     # acciones contabilidad (dispersión)
     # -------------------------
+    #puede_accion_conta = is_conta and estatus_actual == "autorizada"
+    puede_dispersion = (is_dispersion_compras or is_admin) and estatus_actual == "autorizada"   
     puede_accion_conta = is_conta and estatus_actual == "autorizada"
-    puede_dispersion = (is_dispersion_compras or is_admin) and estatus_actual == "autorizada"
+    # SOLO TE PONGO LA PARTE MODIFICADA (DISPERSIÓN)
+    # pega esto reemplazando tu bloque actual de "DISPERSIÓN (dispersion compras)"
 
     # -------------------------
-    # DISPERSIÓN (dispersion compras)
+    # DISPERSIÓN (compras + gasolina efecticard)
     # -------------------------
+    puede_dispersion = (is_dispersion_compras or is_conta or is_admin) and estatus_actual == "autorizada"
+
     if puede_dispersion:
         st.subheader("dispersión")
 
         flags = get_dispersion_flags_ctrl(int(sel_id)) or {}
-        disp_ok = bool(flags.get("disp_prepagados"))
+
+        disp_compras_ok = bool(flags.get("disp_prepagados"))
+        disp_gasolina_ok = bool(flags.get("disp_gasolina"))
+
         reqs = _analizar_requerimientos_dispersion(detalle)
-        requiere_dispersion = bool(reqs.get("requiere_dispersion"))
-        conceptos_dispersion = ", ".join(reqs.get("conceptos_dispersion") or [])
+        requiere_dispersion_compras = bool(reqs.get("requiere_dispersion"))
+
+        requiere_gasolina_efecticard = False
+        for r in detalle:
+            concepto = str(r.get("concepto") or "").strip().lower()
+            monto = _monto_detalle(r)
+
+            if monto <= 0:
+                continue
+
+            if concepto == "gasolina (efecticard)":
+                requiere_gasolina_efecticard = True
+                break
 
         st.caption(
-            f"requiere dispersión: {'sí' if requiere_dispersion else 'no'}"
-            + (f" | conceptos: {conceptos_dispersion}" if conceptos_dispersion else "")
+            f"requiere dispersión compras: {'sí' if requiere_dispersion_compras else 'no'} | "
+            f"requiere gasolina efecticard: {'sí' if requiere_gasolina_efecticard else 'no'}"
         )
 
-        disp2 = st.checkbox(
-            "dispersión compras",
-            value=disp_ok,
-            disabled=(not (is_admin or is_dispersion_compras)),
-            key=f"disp_chk_compras_{int(sel_id)}",
-        )
+        puede_dispersar_compras = (is_dispersion_compras or is_admin)
+        puede_dispersar_gasolina = (is_conta or is_admin)
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            disp_compras_2 = st.checkbox(
+                "dispersión compras",
+                value=disp_compras_ok,
+                disabled=not puede_dispersar_compras,
+                key=f"disp_chk_compras_{int(sel_id)}",
+            )
+
+        with c2:
+            disp_gasolina_2 = st.checkbox(
+                "gasolina (efecticard)",
+                value=disp_gasolina_ok,
+                disabled=not puede_dispersar_gasolina,
+                key=f"disp_chk_gasolina_{int(sel_id)}",
+            )
 
         if st.button("guardar dispersión", use_container_width=True, key=f"btn_guardar_disp_{int(sel_id)}"):
             uid = int(usuario.get("id") or 0)
             token = st.session_state.get("microsoft_token")
 
             flags_prev = get_dispersion_flags_ctrl(int(sel_id)) or {}
-            disp_prev = bool(flags_prev.get("disp_prepagados"))
+            disp_compras_prev = bool(flags_prev.get("disp_prepagados"))
+            disp_gasolina_prev = bool(flags_prev.get("disp_gasolina"))
 
-            set_dispersion_flag_ctrl(int(sel_id), "disp_prepagados", bool(disp2), uid)
+            if puede_dispersar_compras:
+                set_dispersion_flag_ctrl(int(sel_id), "disp_prepagados", bool(disp_compras_2), uid)
+
+            if puede_dispersar_gasolina:
+                set_dispersion_flag_ctrl(int(sel_id), "disp_gasolina", bool(disp_gasolina_2), uid)
 
             flags2 = get_dispersion_flags_ctrl(int(sel_id)) or {}
-            dispf = bool(flags2.get("disp_prepagados"))
+            disp_compras_final = bool(flags2.get("disp_prepagados"))
+            disp_gasolina_final = bool(flags2.get("disp_gasolina"))
+
+            ok_compras = (not requiere_dispersion_compras) or disp_compras_final
+            ok_gasolina = (not requiere_gasolina_efecticard) or disp_gasolina_final
 
             estatus_final = "autorizada"
-            if (not requiere_dispersion) or dispf:
+            if ok_compras and ok_gasolina:
                 cambiar_estatus_ctrl(int(sel_id), "dispersion", uid)
                 estatus_final = "dispersion"
 
-            concepto_notificado = None
-            if requiere_dispersion and (not disp_prev) and bool(disp2):
-                concepto_notificado = "dispersion compras"
+            mensajes_ok = []
+            mensajes_warn = []
 
-            ok_mail = None
-            msg_mail = None
-            if concepto_notificado:
+            if requiere_dispersion_compras and (not disp_compras_prev) and disp_compras_final:
                 ok_mail, msg_mail = _enviar_dispersion_correo(
                     solicitud=s,
                     token=token,
-                    concepto_notificado=concepto_notificado,
+                    concepto_notificado="dispersión compras",
                     estatus_final=estatus_final,
                 )
+                if ok_mail:
+                    mensajes_ok.append("correo enviado por dispersión compras")
+                else:
+                    mensajes_warn.append(f"error correo compras: {msg_mail}")
+
+            if requiere_gasolina_efecticard and (not disp_gasolina_prev) and disp_gasolina_final:
+                ok_mail, msg_mail = _enviar_dispersion_correo(
+                    solicitud=s,
+                    token=token,
+                    concepto_notificado="gasolina (efecticard)",
+                    estatus_final=estatus_final,
+                )
+                if ok_mail:
+                    mensajes_ok.append("correo enviado por gasolina efecticard")
+                else:
+                    mensajes_warn.append(f"error correo gasolina: {msg_mail}")
 
             if estatus_final == "dispersion":
-                if concepto_notificado:
-                    if ok_mail:
-                        st.success("dispersión guardada. estatus actualizado a dispersion y correo enviado al solicitante.")
-                    else:
-                        st.warning(f"dispersión guardada. estatus actualizado a dispersion, pero no se pudo enviar correo: {msg_mail}")
-                else:
-                    st.success("dispersión completada. estatus actualizado a dispersion.")
+                st.success("dispersión completada. estatus actualizado a dispersion.")
             else:
-                st.success("dispersión guardada. aún falta completar la dispersión compras.")
+                faltantes = []
+                if requiere_dispersion_compras and not disp_compras_final:
+                    faltantes.append("dispersión compras")
+                if requiere_gasolina_efecticard and not disp_gasolina_final:
+                    faltantes.append("gasolina efecticard")
+
+                st.success("dispersión guardada. falta: " + ", ".join(faltantes))
+
+            if mensajes_ok:
+                st.success(" | ".join(mensajes_ok))
+
+            if mensajes_warn:
+                st.warning(" | ".join(mensajes_warn))
 
             st.rerun()
+
 
     if puede_revision_cierre_jefe:
         st.markdown("### revisión de cierre por jefe de ventas")

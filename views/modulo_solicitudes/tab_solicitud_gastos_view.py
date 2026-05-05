@@ -1966,7 +1966,7 @@ def mostrar_tab_solicitudes_gastos():
             "precio_unitario": st.column_config.NumberColumn(
                 "gasto estimado",
                 min_value=0.0,
-                disabled=(str(estatus_actual or "").strip().lower() != "captura"),
+                disabled=(str(estatus_actual or "").strip().lower() not in ("captura", "rechazada")),
                 step=0.01,
                 format="%.2f",
             ),
@@ -2300,7 +2300,7 @@ def mostrar_tab_solicitudes_gastos():
 
     with csave:
 
-        puede_guardar_detalle = estatus_actual in ("captura", "dispersion", "revision comprobacion")
+        puede_guardar_detalle = estatus_actual in ("captura", "dispersion", "revision comprobacion", "rechazada")
 
         if not puede_guardar_detalle:
             st.warning("solo se permite modificar el detalle en estatus 'captura' o 'dispersion'.")
