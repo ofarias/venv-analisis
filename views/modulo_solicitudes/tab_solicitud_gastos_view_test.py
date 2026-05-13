@@ -43,7 +43,7 @@ from controllers.solicitudes_controller import (
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
 
-MODO_PRUEBA_CORREOS = False 
+MODO_PRUEBA_CORREOS = True 
 VALIDAR_FECHA = False
 
 UUID_RE = re.compile(
@@ -658,19 +658,24 @@ def _rol_autorizador_solicitud(solicitud: dict) -> str:
 
 def _get_dispersion_map_local():
     from database.conexion import obtener_conexion
+
     cn = obtener_conexion()
     out = {}
+
     try:
         cur = cn.cursor()
         cur.execute("select concepto, dispersion from solicitud_concepto_gasto")
+
         for concepto, dispersion in cur.fetchall():
             k = str(concepto or "").strip().lower()
             out[k] = bool(dispersion)
+
     finally:
         try:
             cn.close()
         except Exception:
             pass
+
     return out
 
 def _resolver_estatus_despues_autorizacion_local(solicitud_id: int) -> str:
@@ -1824,23 +1829,10 @@ def mostrar_tab_solicitudes_gastos():
     mostrar_gasto_efectuado = str(estatus_actual or "").strip().lower() != "captura"
 
     if mostrar_gasto_efectuado:
-        #df_show["desviacion"] = (
-        #    pd.to_numeric(df_show["precio_unitario"], errors="coerce").fillna(0.0)
-        #    - pd.to_numeric(df_show["importe"], errors="coerce").fillna(0.0)
-        #)
-        monto_real = df_show.apply(
-           lambda r: _to_float(r.get("total_xml"))
-            #if int(r.get("fiscales") or 0) == 1
-            if _to_int(r.get("fiscales")) == 1
-            else _to_float(r.get("importe")),
-            axis=1,
-        )
-
         df_show["desviacion"] = (
             pd.to_numeric(df_show["precio_unitario"], errors="coerce").fillna(0.0)
-            - monto_real
+            - pd.to_numeric(df_show["importe"], errors="coerce").fillna(0.0)
         )
-
 
     ordered_cols = [
         "id",
@@ -2170,83 +2162,61 @@ def mostrar_tab_solicitudes_gastos():
         st.rerun()
 
     df_tot = edited.copy()
-    #for col in ["precio_unitario", "total_xml"]:
-    for col in ["precio_unitario", "total_xml", "importe"]:
+
+    for col in ["precio_unitario", "total_xml", "importe", "fiscales"]:
         if col not in df_tot.columns:
             df_tot[col] = 0
         df_tot[col] = pd.to_numeric(df_tot[col], errors="coerce").fillna(0.0)
-        total_gasto_efectuado = float(df_tot["importe"].sum())
-        total_gasto_estimado = float(df_tot["precio_unitario"].sum())
-        #df_tot["monto_real_desviacion"] = df_tot.apply(
-        #    lambda r: _to_float(r.get("total_xml"))
-        #    if int(r.get("fiscales") or 0) == 1
-        #    else _to_float(r.get("importe")),
-        #    axis=1,
-        #)
-        df_tot["monto_real_desviacion"] = df_tot.apply(
-            lambda r: _to_float(r.get("total_xml"))
-            if _to_int(r.get("fiscales")) == 1
-            else _to_float(r.get("importe")),
-            axis=1,
-        )
 
-        total_desviacion = float(
-            (df_tot["precio_unitario"] - df_tot["monto_real_desviacion"]).sum()
-        )
-        #total_desviacion = float((df_tot["precio_unitario"] - df_tot["importe"]).sum())
-
-    if "uuid" not in df_tot.columns:
-        df_tot["uuid"] = ""
     if "concepto" not in df_tot.columns:
         df_tot["concepto"] = ""
 
-    df_tot["tiene_uuid"] = df_tot["uuid"].apply(_has_uuid)
+    df_tot["es_fiscal"] = df_tot["fiscales"].astype(int) == 1
     df_tot["es_prepago"] = df_tot["concepto"].apply(_is_prepago)
 
-    total_fiscal = float(df_tot.loc[df_tot["tiene_uuid"], "total_xml"].sum())
-    total_no_fiscal = float(df_tot.loc[~df_tot["tiene_uuid"], "precio_unitario"].sum())
-    
-    #total_general = total_fiscal + total_no_fiscal
-    
-    if mostrar_gasto_efectuado:
-        total_general = total_fiscal + total_gasto_efectuado
-        total_prepago = float(
-            df_tot.loc[df_tot["es_prepago"]].apply(
-                lambda r: float(r["total_xml"]) if r["tiene_uuid"] else float(r["importe"]),
-                axis=1,
-            ).sum()
-        )
-    else:
-        total_general = total_fiscal + total_no_fiscal
-        total_prepago = float(
-            df_tot.loc[df_tot["es_prepago"]].apply(
-                lambda r: float(r["total_xml"]) if r["tiene_uuid"] else float(r["precio_unitario"]),
-                axis=1,
-            ).sum()
-        )
-        
-    total_pagado_vendedor = float(
-        df_tot.loc[~df_tot["es_prepago"]].apply(
-            lambda r: float(r["total_xml"]) if r["tiene_uuid"] else float(r["precio_unitario"]),
-            axis=1,
-        ).sum()
-    )
+    total_solicitado = float(df_tot["precio_unitario"].sum())
 
-    st.markdown("### resumen de totales")
-    if mostrar_gasto_efectuado:
-        t1, t2, t3, t4, t5, t6, t7 = st.columns(7)
-        #t1, t2, t3, t4, t5, t6, t7 = st.columns(7)
-    else:
+    if estatus_actual == "captura":
+        df_tot["monto_resumen"] = df_tot["precio_unitario"]
+
+        total_fiscal = float(df_tot.loc[df_tot["es_fiscal"], "monto_resumen"].sum())
+        total_no_fiscal = float(df_tot.loc[~df_tot["es_fiscal"], "monto_resumen"].sum())
+        total_general = float(df_tot["monto_resumen"].sum())
+        total_prepago = float(df_tot.loc[df_tot["es_prepago"], "monto_resumen"].sum())
+        total_pagado_vendedor = float(df_tot.loc[~df_tot["es_prepago"], "monto_resumen"].sum())
+
+        st.markdown("### resumen de totales")
         t1, t2, t3, t4, t5 = st.columns(5)
-    t1.metric("Total Fiscal", _money_fmt(total_fiscal))
-    t2.metric("Total No Fiscal", _money_fmt(total_no_fiscal))
-    t3.metric("Total Prepago", _money_fmt(total_prepago))
-    t4.metric("Total Pagado Vendedor", _money_fmt(total_pagado_vendedor))
-    t5.metric("Total General", _money_fmt(total_general))
+        t1.metric("Total Fiscal", _money_fmt(total_fiscal))
+        t2.metric("Total No Fiscal", _money_fmt(total_no_fiscal))
+        t3.metric("Total General", _money_fmt(total_general))
+        t4.metric("Total Prepago", _money_fmt(total_prepago))
+        t5.metric("Total Pagado Vendedor", _money_fmt(total_pagado_vendedor))
+    else:
+        df_tot["monto_comprobado"] = df_tot.apply(
+            lambda r: float(r["total_xml"]) if bool(r["es_fiscal"]) else float(r["importe"]),
+            axis=1,
+        )
+        df_tot["desviacion"] = df_tot["precio_unitario"] - df_tot["monto_comprobado"]
 
-    if mostrar_gasto_efectuado:
-        t6.metric("Total Estimado", _money_fmt(total_gasto_estimado))
-        t7.metric("Desviación", _money_fmt(total_desviacion))
+        total_fiscal = float(df_tot.loc[df_tot["es_fiscal"], "monto_comprobado"].sum())
+        total_no_fiscal = float(df_tot.loc[~df_tot["es_fiscal"], "monto_comprobado"].sum())
+        total_general = float(df_tot["monto_comprobado"].sum())
+        total_prepago = float(df_tot.loc[df_tot["es_prepago"], "monto_comprobado"].sum())
+        total_pagado_vendedor = float(df_tot.loc[~df_tot["es_prepago"], "monto_comprobado"].sum())
+        total_desviacion = float(df_tot["desviacion"].sum())
+
+        st.markdown("### resumen de totales")
+        t1, t2, t3, t4 = st.columns(4)
+        t5, t6, t7 = st.columns(3)
+
+        t1.metric("Total Comprobado Fiscal", _money_fmt(total_fiscal))
+        t2.metric("Total Comprobado No Fiscal", _money_fmt(total_no_fiscal))
+        t3.metric("Total Comprobado General", _money_fmt(total_general))
+        t4.metric("Total Comprobado Prepago", _money_fmt(total_prepago))
+        t5.metric("Total Comprobado Pagado Vendedor", _money_fmt(total_pagado_vendedor))
+        t6.metric("Total Solicitado", _money_fmt(total_solicitado))
+        t7.metric("Total Desviación", _money_fmt(total_desviacion))
 
     if estatus_actual in ("dispersion", "revision comprobacion"):
 
@@ -2352,7 +2322,6 @@ def mostrar_tab_solicitudes_gastos():
                 disabled=not puede_guardar_detalle
             ):
             rows_out = edited.to_dict(orient="records")
-            
             for r in rows_out:
                 r.pop("pagado_con", None)
                 r.pop("subtotal_xml_view", None)

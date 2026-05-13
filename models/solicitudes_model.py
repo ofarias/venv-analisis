@@ -643,7 +643,7 @@ def upsert_detalle_rows(
     except Exception as e:
         msg = str(e).lower()
         if "duplicate" in msg and ("uk_solicitudes_detalle_uuid" in msg or "uuid" in msg):
-            raise ValueError("no se puede guardar: el uuid ya fue usado en otra solicitud.") from e
+            raise ValueError(f"no se puede guardar: el uuid {uuid} ya fue usado en otra solicitud.") from e
         raise
     finally:
         try:
@@ -1226,10 +1226,14 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
                     select count(*)
                     from solicitudes_detalle_un u
                     where u.solicitud_detalle_id = d.id
-                ), 0) as num_unidades
+                ), 0) as num_unidades,
+                d.usuario_forma_pago_id,
+                up.cuenta_contable as forma_pago_cuenta_contable
             from solicitudes_detalle d
             left join solicitud_concepto_gasto scg
               on scg.concepto collate utf8mb4_unicode_ci = d.concepto collate utf8mb4_unicode_ci
+            left join usuarios_forma_pago up
+              on up.id = d.usuario_forma_pago_id
             where d.solicitud_id = %s
             order by d.renglon, d.id
             """,
@@ -1259,8 +1263,10 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         tiene_pdf_uuid = int(r.get("tiene_pdf_uuid") or 0)
         total_unidades = float(r.get("total_unidades") or 0)
         num_unidades = int(r.get("num_unidades") or 0)
+        forma_pago = int(r.get("usuario_forma_pago_id") or 0)
+        cuenta_contable_forma_pago = (r.get("forma_pago_cuenta_contable") or "").strip() or ""
 
-        requiere_validacion = ((fiscales == 1 and precio_unitario > 0) or bool(uuid))
+        requiere_validacion = ((fiscales == 1 and precio_unitario > 0) or bool(uuid) or num_unidades <= 0 or forma_pago <= 0 or cuenta_contable_forma_pago == "")
 
         if not requiere_validacion:
             continue
@@ -1278,6 +1284,16 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
             errores.append(
                 f"detalle {detalle_id} ({concepto}): las unidades suman {total_unidades} y deben sumar 100"
             )
+        
+        if forma_pago <= 0:
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): no tiene forma de pago seleccionada"
+            )
+        
+        if cuenta_contable_forma_pago == "":
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): la forma de pago no tiene cuenta contable asignada"
+            )
 
     return {
         "ok": len(errores) == 0,
@@ -1293,8 +1309,7 @@ def get_detalle_contabilidad_view(solicitud_id: int):
         """
         select *
         from vw_solicitudes_revision_contabilidad
-        where solicitud_id = %s 
-        and (total_xml > 0 or precio_unitario > 0) 
+        where solicitud_id = %s
         order by fecha
         """,
         (int(solicitud_id),),

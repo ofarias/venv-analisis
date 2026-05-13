@@ -1990,12 +1990,17 @@ def insertar_poliza_solicitud_gasto_desglosada(
         secrets,
         debug: bool = False,
     ) -> dict:
+    #st.write(f"Solicitud: {solicitud}")
+    #st.stop()
     try:
         if not detalle:
             return {"ok": False, "msg": "no hay detalle para generar la póliza"}
 
-        fecha_src = detalle[0].get("fecha") or solicitud.get("fecha_inicio") or datetime.now()
+        #fecha_src = detalle[0].get("fecha") or solicitud.get("fecha_inicio") or datetime.now()
+        #fecha = _as_date(fecha_src)
+        fecha_src = solicitud.get("fecha_inicio")
         fecha = _as_date(fecha_src)
+
         periodo, ejercicio = _periodo_y_ejercicio(fecha)
         tipo = "Dr"
 

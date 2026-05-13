@@ -552,7 +552,8 @@ def _autorizar_solicitud_y_notificar(*, solicitud: dict, solicitud_id: int, usua
         if str(x).strip()
     ]
 
-    nuevo_estatus = "autorizada" if requiere_dispersion else "dispersion"
+    #nuevo_estatus = "autorizada" if requiere_dispersion else "dispersion"
+    nuevo_estatus = "autorizada" if (requiere_dispersion or requiere_gasolina_efecticard) else "dispersion"
     cambiar_estatus_ctrl(int(solicitud_id), nuevo_estatus, int(usuario_id))
 
     mensajes_ok = []
@@ -983,9 +984,7 @@ def mostrar_tab_autorizaciones_solicitudes():
             df_det["precio_unitario"] = pd.to_numeric(
                 df_det["precio_unitario"], errors="coerce"
             ).fillna(0.0)
-
-            df_det = df_det[df_det["precio_unitario"] > 0].copy()
-
+            #df_det = df_det[df_det["precio_unitario"] > 0].copy()
         if df_det.empty:
             st.info("sin detalle con gasto estimado mayor a 0")
         else:
