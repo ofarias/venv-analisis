@@ -10,8 +10,12 @@ import re
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 
+#from engineio import payload
 import pandas as pd
 import streamlit as st
+## para envio de correo sin auth
+import smtplib
+from email.mime.text import MIMEText
 
 from controllers.datoscfd_controller import registrar_cfdi_desde_xml
 from controllers.sepomex_controller import get_sepomex_ciudades_catalogo_ctrl
@@ -55,6 +59,83 @@ _HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2212"
 #@st.cache_data(ttl=3600)
 #def _get_sepomex_cached():
 #    return get_sepomex_ciudades_catalogo_ctrl(limit=20000)
+
+
+def _enviar_correo_sistema(*, destinatario: str, asunto: str, cuerpo_html: str) -> tuple[bool, str]:
+    try:
+        smtp_host = str(st.secrets.get("SMTP_HOST", "")).strip()
+        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
+        smtp_user = str(st.secrets.get("SMTP_USER", "")).strip()
+        smtp_pass = str(st.secrets.get("SMTP_PASS", "")).strip()
+        smtp_from = str(st.secrets.get("SMTP_FROM", smtp_user)).strip()
+
+        if not smtp_host or not smtp_user or not smtp_pass or not smtp_from:
+            return False, "faltan credenciales SMTP en secrets.toml"
+
+        msg = MIMEText(cuerpo_html, "html", "utf-8")
+        msg["Subject"] = asunto
+        msg["From"] = smtp_from
+        msg["To"] = destinatario
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_from, [destinatario], msg.as_string())
+
+        return True, "correo enviado"
+
+    except Exception as e:
+        return False, str(e)
+
+def _enviar_autorizacion_link_correo_sistema(
+        *,
+        solicitud: dict,
+        estatus_final: str,
+        autoriza_email: str,
+        autoriza_rol: str,
+    ) -> tuple[bool, str]:
+    destinatario = None
+
+    empleado_id = int(solicitud.get("empleado_id") or 0)
+    users = get_usuarios_activos_ctrl() or []
+
+    for u in users:
+        if int(u.get("id") or 0) == empleado_id:
+            destinatario = (
+                str(u.get("email") or "").strip()
+                or str(u.get("correo") or "").strip()
+                or str(u.get("username") or "").strip()
+            )
+            break
+
+    if not destinatario:
+        return False, "no se encontró correo del solicitante"
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor = str(solicitud.get("empleado_nombre") or "").strip()
+
+    asunto = f"solicitud de gastos autorizada {folio}".strip()
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+    <p>tu solicitud de gastos fue autorizada.</p>
+
+    <p>
+        <b>folio:</b> {folio}<br>
+        <b>solicitante:</b> {vendedor}<br>
+        <b>autorizó:</b> {autoriza_rol}<br>
+        <b>correo:</b> {autoriza_email}<br>
+        <b>estatus actual:</b> {estatus_final}
+    </p>
+    </div>
+    """
+
+    return _enviar_correo_sistema(
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+    )
+    
 
 def _get_app_link_cfg():
     base_url = (st.secrets.get("APP_BASE_URL", "") or "").strip()
@@ -104,7 +185,7 @@ def _verify_token(token: str, secret: str) -> dict | None:
         return None
 
 
-def _build_action_links(solicitud_id: int, folio: str | None = None) -> dict:
+def _build_action_links(solicitud_id: int, folio: str | None = None, autoriza_email: str | None = None, autoriza_rol: str | None = None,) -> dict:
     base = _get_app_base_url()
     if not base:
         return {"ok": False, "error": "no existe APP_BASE_URL en secrets.toml"}
@@ -114,7 +195,15 @@ def _build_action_links(solicitud_id: int, folio: str | None = None) -> dict:
         return {"ok": False, "error": "no existe APP_LINK_SECRET en secrets.toml"}
 
     exp = int((datetime.utcnow() + timedelta(hours=72)).timestamp())
-    payload = {"sg_id": int(solicitud_id), "exp": exp, "folio": (folio or "")}
+    #payload = {"sg_id": int(solicitud_id), "exp": exp, "folio": (folio or "")}
+    
+    payload = {
+        "sg_id": int(solicitud_id),
+        "exp": exp,
+        "folio": (folio or ""),
+        "autoriza_email": str(autoriza_email or "").strip(),
+        "autoriza_rol": str(autoriza_rol or "").strip(),
+    }
     t = _sign_payload(payload, secret)
 
     return {
@@ -404,14 +493,15 @@ def _get_prepago_map():
             pass
     return out
 
-
-PREPAGO_MAP = _get_prepago_map()
-
-
 def _icono_prepago(concepto: str) -> str:
+    prepago_map = _get_prepago_map()
     k = (concepto or "").strip().lower()
-    return "💳" if PREPAGO_MAP.get(k, False) else ""
+    return "💳" if prepago_map.get(k, False) else ""
 
+def _is_prepago(concepto: str) -> bool:
+    prepago_map = _get_prepago_map()
+    k = (concepto or "").strip().lower()
+    return bool(prepago_map.get(k, False))
 
 def _has_uuid(v) -> bool:
     return bool(str(v or "").strip())
@@ -422,11 +512,6 @@ def _requiere_validacion_row(r: dict) -> bool:
     uuid_ok = _has_uuid(r.get("uuid"))
 
     return (fiscales == 1 and precio_unitario > 0) or uuid_ok
-
-def _is_prepago(concepto: str) -> bool:
-    k = (concepto or "").strip().lower()
-    return bool(PREPAGO_MAP.get(k, False))
-
 
 def _estatus_badge(e):
     e = (e or "").strip().lower()
@@ -673,29 +758,41 @@ def _get_dispersion_map_local():
             pass
     return out
 
+#def _resolver_estatus_despues_autorizacion_local(solicitud_id: int) -> str:
+#    detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
+#    requiere_dispersion = False
+#
+#    dispersion_map = _get_dispersion_map_local()
+#
+#    for r in detalle_rows:
+#        concepto = str(r.get("concepto") or "").strip().lower()
+#
+#        if bool(dispersion_map.get(concepto, False)):
+#            requiere_dispersion = True
+#            break
+#
+#    return "autorizada" if requiere_dispersion else "dispersion"
+
 def _resolver_estatus_despues_autorizacion_local(solicitud_id: int) -> str:
     detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
-    requiere_dispersion = False
-
     dispersion_map = _get_dispersion_map_local()
+
+    requiere_dispersion_compras = False
+    requiere_gasolina_efecticard = False
 
     for r in detalle_rows:
         concepto = str(r.get("concepto") or "").strip().lower()
-        total_xml = _to_float(r.get("total_xml"))
-        cantidad = _to_float(r.get("cantidad"))
-        precio = _to_float(r.get("precio_unitario"))
-
-        monto = total_xml if total_xml > 0 else round(cantidad * precio, 2)
-
-        if monto <= 0:
-            continue
 
         if bool(dispersion_map.get(concepto, False)):
-            requiere_dispersion = True
-            break
+            requiere_dispersion_compras = True
 
-    return "autorizada" if requiere_dispersion else "dispersion"
+        if concepto in ("gasolina", "gasolina (efecticard)"):
+            requiere_gasolina_efecticard = True
 
+    if requiere_dispersion_compras or requiere_gasolina_efecticard:
+        return "autorizada"
+
+    return "dispersion"
 
 def _correos_unicos_validos(correos: list[str]) -> list[str]:
     out = []
@@ -736,29 +833,6 @@ def _enviar_revision_a_rol_autorizador(*, solicitud: dict, token, remitente: str
     fecha_inicio = str(solicitud.get("fecha_inicio") or "").strip()
     fecha_fin = str(solicitud.get("fecha_fin") or "").strip()
 
-    asunto = f"solicitud de gastos enviada {folio}".strip()
-
-    links = _build_action_links(int(solicitud.get("id") or 0), folio=folio)
-    if links.get("ok"):
-        links_html = f"""
-        <p style="margin:14px 0">
-          <a href="{links['approve']}"
-             style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
-            autorizar
-          </a>
-          <a href="{links['reject']}"
-             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
-            rechazar
-          </a>
-          <a href="{links['view']}"
-             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
-            ver solicitud
-          </a>
-        </p>
-        """
-    else:
-        links_html = "<p><i>no se pudo generar link de autorización.</i></p>"
-
     detalle_rows_mail = get_detalle_ctrl(int(solicitud.get("id") or 0)) or []
     cat_conceptos_mail = get_conceptos_gasto_ctrl(activo=1) or []
     conceptos_prepago = {
@@ -767,30 +841,73 @@ def _enviar_revision_a_rol_autorizador(*, solicitud: dict, token, remitente: str
         if (x.get("concepto") or "").strip() and int(x.get("prepago") or 0) == 1
     }
 
-    cuerpo_html = f"""
-    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
-      <p>se envió una solicitud de gastos y requiere autorización de <b>{nombre_rol}</b>.</p>
-      {links_html}
-      <p>
-        <b>empleado:</b> {empleado_nombre}<br>
-        <b>clientes:</b> {clientes}<br>
-        <b>ciudades:</b> {ciudades}<br>
-        <b>fecha inicio:</b> {fecha_inicio}<br>
-        <b>fecha fin:</b> {fecha_fin}<br>
-        <b>folio:</b> {folio}
-      </p>
-      <p><b>detalle de gastos</b></p>
-      {_detalle_gastos_a_html(detalle_rows_mail, conceptos_prepago)}
-    </div>
-    """
+    asunto = f"solicitud de gastos enviada {folio}".strip()
 
-    return enviar_correo(
-        destinatario=destinatarios,
-        asunto=asunto,
-        cuerpo_html=cuerpo_html,
-        token=token,
-        remitente=remitente,
-    )
+    ok_count = 0
+    errores = []
+
+    for destinatario in destinatarios:
+        links = _build_action_links(
+            int(solicitud.get("id") or 0),
+            folio=folio,
+            autoriza_email=destinatario,
+            autoriza_rol=nombre_rol,
+        )
+
+        if links.get("ok"):
+            links_html = f"""
+            <p style="margin:14px 0">
+              <a href="{links['approve']}"
+                 style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+                autorizar
+              </a>
+              <a href="{links['reject']}"
+                 style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+                rechazar
+              </a>
+              <a href="{links['view']}"
+                 style="display:inline-block;margin-left:10px;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+                ver solicitud
+              </a>
+            </p>
+            """
+        else:
+            links_html = "<p><i>no se pudo generar link de autorización.</i></p>"
+
+        cuerpo_html = f"""
+        <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+          <p>se envió una solicitud de gastos y requiere autorización de <b>{nombre_rol}</b>.</p>
+          {links_html}
+          <p>
+            <b>empleado:</b> {empleado_nombre}<br>
+            <b>clientes:</b> {clientes}<br>
+            <b>ciudades:</b> {ciudades}<br>
+            <b>fecha inicio:</b> {fecha_inicio}<br>
+            <b>fecha fin:</b> {fecha_fin}<br>
+            <b>folio:</b> {folio}
+          </p>
+          <p><b>detalle de gastos</b></p>
+          {_detalle_gastos_a_html(detalle_rows_mail, conceptos_prepago)}
+        </div>
+        """
+
+        ok_mail, msg_mail = enviar_correo(
+            destinatario=destinatario,
+            asunto=asunto,
+            cuerpo_html=cuerpo_html,
+            token=token,
+            remitente=remitente,
+        )
+
+        if ok_mail:
+            ok_count += 1
+        else:
+            errores.append(f"{destinatario}: {msg_mail}")
+
+    if ok_count > 0:
+        return True, f"correo enviado a {ok_count} destinatario(s)"
+
+    return False, " | ".join(errores)
 
 
 def _enviar_cierre_a_rol_autorizador(*, solicitud: dict, token, remitente: str, nombre_rol: str) -> tuple[bool, str]:
@@ -881,10 +998,93 @@ def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token, remitente:
 def mostrar_tab_solicitudes_gastos():
     st.subheader("Solicitudes de gastos")
 
+    qp = st.query_params
+    qp_sg_id = qp.get("sg_id", None)
+    qp_action = (qp.get("action", "") or "").strip().lower()
+    qp_token = (qp.get("t", "") or "").strip()
+
+    if qp_sg_id and qp_token and qp_action == "approve":
+        try:
+            sg_id = int(qp_sg_id)
+        except Exception:
+            sg_id = None
+
+        if sg_id:
+            _, secret = _get_app_link_cfg()
+            payload = _verify_token(qp_token, secret) if secret else None
+
+            if not payload:
+                st.error("link inválido o expirado.")
+                return
+            
+            autoriza_email = str(payload.get("autoriza_email") or "").strip()
+            autoriza_rol = str(payload.get("autoriza_rol") or "").strip()
+            
+            ok_token = False
+            if payload:
+                
+                exp = int(payload.get("exp") or 0)
+                if exp > 0 and int(datetime.utcnow().timestamp()) <= exp:
+                    if int(payload.get("sg_id") or 0) == int(sg_id):
+                        ok_token = True
+
+            if not ok_token:
+                st.error("link inválido o expirado.")
+                return
+
+            solicitud_link = get_solicitud_ctrl(int(sg_id))
+            if not solicitud_link:
+                st.error("no existe la solicitud.")
+                return
+
+            estatus_link = str(solicitud_link.get("estatus") or "").strip().lower()
+
+            if estatus_link != "enviada":
+                st.info(f"la solicitud ya no está pendiente de autorización. estatus actual: {estatus_link}")
+                return
+
+            nuevo_estatus = _resolver_estatus_despues_autorizacion_local(int(sg_id))
+            
+            cambiar_estatus_ctrl(
+                int(sg_id),
+                nuevo_estatus,
+                0,
+                tipo="autorizacion",
+                metodo="link_externo",
+                usuario_nombre=autoriza_rol,
+                usuario_email=autoriza_email,
+                comentario=f"autorizado desde link externo por {autoriza_email}",
+            )
+
+            ok_mail, msg_mail = _enviar_autorizacion_link_correo_sistema(
+                solicitud=solicitud_link,
+                estatus_final=nuevo_estatus,
+                autoriza_email=autoriza_email,
+                autoriza_rol=autoriza_rol,
+            )
+
+            if ok_mail:
+                st.success("correo enviado al solicitante.")
+            else:
+                st.warning(f"solicitud autorizada, pero no se pudo enviar correo: {msg_mail}")
+
+            st.success(
+                f"solicitud autorizada correctamente por "
+                f"{autoriza_rol} ({autoriza_email}). "
+                f"estatus actual: {nuevo_estatus}"
+            )
+            return
+
     usuario = _get_usuario_actual()
     if not usuario:
         st.warning("no hay sesión de usuario en st.session_state['usuario']")
         return
+
+
+    #usuario = _get_usuario_actual()
+    #if not usuario:
+    #    st.warning("no hay sesión de usuario en st.session_state['usuario']")
+    #    return
 
     if st.session_state.pop("sg_reset_form", False):
         keys_to_clear = [
@@ -911,7 +1111,6 @@ def mostrar_tab_solicitudes_gastos():
             "sg_un_editor",
             "sg_detalle_id_un",
             "sg_uploader_archivos",
-            "sg_modo_widget",
             "sg_detalle_id_un",
             "sg_uploader_comprobante_det_0",
         ]
@@ -952,13 +1151,7 @@ def mostrar_tab_solicitudes_gastos():
     st.session_state.setdefault("sg_selected_id", None)
     selected_id = st.session_state.get("sg_selected_id") or None
 
-    modo_widget = st.radio(
-        "modo",
-        options=["crear", "editar"],
-        horizontal=True,
-        key="sg_modo_widget",
-    )
-    modo = "editar" if selected_id else modo_widget
+    modo = "editar" if selected_id else "crear"
 
     solicitud = None
     if modo == "editar" and selected_id:
@@ -1338,7 +1531,15 @@ def mostrar_tab_solicitudes_gastos():
                     st.stop()
                 if tipo_aut == "sin_autorizacion":
                     nuevo_estatus = _resolver_estatus_despues_autorizacion_local(int(selected_id))
-                    cambiar_estatus_ctrl(int(selected_id), nuevo_estatus, int(usuario["id"]))
+                    cambiar_estatus_ctrl(
+                            int(selected_id), 
+                            nuevo_estatus, 
+                            int(usuario["id"]),
+                            tipo="sin_autorizacion",
+                            metodo="app",
+                            usuario_nombre=str(usuario.get("nombre") or ""),
+                            usuario_email=str(usuario.get("email") or ""),
+                            )
 
                     mensajes_ok = []
                     mensajes_warn = []
@@ -1367,7 +1568,15 @@ def mostrar_tab_solicitudes_gastos():
                     if mensajes_warn:
                         st.warning(" | ".join(mensajes_warn))
                 else:
-                    cambiar_estatus_ctrl(int(selected_id), "enviada", int(usuario["id"]))
+                    cambiar_estatus_ctrl(
+                            int(selected_id), 
+                            "enviada", 
+                            int(usuario["id"]),
+                            tipo="envio",
+                            metodo="app",
+                            usuario_nombre=str(usuario.get("nombre") or ""),
+                            usuario_email=str(usuario.get("email") or ""),
+                    )
                     nombre_rol_aut = _rol_autorizador_solicitud(solicitud_actualizada)
 
                     if MODO_PRUEBA_CORREOS:
@@ -2268,7 +2477,15 @@ def mostrar_tab_solicitudes_gastos():
                 correo_remitente = str(usuario.get("email") or "").strip()
 
                 if tipo_aut == "sin_autorizacion":
-                    cambiar_estatus_ctrl(int(selected_id), "contabilidad", int(usuario["id"]))
+                    cambiar_estatus_ctrl(
+                            int(selected_id), 
+                            "contabilidad", 
+                            int(usuario["id"]),
+                            tipo="conta",
+                            metodo="app",
+                            usuario_nombre=str(usuario.get("nombre") or ""),
+                            usuario_email=str(usuario.get("email") or ""),
+                    )
 
                     ok_conta, msg_conta = _enviar_a_contabilidad_revision_correo(
                         solicitud=solicitud_actualizada,
@@ -2284,7 +2501,15 @@ def mostrar_tab_solicitudes_gastos():
                             f"{msg_conta}"
                         )
                 else:
-                    cambiar_estatus_ctrl(int(selected_id), "cerrada", int(usuario["id"]))
+                    cambiar_estatus_ctrl(
+                            int(selected_id), 
+                            "cerrada", 
+                            int(usuario["id"]),
+                            tipo="cerrada",
+                            metodo="app",
+                            usuario_nombre=str(usuario.get("nombre") or ""),
+                            usuario_email=str(usuario.get("email") or ""),
+                        )
                     nombre_rol_aut = _rol_autorizador_solicitud(solicitud_actualizada)
 
                     if MODO_PRUEBA_CORREOS:

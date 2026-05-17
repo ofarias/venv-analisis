@@ -182,6 +182,28 @@ def actualizar_estatus_solicitud(
     cur.close()
     conn.close()
 
+def get_estatus_actual_solicitud(solicitud_id: int) -> Optional[str]:
+    conn = obtener_conexion()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        select estatus
+        from solicitudes
+        where id = %s
+        """,
+        (solicitud_id,),
+    )
+
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        return None
+
+    return str(row[0] or "").strip()
 
 def get_solicitudes_df(
     *,
@@ -1266,10 +1288,21 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         forma_pago = int(r.get("usuario_forma_pago_id") or 0)
         cuenta_contable_forma_pago = (r.get("forma_pago_cuenta_contable") or "").strip() or ""
 
-        requiere_validacion = ((fiscales == 1 and precio_unitario > 0) or bool(uuid) or num_unidades <= 0 or forma_pago <= 0 or cuenta_contable_forma_pago == "")
+        requiere_validacion = (
+                (fiscales == 1) 
+                or 
+                bool(uuid) 
+                or num_unidades <= 0 
+                or forma_pago <= 0 
+                or cuenta_contable_forma_pago == "")
 
         if not requiere_validacion:
             continue
+
+        if fiscales == 1 and not bool(uuid):
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): marcado como gasto fiscal pero no tiene UUID"
+            )
 
         if uuid and not tiene_pdf_uuid:
             errores.append(
@@ -1604,3 +1637,111 @@ def eliminar_detalles_sin_monto_model(solicitud_id: int) -> dict:
             cn.close()
         except Exception:
             pass
+
+def get_estatus_solicitud(solicitud_id: int) -> str | None:
+    cn = obtener_conexion()
+    try:
+        cur = cn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select estatus
+            from solicitudes_gastos
+            where id = %s
+            """,
+            (int(solicitud_id),),
+        )
+        row = cur.fetchone()
+        return row.get("estatus") if row else None
+    finally:
+        cn.close()
+
+def insertar_solicitud_estatus(
+    *,
+    solicitud_id: int,
+    estatus_anterior: Optional[str],
+    estatus_nuevo: str,
+    tipo: Optional[str] = None,
+    metodo: Optional[str] = None,
+    usuario_id: Optional[int] = None,
+    usuario_nombre: Optional[str] = None,
+    usuario_email: Optional[str] = None,
+    comentario: Optional[str] = None,
+) -> int:
+
+    conn = obtener_conexion()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        insert into solicitudes_estatus (
+            solicitud_id,
+            estatus_anterior,
+            estatus_nuevo,
+            tipo,
+            metodo,
+            usuario_id,
+            usuario_nombre,
+            usuario_email,
+            comentario
+        )
+        values (
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s
+        )
+        """,
+        (
+            solicitud_id,
+            estatus_anterior,
+            estatus_nuevo,
+            tipo,
+            metodo,
+            usuario_id,
+            usuario_nombre,
+            usuario_email,
+            comentario,
+        ),
+    )
+
+    nuevo_id = cur.lastrowid
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return int(nuevo_id)
+    
+def listar_solicitud_estatus(solicitud_id: int) -> list[dict]:
+    cn = obtener_conexion()
+    try:
+        cur = cn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select
+                id,
+                solicitud_id,
+                estatus_anterior,
+                estatus_nuevo,
+                tipo,
+                metodo,
+                usuario_id,
+                usuario_nombre,
+                usuario_email,
+                comentario,
+                fecha
+            from solicitudes_estatus
+            where solicitud_id = %s
+            order by fecha asc, id asc
+            """,
+            (int(solicitud_id),),
+        )
+        return cur.fetchall() or []
+    finally:
+        cn.close()

@@ -44,6 +44,8 @@ from models.solicitudes_model import (
     get_comprobantes_by_solicitud,
     get_correos_usuarios_por_rol_model,
     eliminar_detalles_sin_monto_model,
+    get_estatus_actual_solicitud,
+    insertar_solicitud_estatus,
 )
 
 from models.sae45_model import buscar_clientes_sae
@@ -193,11 +195,36 @@ def actualizar_cabecera_ctrl(
     )
 
 
-def cambiar_estatus_ctrl(solicitud_id: int, estatus: str, usuario_id: int) -> None:
+def cambiar_estatus_ctrl(
+        solicitud_id: int,
+        estatus: str,
+        usuario_id: int,
+        *,
+        tipo: str | None = None,
+        metodo: str | None = None,
+        usuario_nombre: str | None = None,
+        usuario_email: str | None = None,
+        comentario: str | None = None,
+    ) -> None:
+
+    estatus_anterior = get_estatus_actual_solicitud(solicitud_id)
+
     actualizar_estatus_solicitud(
         solicitud_id=solicitud_id,
         estatus=estatus,
         actualizado_por=usuario_id,
+    )
+    
+    insertar_solicitud_estatus(
+        solicitud_id=solicitud_id,
+        estatus_anterior=estatus_anterior,
+        estatus_nuevo=estatus,
+        tipo=tipo,
+        metodo=metodo,
+        usuario_id=usuario_id,
+        usuario_nombre=usuario_nombre,
+        usuario_email=usuario_email,
+        comentario=comentario,
     )
 
 

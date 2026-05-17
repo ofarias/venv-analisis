@@ -469,20 +469,16 @@ def _analizar_requerimientos_dispersion(detalle_rows: list[dict]) -> dict:
     conceptos_dispersion = []
     seen = set()
 
+    dispersion_map = _get_dispersion_map()
+
     for r in detalle_rows or []:
         concepto = _norm_text(r.get("concepto"))
-        monto = _monto_detalle(r)
+        #monto = _monto_detalle(r)
 
-        if monto <= 0:
-            continue
+        #if monto <= 0:
+        #    continue
 
-        dispersion = False
-        try:
-            dispersion = bool(DISPERSION_MAP.get(concepto, False))
-        except Exception:
-            dispersion = False
-
-        if dispersion:
+        if bool(dispersion_map.get(concepto, False)):
             requiere_dispersion = True
             if concepto and concepto not in seen:
                 seen.add(concepto)
@@ -533,16 +529,10 @@ def _autorizar_solicitud_y_notificar(*, solicitud: dict, solicitud_id: int, usua
     for r in detalle_rows:
         concepto = str(r.get("concepto") or "").strip().lower()
 
-        total_xml = float(r.get("total_xml") or 0)
-        cantidad = float(r.get("cantidad") or 0)
-        precio = float(r.get("precio_unitario") or 0)
-        monto = total_xml if total_xml > 0 else round(cantidad * precio, 2)
-        if monto <= 0:
-            continue
         if concepto == "gasolina (efecticard)":
             requiere_gasolina_efecticard = True
             break
-
+    
     reqs = _analizar_requerimientos_dispersion(detalle_rows)
 
     requiere_dispersion = bool(reqs.get("requiere_dispersion"))
@@ -552,9 +542,18 @@ def _autorizar_solicitud_y_notificar(*, solicitud: dict, solicitud_id: int, usua
         if str(x).strip()
     ]
 
-    #nuevo_estatus = "autorizada" if requiere_dispersion else "dispersion"
     nuevo_estatus = "autorizada" if (requiere_dispersion or requiere_gasolina_efecticard) else "dispersion"
-    cambiar_estatus_ctrl(int(solicitud_id), nuevo_estatus, int(usuario_id))
+    usuario_actual = st.session_state.get("usuario") or {}
+
+    cambiar_estatus_ctrl(
+        int(solicitud_id), 
+        nuevo_estatus, 
+        int(usuario_id),
+        tipo="autorizacion",
+        metodo="app",
+        usuario_nombre=str(usuario_actual.get("nombre") or ""),
+        usuario_email=str(usuario_actual.get("email") or ""),
+    )
 
     mensajes_ok = []
     mensajes_warn = []
@@ -1063,7 +1062,16 @@ def mostrar_tab_autorizaciones_solicitudes():
                     if not (motivo or "").strip():
                         st.warning("captura el motivo del rechazo.")
                     else:
-                        cambiar_estatus_ctrl(int(sel_id), "rechazada", int(usuario.get("id") or 0))
+                        cambiar_estatus_ctrl(
+                                int(sel_id), 
+                                "rechazada", 
+                                int(usuario.get("id") or 0),
+                                tipo="envio",
+                                metodo="app",
+                                usuario_nombre=str(usuario.get("nombre") or ""),
+                                usuario_email=str(usuario.get("email") or ""),
+                                comentario = motivo.strip(),
+                            )
 
                         token = st.session_state.get("microsoft_token")
                         ok_mail, msg_mail = _enviar_rechazo_correo(
@@ -1174,7 +1182,16 @@ def mostrar_tab_autorizaciones_solicitudes():
 
             estatus_final = "autorizada"
             if ok_compras and ok_gasolina:
-                cambiar_estatus_ctrl(int(sel_id), "dispersion", uid)
+                cambiar_estatus_ctrl(
+                        int(sel_id), 
+                        "dispersion", 
+                        uid,
+                        tipo="dispersion",
+                        metodo="app",
+                        usuario_nombre=str(usuario.get("nombre") or ""),
+                        usuario_email=str(usuario.get("email") or ""),
+
+                    )
                 estatus_final = "dispersion"
 
             mensajes_ok = []
@@ -1231,7 +1248,15 @@ def mostrar_tab_autorizaciones_solicitudes():
 
         with c5:
             if st.button("✅ aprobar cierre", use_container_width=True, key="aut_btn_aprobar_cierre", type="secondary",):
-                cambiar_estatus_ctrl(int(sel_id), "contabilidad", int(usuario.get("id") or 0))
+                cambiar_estatus_ctrl(
+                        int(sel_id), 
+                        "contabilidad", 
+                        int(usuario.get("id") or 0),
+                        tipo="conta",
+                        metodo="app",
+                        usuario_nombre=str(usuario.get("nombre") or ""),
+                        usuario_email=str(usuario.get("email") or ""),
+                )
 
                 token = st.session_state.get("microsoft_token")
 
@@ -1288,7 +1313,16 @@ def mostrar_tab_autorizaciones_solicitudes():
                     if not (comentario or "").strip():
                         st.warning("captura el comentario del rechazo.")
                     else:
-                        cambiar_estatus_ctrl(int(sel_id), "dispersion", int(usuario.get("id") or 0))
+                        cambiar_estatus_ctrl(
+                                int(sel_id), 
+                                "dispersion", 
+                                int(usuario.get("id") or 0),
+                                tipo="conta",
+                                metodo="app",
+                                usuario_nombre=str(usuario.get("nombre") or ""),
+                                usuario_email=str(usuario.get("email") or ""),
+                                comentario=comentario.strip(),
+                            )
 
                         token = st.session_state.get("microsoft_token")
                         ok_mail, msg_mail = _enviar_revision_cierre_rechazada_correo(

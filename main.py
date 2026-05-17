@@ -7,7 +7,14 @@ from logs.logger import registrar_log
 import base64
 import mimetypes
 
-st.set_page_config(layout="wide")
+from views.login_view import mostrar_login
+
+st.set_page_config(
+    page_title="BiotecsaOneCore",
+    page_icon="🧬",   # puedes usar emoji
+    layout="wide",
+)
+#st.set_page_config(layout="wide")
     
 logo_path = "biotecsa.png"
 if os.path.exists(logo_path):
@@ -25,11 +32,11 @@ def _get_modulo_forzado_desde_deeplink() -> str | None:
     token = (qp.get("t") or "").strip()
 
     if sg_id and token:
-        return "solicitudesConta"
+        return "solicitudes"
 
     deeplink_session = st.session_state.get("deeplink_params") or {}
     if deeplink_session.get("sg_id") and deeplink_session.get("t"):
-        return "solicitudesConta"
+        return "solicitudes"
 
     modulo_forzado = st.session_state.get("modulo_forzado")
     if modulo_forzado:
@@ -38,12 +45,23 @@ def _get_modulo_forzado_desde_deeplink() -> str | None:
     return None
 
 
-from views.login_view import mostrar_login
-
-if "usuario" not in st.session_state:
+modulo_forzado = _get_modulo_forzado_desde_deeplink()
+# permitir acceso por deeplink sin login
+if "usuario" not in st.session_state and modulo_forzado != "solicitudes":
     mostrar_login()
 else:
-    usuario = st.session_state["usuario"]
+    if "usuario" not in st.session_state:
+        usuario = {
+            "id": 0,
+            "nombre": "Autorizacion Externa",
+            "roles": ["DEEPLINK"],
+            "rol": "DEEPLINK",
+            "email": "",
+            "estatus": "Activo",
+        }
+    else:
+        usuario = st.session_state["usuario"]
+
     nombre = usuario.get("nombre", "Usuario")
     roles = usuario.get("roles", [])
     estatus = usuario.get("estatus", "")
@@ -94,6 +112,12 @@ else:
         st.rerun()
 
     menu_opciones = {}
+    modulo_forzado = _get_modulo_forzado_desde_deeplink()
+
+    if modulo_forzado == "solicitudes":
+        from views.modulo_solicitudes.solicitudes_gastos_view import mostrar_modulo_solicitudes_gastos
+        mostrar_modulo_solicitudes_gastos()
+        st.stop()
 
     if "SuperAdmin" in roles:
         menu_opciones["Presupuestos Ventas"] = "presupuestos_ventas"
@@ -315,7 +339,7 @@ else:
             from views.modulo_presupuesto_ventas.tab_carga_presupuesto_ventas_view import mostrar_tab_carga_presupuesto_ventas
             mostrar_tab_carga_presupuesto_ventas()
     else:
-        st.warning("⚠️ No tienes roles asignados para acceder a los módulos.")
+        st.warning("⚠️ No tienes roles asignados para acceder a los módulos..")
         ## st.json(roles)
         ## if "usuario" in st.session_state:
         ##     st.write("🧪 Usuario cargado:", st.session_state["usuario"])

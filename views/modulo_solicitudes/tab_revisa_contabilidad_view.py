@@ -620,6 +620,11 @@ def mostrar_tab_revisa_contabilidad():
                 int(sel_id),
                 "revision comprobacion",
                 int(usuario.get("id") or 0),
+                tipo="conta",
+                metodo="app",
+                usuario_nombre=str(usuario.get("nombre") or ""),
+                usuario_email=str(usuario.get("email") or ""),
+                comentario=motivo_rechazo.strip(),
             )
 
             token = st.session_state.get("microsoft_token")
