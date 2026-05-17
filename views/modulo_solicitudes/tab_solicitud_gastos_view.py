@@ -1508,6 +1508,9 @@ def mostrar_tab_solicitudes_gastos():
                 st.rerun()
 
             estatus_actual = solicitud["estatus"] if solicitud else ""
+            
+            if st.session_state.get("sg_error_envio"):
+                st.warning(st.session_state.pop("sg_error_envio"))
 
             if cbtn2.button(
                 "enviar",
@@ -1519,16 +1522,35 @@ def mostrar_tab_solicitudes_gastos():
                 tipo_aut = _tipo_autorizacion_solicitud(solicitud_actualizada)
                 token = st.session_state.get("microsoft_token")
                 correo_remitente = str(usuario.get("email") or "").strip()
+                
+                detalle_actual = get_detalle_ctrl(int(selected_id)) or []
+
+                tiene_concepto_con_monto = False
+
+                for r in detalle_actual:
+                    concepto = str(r.get("concepto") or "").strip()
+                    if not concepto:
+                        continue
+
+                    precio_unitario = _to_float(r.get("precio_unitario"))
+                    importe = _to_float(r.get("importe"))
+                    total_xml = _to_float(r.get("total_xml"))
+
+                    if precio_unitario > 0 or importe > 0 or total_xml > 0:
+                        tiene_concepto_con_monto = True
+                        break
+
+                if not tiene_concepto_con_monto:
+                    st.session_state["sg_error_envio"] = (
+                        "no puedes enviar la solicitud. captura por lo menos un concepto con importe mayor a 0."
+                    )
+                    st.rerun()
+
                 res_limpia = eliminar_detalles_sin_monto_ctrl(
                     int(selected_id),
                     int(usuario["id"]),
                 )
-                if not res_limpia.get("ok"):
-                    st.warning(
-                        "no se pudieron eliminar los conceptos sin monto: "
-                        f"{res_limpia.get('msg', '')}"
-                    )
-                    st.stop()
+
                 if tipo_aut == "sin_autorizacion":
                     nuevo_estatus = _resolver_estatus_despues_autorizacion_local(int(selected_id))
                     cambiar_estatus_ctrl(
@@ -2457,6 +2479,79 @@ def mostrar_tab_solicitudes_gastos():
         t6.metric("Total Estimado", _money_fmt(total_gasto_estimado))
         t7.metric("Desviación", _money_fmt(total_desviacion))
 
+
+    ### Boton 
+    csave, cdel = st.columns([2, 1])
+
+    with cdel:
+        ids_opts = []
+        if "id" in edited.columns:
+            ids_opts = [
+                int(x)
+                for x in edited["id"].dropna().tolist()
+                if str(x).strip() not in ("", "none", "nan")
+            ]
+
+        ids_a_borrar = st.multiselect(
+            "borrar ids",
+            options=ids_opts,
+            default=[],
+            key="sg_ids_borrar",
+        )
+
+    puede_guardar_detalle = estatus_actual in ("captura", "dispersion", "revision comprobacion", "rechazada")
+
+    with csave:
+
+        puede_guardar_detalle = estatus_actual in ("captura", "dispersion", "revision comprobacion", "rechazada")
+
+        if not puede_guardar_detalle:
+            st.warning("solo se permite modificar el detalle en estatus 'captura' o 'dispersion'.")
+
+        if st.button(
+                "guardar detalle",
+                use_container_width=True,
+                key="sg_btn_guardar_detalle",
+                disabled=not puede_guardar_detalle
+            ):
+            rows_out = edited.to_dict(orient="records")
+            
+            for r in rows_out:
+                r.pop("pagado_con", None)
+                r.pop("subtotal_xml_view", None)
+                r.pop("iva_xml_view", None)
+                r.pop("total_xml_view", None)
+                r.pop("prepago_icon", None)
+                r.pop("pdf_icon", None)
+                r.pop("un_icon", None)
+                r.pop("tiene_pdf", None)
+                r.pop("total_unidades", None)
+                r.pop("desviacion", None)
+            
+            res = guardar_detalle_ctrl(
+                solicitud_id=int(selected_id),
+                rows=rows_out,
+                deleted_ids=[int(x) for x in ids_a_borrar],
+                usuario_id=int(usuario["id"]),
+            )
+
+            if res.get("ok"):
+                st.success(res.get("msg", "detalle guardado"))
+                st.session_state.pop("sg_det_df", None)
+                st.session_state.pop("sg_det_df_solicitud_id", None)
+                st.session_state["sg_uuid_prev"] = {}
+                st.session_state["sg_uuid_cache"] = {}
+                st.session_state.pop("sg_det_editor", None)
+                st.rerun()
+            else:
+                msg = res.get("msg", "")
+                if "uuid" in msg.lower() and "ya fue usado" in msg.lower():
+                    st.warning(msg)
+                else:
+                    st.error(msg or "no se pudo guardar el detalle")
+
+    st.divider()
+
     if estatus_actual in ("dispersion", "revision comprobacion"):
 
         val_det = validar_detalle_para_comprobacion_ctrl(int(selected_id)) or {
@@ -2523,13 +2618,6 @@ def mostrar_tab_solicitudes_gastos():
                             nombre_rol=nombre_rol_aut,
                         )
 
-                    ##ok_mail, msg_mail = _enviar_cierre_a_rol_autorizador(
-                    ##    solicitud=solicitud_actualizada,
-                    ##    token=token,
-                    ##    remitente=correo_remitente,
-                    ##    nombre_rol=nombre_rol_aut,
-                    ##)
-
                     if ok_mail:
                         st.success(f"estatus actualizado a cerrada y correo enviado a {nombre_rol_aut}")
                     else:
@@ -2545,74 +2633,7 @@ def mostrar_tab_solicitudes_gastos():
             for err in val_det.get("errores", []):
                 st.write(f"- {err}")
 
-    csave, cdel = st.columns([2, 1])
-
-    with cdel:
-        ids_opts = []
-        if "id" in edited.columns:
-            ids_opts = [
-                int(x)
-                for x in edited["id"].dropna().tolist()
-                if str(x).strip() not in ("", "none", "nan")
-            ]
-
-        ids_a_borrar = st.multiselect(
-            "borrar ids",
-            options=ids_opts,
-            default=[],
-            key="sg_ids_borrar",
-        )
-
-    with csave:
-
-        puede_guardar_detalle = estatus_actual in ("captura", "dispersion", "revision comprobacion", "rechazada")
-
-        if not puede_guardar_detalle:
-            st.warning("solo se permite modificar el detalle en estatus 'captura' o 'dispersion'.")
-
-        if st.button(
-                "guardar detalle",
-                use_container_width=True,
-                key="sg_btn_guardar_detalle",
-                disabled=not puede_guardar_detalle
-            ):
-            rows_out = edited.to_dict(orient="records")
-            
-            for r in rows_out:
-                r.pop("pagado_con", None)
-                r.pop("subtotal_xml_view", None)
-                r.pop("iva_xml_view", None)
-                r.pop("total_xml_view", None)
-                r.pop("prepago_icon", None)
-                r.pop("pdf_icon", None)
-                r.pop("un_icon", None)
-                r.pop("tiene_pdf", None)
-                r.pop("total_unidades", None)
-                r.pop("desviacion", None)
-            
-            res = guardar_detalle_ctrl(
-                solicitud_id=int(selected_id),
-                rows=rows_out,
-                deleted_ids=[int(x) for x in ids_a_borrar],
-                usuario_id=int(usuario["id"]),
-            )
-
-            if res.get("ok"):
-                st.success(res.get("msg", "detalle guardado"))
-                st.session_state.pop("sg_det_df", None)
-                st.session_state.pop("sg_det_df_solicitud_id", None)
-                st.session_state["sg_uuid_prev"] = {}
-                st.session_state["sg_uuid_cache"] = {}
-                st.session_state.pop("sg_det_editor", None)
-                st.rerun()
-            else:
-                msg = res.get("msg", "")
-                if "uuid" in msg.lower() and "ya fue usado" in msg.lower():
-                    st.warning(msg)
-                else:
-                    st.error(msg or "no se pudo guardar el detalle")
-
-    st.divider()
+    
     
     st.markdown(
         "<span style='font-size:20px; color:#2563eb; font-weight:bold;'>Captura de Unidades de Negocio por Gasto (renglón) </span>",
@@ -2640,6 +2661,7 @@ def mostrar_tab_solicitudes_gastos():
                         _to_float(r.get("precio_unitario")) > 0
                         or _to_float(r.get("total_xml")) > 0
                         or bool(str(r.get("uuid") or "").strip())
+                        or _to_float(r.get("importe")) > 0
                     )
                 ),
                 axis=1,
@@ -2660,7 +2682,7 @@ def mostrar_tab_solicitudes_gastos():
         def _monto_renglon(x):
                 row = df_detalle_sel.loc[df_detalle_sel["id"] == x].iloc[0]
                 total_xml = float(row.get("total_xml") or 0)
-                precio = float(row.get("precio_unitario") or 0)
+                precio = float(row.get("precio_unitario") or float(row.get("importe") or 0))
 
                 return total_xml if total_xml > 0 else precio
         unidades_rows = get_unidades_negocio_ctrl() or []
