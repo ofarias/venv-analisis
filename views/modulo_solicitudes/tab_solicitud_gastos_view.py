@@ -344,7 +344,7 @@ def _enviar_revision_cierre_a_rol_autorizador(
 
       <p><b>detalle de gastos</b></p>
 
-      {_detalle_gastos_a_html(detalle_rows_mail, set(), fn_monto=_monto_para_correo_cierre)}
+      {_detalle_gastos_a_html(detalle_rows_mail, set(), fn_monto=_monto_para_correo_cierre, mostrar_desviacion=True)}
 
     </div>
     """
@@ -695,7 +695,7 @@ def _estatus_badge(e):
     return e
 
 
-def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str], fn_monto=None) -> str:
+def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str], fn_monto=None, mostrar_desviacion: bool = False,) -> str:
     if fn_monto is None:
         fn_monto = _monto_para_correo
     if not rows:
@@ -726,11 +726,15 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str], fn_mon
         ("uuid", "uuid"),
         ("descripcion", "Observaciones"),
         ("precio_unitario", "Gasto Estimado"),
-        ("_monto", "Gasto Efectuado"),
-        ("_desviacion", "Desviacion"),
+        
+       
         ("proveedor", "Proveedor"),
     ]
 
+    if mostrar_desviacion:
+        cols.append(("_monto", "Gasto Efectuado"))
+        cols.append(("_desviacion", "Desviación"))
+     
     def _render_tabla(titulo: str, filas: list[dict]) -> str:
         if not filas:
             return f"<p><b>{esc(titulo)}</b>: sin registros.</p>"
@@ -793,14 +797,20 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str], fn_mon
 
             trs.append("<tr>" + "".join(tds) + "</tr>")
 
-        total_desviacion =  total_gastado - total_estimado
         resumen_html = f"""
-        <div style="margin-top:12px;padding:10px;border:1px solid #ddd;border-radius:8px;background:#fafafa">
-            <div><b>Total Estimado:</b> {_fmt_money(total_estimado)}</div>
-            <div><b>Total Efectuado:</b> {_fmt_money(total_gastado)}</div>
-            <div><b>Desviación:</b> {_fmt_money(total_desviacion)}</div>
-        </div>
-        """
+            <div style="margin-top:12px;padding:10px;border:1px solid #ddd;border-radius:8px;background:#fafafa">
+                <div><b>Total Estimado:</b> {_fmt_money(total_estimado)}</div>
+            </div>
+            """
+        if mostrar_desviacion:
+            total_desviacion =  total_gastado - total_estimado
+            resumen_html = f"""
+            <div style="margin-top:12px;padding:10px;border:1px solid #ddd;border-radius:8px;background:#fafafa">
+                <div><b>Total Estimado:</b> {_fmt_money(total_estimado)}</div>
+                <div><b>Total Efectuado:</b> {_fmt_money(total_gastado)}</div>
+                <div><b>Desviación:</b> {_fmt_money(total_desviacion)}</div>
+            </div>
+            """
 
         return (
             f"<p><b>{esc(titulo)}</b></p>"
@@ -832,6 +842,57 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str], fn_mon
    
 
     return html_pre + "<br>" + html_no
+
+def _enviar_cierre_aprobado_contabilidad_correo_sistema(*, solicitud: dict) -> tuple[bool, str]:
+    destinatarios = _correos_unicos_validos(
+        get_correos_usuarios_por_rol_ctrl("Contabilidad") or []
+    )
+
+    if not destinatarios:
+        return False, "no se encontraron correos para contabilidad"
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor = str(solicitud.get("empleado_nombre") or "").strip()
+    clientes = str(solicitud.get("clientes") or "").strip()
+    ciudades = str(solicitud.get("ciudades") or "").strip()
+
+    asunto = f"solicitud lista para revisión contable {folio}".strip()
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>una solicitud de gastos fue aprobada en su cierre y ya puede ser revisada por contabilidad.</p>
+
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>vendedor:</b> {vendedor}<br>
+        <b>clientes:</b> {clientes}<br>
+        <b>ciudades:</b> {ciudades}<br>
+        <b>estatus actual:</b> contabilidad
+      </p>
+
+      <p>favor de ingresar al módulo para iniciar la revisión contable.</p>
+    </div>
+    """
+
+    ok_count = 0
+    errores = []
+
+    for dest in destinatarios:
+        ok, msg = _enviar_correo_sistema(
+            destinatario=dest,
+            asunto=asunto,
+            cuerpo_html=cuerpo_html,
+        )
+
+        if ok:
+            ok_count += 1
+        else:
+            errores.append(f"{dest}: {msg}")
+
+    if ok_count > 0:
+        return True, f"correo enviado a contabilidad ({ok_count})"
+
+    return False, " | ".join(errores)
 
 def _norm_roles_list(values) -> list[str]:
     roles: list[str] = []
@@ -1383,6 +1444,15 @@ def mostrar_tab_solicitudes_gastos():
                 autoriza_email=autoriza_email,
                 autoriza_rol=autoriza_rol,
             )
+
+            ok_conta, msg_conta = _enviar_cierre_aprobado_contabilidad_correo_sistema(
+                solicitud=solicitud_link,
+            )
+
+            if ok_conta:
+                st.success("correo enviado a contabilidad.")
+            else:
+                st.warning(f"cierre aprobado, pero no se pudo enviar correo a contabilidad: {msg_conta}")
 
             if ok_mail:
                 st.success("correo enviado al solicitante.")
