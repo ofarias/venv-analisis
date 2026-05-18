@@ -87,7 +87,13 @@ def _consume_deeplink_old():
     # aplica selección + acción
     st.session_state["aut_selected_id"] = int(sg_id)
 
-    if qp_action in ("approve", "reject"):
+    #if qp_action in ("approve", "reject"):
+    if qp_action in (
+            "approve",
+            "reject",
+            "approve_close",
+            "reject_close",
+        ):
         st.session_state["aut_pending_action"] = qp_action
 
     # opcional: limpiar query params para que no se re-dispare en cada rerun
@@ -865,14 +871,30 @@ def mostrar_tab_autorizaciones_solicitudes():
 
     # si viene del correo, forzamos que se muestre el panel de rechazo
     # o ejecutamos autorización con confirmación explícita
-    if pending in ("approve", "reject"):
+    #if pending in ("approve", "reject"):
+    if pending in (
+            "approve",
+            "reject",
+            "approve_close",
+            "reject_close",
+        ):
         st.info("acción solicitada desde correo. confirma para continuar.")
 
         # solo permitir a jefe de ventas en estatus enviada (misma regla que ya tienes)
-        puede_accion_jefe = is_jefe_ventas and estatus_actual == "enviada"
+        #puede_accion_jefe = is_jefe_ventas and estatus_actual == "enviada"
+        is_close_action = pending in ("approve_close", "reject_close")
 
+        puede_accion_jefe = (
+            is_jefe_ventas
+            and (
+                (not is_close_action and estatus_actual == "enviada")
+                or (is_close_action and estatus_actual == "cerrada")
+            )
+        )
+        
         if not puede_accion_jefe:
-            st.warning("no tienes permiso para autorizar/rechazar o la solicitud no está en estatus enviada.")
+            #st.warning("no tienes permiso para autorizar/rechazar o la solicitud no está en estatus enviada.")
+            st.warning("no tienes permiso para ejecutar esta acción o la solicitud no está en el estatus correcto.")
             st.session_state["aut_pending_action"] = ""
         else:
             cpa1, cpa2, cpa3 = st.columns([2, 2, 6])
@@ -881,35 +903,85 @@ def mostrar_tab_autorizaciones_solicitudes():
                 if st.button(
                     "confirmar autorizar",
                     use_container_width=True,
-                    disabled=(pending != "approve"),
+                    #disabled=(pending != "approve"),
+                    disabled=(pending not in ("approve", "approve_close")),
                     key="aut_btn_confirm_from_link_approve",
                 ):
                     token = st.session_state.get("microsoft_token")
 
-                    nuevo_estatus, mensajes_ok, mensajes_warn = _autorizar_solicitud_y_notificar(
-                        solicitud=s,
-                        solicitud_id=int(sel_id),
-                        usuario_id=int(usuario.get("id") or 0),
-                        token=token,
-                    )
+                    #nuevo_estatus, mensajes_ok, mensajes_warn = _autorizar_solicitud_y_notificar(
+                    #    solicitud=s,
+                    #    solicitud_id=int(sel_id),
+                    #    usuario_id=int(usuario.get("id") or 0),
+                    #    token=token,
+                    #)
+#
+                    #if mensajes_ok:
+                    #    st.success(f"solicitud actualizada a {nuevo_estatus}. " + " | ".join(mensajes_ok))
+#
+                    #if mensajes_warn:
+                    #    st.warning(" | ".join(mensajes_warn))
+                    if pending == "approve_close":
+                        cambiar_estatus_ctrl(
+                            int(sel_id),
+                            "contabilidad",
+                            int(usuario.get("id") or 0),
+                            tipo="conta",
+                            metodo="link",
+                            usuario_nombre=str(usuario.get("nombre") or ""),
+                            usuario_email=str(usuario.get("email") or ""),
+                            comentario="cierre aprobado desde link de correo",
+                        )
 
-                    if mensajes_ok:
-                        st.success(f"solicitud actualizada a {nuevo_estatus}. " + " | ".join(mensajes_ok))
+                        ok_mail, msg_mail = _enviar_revision_cierre_aprobada_correo(
+                            solicitud=s,
+                            token=token,
+                        )
 
-                    if mensajes_warn:
-                        st.warning(" | ".join(mensajes_warn))
+                        ok_conta, msg_conta = _enviar_a_contabilidad_revision_correo(
+                            solicitud=s,
+                            token=token,
+                        )
 
+                        if ok_mail:
+                            st.success("cierre aprobado y correo enviado al solicitante.")
+                        else:
+                            st.warning(f"cierre aprobado, pero no se pudo enviar correo al solicitante: {msg_mail}")
+
+                        if ok_conta:
+                            st.success("correo enviado a contabilidad.")
+                        else:
+                            st.warning(f"no se pudo enviar correo a contabilidad: {msg_conta}")
+
+                    else:
+                        nuevo_estatus, mensajes_ok, mensajes_warn = _autorizar_solicitud_y_notificar(
+                            solicitud=s,
+                            solicitud_id=int(sel_id),
+                            usuario_id=int(usuario.get("id") or 0),
+                            token=token,
+                        )
+
+                        if mensajes_ok:
+                            st.success(f"solicitud actualizada a {nuevo_estatus}. " + " | ".join(mensajes_ok))
+
+                        if mensajes_warn:
+                            st.warning(" | ".join(mensajes_warn))
                     st.session_state["aut_pending_action"] = ""
                     st.rerun()
             with cpa2:
                 if st.button(
                     "continuar a rechazo",
                     use_container_width=True,
-                    disabled=(pending != "reject"),
+                    #disabled=(pending != "reject"),
+                    disabled=(pending not in ("reject", "reject_close")),
                     key="aut_btn_confirm_from_link_reject",
                 ):
                     # abre tu panel de rechazo existente
-                    st.session_state["aut_rechazando"] = True
+                    #st.session_state["aut_rechazando"] = True
+                    if pending == "reject_close":
+                        st.session_state["aut_revisando_cierre"] = True
+                    else:
+                        st.session_state["aut_rechazando"] = True
 
             with cpa3:
                 if st.button("cancelar acción", use_container_width=True, key="aut_btn_cancel_from_link"):

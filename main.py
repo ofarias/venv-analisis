@@ -9,11 +9,40 @@ import mimetypes
 
 from views.login_view import mostrar_login
 
+import os
+from PIL import Image
+import streamlit as st
+
+# 1. Obtiene la ruta absoluta de la carpeta donde está este main.py
+DIR_PROYECTO = os.path.dirname(os.path.abspath(__file__))
+
+# 2. Construye la ruta correcta hacia la carpeta assets
+# (Asegúrate de cambiar 'biotecsaicon.png' por el nombre exacto en minúsculas si lo renombraste)
+RUTA_CON_LOGO = os.path.join(DIR_PROYECTO, "assets", "biotecsaicon.png")
+
+try:
+    img_logo = Image.open(RUTA_CON_LOGO)
+except FileNotFoundError:
+    st.error(f"Python está buscando el archivo aquí y no lo encuentra: {RUTA_CON_LOGO}")
+    ruta_assets = os.path.join(DIR_PROYECTO, "assets")
+    if os.path.exists(ruta_assets):
+        st.write("Archivos reales que Python ve dentro de la carpeta assets:", os.listdir(ruta_assets))
+    else:
+        st.write("¡La carpeta 'assets' ni siquiera existe en esa ruta!")
+
+# Tu configuración de página debe usar la variable img_logo
 st.set_page_config(
     page_title="BiotecsaOneCore",
-    page_icon="🧬",   # puedes usar emoji
+    page_icon=img_logo, 
     layout="wide",
 )
+#img_logo = Image.open("assets/biotecsaicon.png")
+
+#st.set_page_config(
+#    page_title="BiotecsaOneCore",
+#    page_icon=img_logo,   # puedes usar emoji
+#    layout="wide",
+#)
 #st.set_page_config(layout="wide")
     
 logo_path = "biotecsa.png"

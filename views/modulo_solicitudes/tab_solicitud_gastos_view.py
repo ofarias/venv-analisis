@@ -47,6 +47,7 @@ from controllers.solicitudes_controller import (
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
 
+
 MODO_PRUEBA_CORREOS = False 
 VALIDAR_FECHA = False
 
@@ -60,7 +61,55 @@ _HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2212"
 #def _get_sepomex_cached():
 #    return get_sepomex_ciudades_catalogo_ctrl(limit=20000)
 
+def _enviar_cierre_link_correo_sistema(
+    *,
+    solicitud: dict,
+    autoriza_email: str,
+    autoriza_rol: str,
+) -> tuple[bool, str]:
+    destinatario = None
 
+    empleado_id = int(solicitud.get("empleado_id") or 0)
+    users = get_usuarios_activos_ctrl() or []
+
+    for u in users:
+        if int(u.get("id") or 0) == empleado_id:
+            destinatario = (
+                str(u.get("email") or "").strip()
+                or str(u.get("correo") or "").strip()
+                or str(u.get("username") or "").strip()
+            )
+            break
+
+    if not destinatario:
+        return False, "no se encontró correo del solicitante"
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor = str(solicitud.get("empleado_nombre") or "").strip()
+
+    asunto = f"revisión de cierre aprobada {folio}".strip()
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>la revisión de cierre de tu solicitud de gastos fue aprobada.</p>
+
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>solicitante:</b> {vendedor}<br>
+        <b>autorizó:</b> {autoriza_rol}<br>
+        <b>correo:</b> {autoriza_email}<br>
+        <b>estatus actual:</b> contabilidad
+      </p>
+
+      <p>la solicitud avanzó al área de contabilidad.</p>
+    </div>
+    """
+
+    return _enviar_correo_sistema(
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+    )
 def _enviar_correo_sistema(*, destinatario: str, asunto: str, cuerpo_html: str) -> tuple[bool, str]:
     try:
         smtp_host = str(st.secrets.get("SMTP_HOST", "")).strip()
@@ -185,7 +234,14 @@ def _verify_token(token: str, secret: str) -> dict | None:
         return None
 
 
-def _build_action_links(solicitud_id: int, folio: str | None = None, autoriza_email: str | None = None, autoriza_rol: str | None = None,) -> dict:
+def _build_action_links(
+        solicitud_id: int,
+        folio: str | None = None,
+        modo: str = "autorizacion",
+        autoriza_email: str | None = None,
+        autoriza_rol: str | None = None,
+    ) -> dict:
+
     base = _get_app_base_url()
     if not base:
         return {"ok": False, "error": "no existe APP_BASE_URL en secrets.toml"}
@@ -195,24 +251,113 @@ def _build_action_links(solicitud_id: int, folio: str | None = None, autoriza_em
         return {"ok": False, "error": "no existe APP_LINK_SECRET en secrets.toml"}
 
     exp = int((datetime.utcnow() + timedelta(hours=72)).timestamp())
-    #payload = {"sg_id": int(solicitud_id), "exp": exp, "folio": (folio or "")}
-    
+
     payload = {
         "sg_id": int(solicitud_id),
         "exp": exp,
         "folio": (folio or ""),
+        "modo": modo,
         "autoriza_email": str(autoriza_email or "").strip(),
         "autoriza_rol": str(autoriza_rol or "").strip(),
     }
+
     t = _sign_payload(payload, secret)
+
+    if modo == "cierre":
+        approve_action = "approve_close"
+        reject_action = "reject_close"
+    else:
+        approve_action = "approve"
+        reject_action = "reject"
 
     return {
         "ok": True,
-        "approve": f"{base}/?sg_id={int(solicitud_id)}&action=approve&t={t}",
-        "reject": f"{base}/?sg_id={int(solicitud_id)}&action=reject&t={t}",
-        "view": f"{base}/?sg_id={int(solicitud_id)}&t={t}",
+        "approve": f"{base}/?sg_id={int(solicitud_id)}&action={approve_action}&t={t}",
+        "reject": f"{base}/?sg_id={int(solicitud_id)}&action={reject_action}&t={t}",
+        #"view": f"{base}/?sg_id={int(solicitud_id)}&t={t}",
+        "view": f"{base}/?sg_id={int(solicitud_id)}&action=view&t={t}",
         "token": t,
     }
+
+def _enviar_revision_cierre_a_rol_autorizador(
+    *,
+    solicitud: dict,
+    token,
+    remitente: str,
+    nombre_rol: str,
+) -> tuple[bool, str]:
+
+    remitente = str(remitente or "").strip()
+
+    destinatarios = _correos_unicos_validos(
+        get_correos_usuarios_por_rol_ctrl(nombre_rol) or []
+    )
+
+    if not destinatarios:
+        return False, f"no se encontraron correos para {nombre_rol}"
+
+    folio = str(solicitud.get("folio") or "").strip()
+
+    links = _build_action_links(
+        int(solicitud.get("id") or 0),
+        folio=folio,
+        modo="cierre",
+    )
+
+    if links.get("ok"):
+        links_html = f"""
+        <p style="margin:14px 0">
+          <a href="{links['approve']}"
+             style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            aprobar cierre
+          </a>
+
+          <a href="{links['reject']}"
+             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            rechazar cierre
+          </a>
+
+          <a href="{links['view']}"
+             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            ver solicitud
+          </a>
+        </p>
+        """
+    else:
+        links_html = "<p>no se pudieron generar links.</p>"
+
+    detalle_rows_mail = get_detalle_ctrl(int(solicitud.get("id") or 0)) or []
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+
+      <p>una solicitud terminó la comprobación y requiere autorización de cierre.</p>
+
+      {links_html}
+
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>empleado:</b> {solicitud.get("empleado_nombre","")}<br>
+        <b>clientes:</b> {solicitud.get("clientes","")}<br>
+        <b>ciudades:</b> {solicitud.get("ciudades","")}
+      </p>
+
+      <p><b>detalle de gastos</b></p>
+
+      {_detalle_gastos_a_html(detalle_rows_mail, set(), fn_monto=_monto_para_correo_cierre)}
+
+    </div>
+    """
+
+    asunto = f"autorización de cierre solicitud {folio}"
+
+    return enviar_correo(
+        destinatario=",".join(destinatarios),
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        token=token,
+        remitente=remitente,
+    )
 
 
 def _split_clientes_texto(s: str) -> list[str]:
@@ -474,6 +619,18 @@ def _monto_para_correo(r: dict) -> float:
     pu = _to_float(r.get("precio_unitario"))
     return round(cant * pu, 2)
 
+def _monto_para_correo_cierre(r: dict) -> float:
+    total_xml = _to_float(r.get("total_xml"))
+    if total_xml > 0:
+        return total_xml
+
+    importe = _to_float(r.get("importe"))
+    if importe > 0:
+        return importe
+
+    cant = _to_float(r.get("cantidad"))
+    pu = _to_float(r.get("precio_unitario"))
+    return round(cant * pu, 2)
 
 def _get_prepago_map():
     from database.conexion import obtener_conexion
@@ -538,8 +695,9 @@ def _estatus_badge(e):
     return e
 
 
-
-def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str:
+def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str], fn_monto=None) -> str:
+    if fn_monto is None:
+        fn_monto = _monto_para_correo
     if not rows:
         return "<p>sin detalle de gastos.</p>"
 
@@ -563,16 +721,14 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
             return str(v)
 
     cols = [
-        ("fecha_gasto", "fecha"),
-        ("concepto", "concepto"),
+        ("fecha_gasto", "Fecha"),
+        ("concepto", "Concepto"),
         ("uuid", "uuid"),
-        ("descripcion", "observaciones"),
-        ("cantidad", "cantidad"),
-        ("precio_unitario", "gasto estimado"),
-        ("_monto", "importe"),
-        ("pagado_con", "pagado con"),
-        ("proveedor", "proveedor"),
-        ("rfce", "rfce"),
+        ("descripcion", "Observaciones"),
+        ("precio_unitario", "Gasto Estimado"),
+        ("_monto", "Gasto Efectuado"),
+        ("_desviacion", "Desviacion"),
+        ("proveedor", "Proveedor"),
     ]
 
     def _render_tabla(titulo: str, filas: list[dict]) -> str:
@@ -584,17 +740,31 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
             for _, t in cols
         )
 
-        subtotal = 0.0
+        #subtotal = 0.0
+        total_estimado = 0.0
+        total_gastado = 0.0
         trs = []
 
         for r in filas:
-            monto = _monto_para_correo(r)
-            subtotal += monto
+            #monto = _monto_para_correo(r)
+            monto = fn_monto(r)
+            estimado = _to_float(r.get("precio_unitario"))
+            total_estimado += estimado
+            total_gastado += monto
 
             tds = []
             for k, _t in cols:
                 if k == "_monto":
                     v = _fmt_money(monto)
+                    tds.append(
+                        f"<td style='border:1px solid #ddd;padding:6px;text-align:right'>{esc(v)}</td>"
+                    )
+                    continue
+
+                if k == "_desviacion":
+                    estimado = _to_float(r.get("precio_unitario"))
+                    desviacion =  monto - estimado
+                    v = _fmt_money(desviacion)
                     tds.append(
                         f"<td style='border:1px solid #ddd;padding:6px;text-align:right'>{esc(v)}</td>"
                     )
@@ -623,13 +793,14 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
 
             trs.append("<tr>" + "".join(tds) + "</tr>")
 
-        colspan = len(cols) - 1
-        trs.append(
-            "<tr>"
-            f"<td colspan='{colspan}' style='border:1px solid #ddd;padding:6px;text-align:right;background:#fafafa'><b>subtotal</b></td>"
-            f"<td style='border:1px solid #ddd;padding:6px;text-align:right;background:#fafafa'><b>{esc(_fmt_money(subtotal))}</b></td>"
-            "</tr>"
-        )
+        total_desviacion =  total_gastado - total_estimado
+        resumen_html = f"""
+        <div style="margin-top:12px;padding:10px;border:1px solid #ddd;border-radius:8px;background:#fafafa">
+            <div><b>Total Estimado:</b> {_fmt_money(total_estimado)}</div>
+            <div><b>Total Efectuado:</b> {_fmt_money(total_gastado)}</div>
+            <div><b>Desviación:</b> {_fmt_money(total_desviacion)}</div>
+        </div>
+        """
 
         return (
             f"<p><b>{esc(titulo)}</b></p>"
@@ -641,6 +812,7 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
             + "".join(trs)
             + "</tbody>"
             "</table>"
+            + resumen_html
         )
 
     prepagados = []
@@ -655,14 +827,11 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str]) -> str
 
     html_pre = _render_tabla("detalle de gastos prepagados", prepagados)
     html_no = _render_tabla("detalle de gastos por comprobar", por_comprobar)
-    total_general = sum(_monto_para_correo(r) for r in rows)
-    html_total = (
-        "<p style='margin-top:10px'>"
-        f"<b>total general:</b> {_fmt_money(total_general)}"
-        "</p>"
-    )
+    #total_general = sum(_monto_para_correo(r) for r in rows)
+    total_general = sum(fn_monto(r) for r in rows)
+   
 
-    return html_pre + "<br>" + html_no + html_total
+    return html_pre + "<br>" + html_no
 
 def _norm_roles_list(values) -> list[str]:
     roles: list[str] = []
@@ -995,6 +1164,62 @@ def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token, remitente:
         remitente=remitente,
     )
 
+def _enviar_rechazo_link_correo_sistema(
+    *,
+    solicitud: dict,
+    motivo: str,
+    estatus_final: str,
+    autoriza_email: str,
+    autoriza_rol: str,
+    tipo_rechazo: str = "solicitud",
+) -> tuple[bool, str]:
+    destinatario = None
+
+    empleado_id = int(solicitud.get("empleado_id") or 0)
+    users = get_usuarios_activos_ctrl() or []
+
+    for u in users:
+        if int(u.get("id") or 0) == empleado_id:
+            destinatario = (
+                str(u.get("email") or "").strip()
+                or str(u.get("correo") or "").strip()
+                or str(u.get("username") or "").strip()
+            )
+            break
+
+    if not destinatario:
+        return False, "no se encontró correo del solicitante"
+
+    folio = str(solicitud.get("folio") or "").strip()
+    vendedor = str(solicitud.get("empleado_nombre") or "").strip()
+
+    asunto = f"solicitud de gastos rechazada {folio}".strip()
+
+    cuerpo_html = f"""
+    <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
+      <p>tu {tipo_rechazo} fue rechazada.</p>
+
+      <p>
+        <b>folio:</b> {folio}<br>
+        <b>solicitante:</b> {vendedor}<br>
+        <b>rechazó:</b> {autoriza_rol}<br>
+        <b>correo:</b> {autoriza_email}<br>
+        <b>estatus actual:</b> {estatus_final}
+      </p>
+
+      <p><b>motivo:</b></p>
+      <div style="border:1px solid #ddd;padding:10px;border-radius:8px;background:#fafafa;white-space:pre-wrap">
+        {motivo.strip()}
+      </div>
+    </div>
+    """
+
+    return _enviar_correo_sistema(
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+    )
+
 def mostrar_tab_solicitudes_gastos():
     st.subheader("Solicitudes de gastos")
 
@@ -1002,6 +1227,170 @@ def mostrar_tab_solicitudes_gastos():
     qp_sg_id = qp.get("sg_id", None)
     qp_action = (qp.get("action", "") or "").strip().lower()
     qp_token = (qp.get("t", "") or "").strip()
+
+    if qp_sg_id and qp_token and qp_action in ("reject", "reject_close"):
+        try:
+            sg_id = int(qp_sg_id)
+        except Exception:
+            sg_id = None
+
+        if sg_id:
+            _, secret = _get_app_link_cfg()
+            payload = _verify_token(qp_token, secret) if secret else None
+
+            if not payload:
+                st.error("link inválido o expirado.")
+                return
+
+            exp = int(payload.get("exp") or 0)
+            if exp <= 0 or int(datetime.utcnow().timestamp()) > exp:
+                st.error("link expirado.")
+                return
+
+            if int(payload.get("sg_id") or 0) != int(sg_id):
+                st.error("link inválido.")
+                return
+
+            solicitud_link = get_solicitud_ctrl(int(sg_id))
+            if not solicitud_link:
+                st.error("no existe la solicitud.")
+                return
+
+            autoriza_email = str(payload.get("autoriza_email") or "").strip()
+            autoriza_rol = str(payload.get("autoriza_rol") or "").strip()
+
+            estatus_link = str(solicitud_link.get("estatus") or "").strip().lower()
+
+            if qp_action == "reject":
+                if estatus_link != "enviada":
+                    st.info(f"la solicitud ya no está pendiente de rechazo. estatus actual: {estatus_link}")
+                    return
+
+                estatus_destino = "rechazada"
+                tipo_movimiento = "rechazo"
+                tipo_rechazo_mail = "solicitud de gastos"
+
+            else:
+                if estatus_link != "cerrada":
+                    st.info(f"la solicitud ya no está pendiente de revisión de cierre. estatus actual: {estatus_link}")
+                    return
+
+                estatus_destino = "dispersion"
+                tipo_movimiento = "rechazo_cierre"
+                tipo_rechazo_mail = "revisión de cierre"
+
+            st.markdown("### rechazo externo")
+            st.info(f"folio: {solicitud_link.get('folio', '')}")
+
+            motivo_key = f"motivo_rechazo_externo_{int(sg_id)}_{qp_action}"
+            motivo = st.text_area(
+                "motivo del rechazo",
+                key=motivo_key,
+                height=140,
+                placeholder="captura el motivo del rechazo...",
+            )
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+                if st.button("confirmar rechazo", type="primary", use_container_width=True, key=f"btn_confirm_rechazo_ext_{int(sg_id)}_{qp_action}"):
+                    if not motivo.strip():
+                        st.warning("captura el motivo del rechazo.")
+                    else:
+                        cambiar_estatus_ctrl(
+                            int(sg_id),
+                            estatus_destino,
+                            0,
+                            tipo=tipo_movimiento,
+                            metodo="link_externo",
+                            usuario_nombre=autoriza_rol or "Autorización Externa",
+                            usuario_email=autoriza_email,
+                            comentario=motivo.strip(),
+                        )
+
+                        ok_mail, msg_mail = _enviar_rechazo_link_correo_sistema(
+                            solicitud=solicitud_link,
+                            motivo=motivo.strip(),
+                            estatus_final=estatus_destino,
+                            autoriza_email=autoriza_email,
+                            autoriza_rol=autoriza_rol or "Autorización Externa",
+                            tipo_rechazo=tipo_rechazo_mail,
+                        )
+
+                        if ok_mail:
+                            st.success("rechazo registrado y correo enviado al solicitante.")
+                        else:
+                            st.warning(f"rechazo registrado, pero no se pudo enviar correo: {msg_mail}")
+
+                        return
+
+            with c2:
+                if st.button("cancelar", use_container_width=True, key=f"btn_cancel_rechazo_ext_{int(sg_id)}_{qp_action}"):
+                    st.info("operación cancelada.")
+                    return
+
+            return
+
+    if qp_sg_id and qp_token and qp_action == "approve_close":
+        try:
+            sg_id = int(qp_sg_id)
+        except Exception:
+            sg_id = None
+
+        if sg_id:
+            _, secret = _get_app_link_cfg()
+            payload = _verify_token(qp_token, secret) if secret else None
+
+            if not payload:
+                st.error("link inválido o expirado.")
+                return
+
+            exp = int(payload.get("exp") or 0)
+            if exp <= 0 or int(datetime.utcnow().timestamp()) > exp:
+                st.error("link expirado.")
+                return
+
+            if int(payload.get("sg_id") or 0) != int(sg_id):
+                st.error("link inválido.")
+                return
+
+            solicitud_link = get_solicitud_ctrl(int(sg_id))
+            if not solicitud_link:
+                st.error("no existe la solicitud.")
+                return
+
+            estatus_link = str(solicitud_link.get("estatus") or "").strip().lower()
+
+            if estatus_link != "cerrada":
+                st.info(f"la solicitud ya no está pendiente de cierre. estatus actual: {estatus_link}")
+                return
+
+            autoriza_email = str(payload.get("autoriza_email") or "").strip()
+            autoriza_rol = str(payload.get("autoriza_rol") or "").strip()
+
+            cambiar_estatus_ctrl(
+                int(sg_id),
+                "contabilidad",
+                0,
+                tipo="conta",
+                metodo="link_externo",
+                usuario_nombre="Autorizacion Externa",
+                usuario_email="",
+                comentario="cierre aprobado desde link externo",
+            )
+            ok_mail, msg_mail = _enviar_cierre_link_correo_sistema(
+                solicitud=solicitud_link,
+                autoriza_email=autoriza_email,
+                autoriza_rol=autoriza_rol,
+            )
+
+            if ok_mail:
+                st.success("correo enviado al solicitante.")
+            else:
+                st.warning(f"cierre aprobado, pero no se pudo enviar correo al solicitante: {msg_mail}")
+
+            st.success("cierre aprobado correctamente. estatus actual: contabilidad")
+            return
 
     if qp_sg_id and qp_token and qp_action == "approve":
         try:
@@ -1075,6 +1464,57 @@ def mostrar_tab_solicitudes_gastos():
             )
             return
 
+    if qp_sg_id and qp_token and qp_action == "view":
+        try:
+            sg_id = int(qp_sg_id)
+        except Exception:
+            sg_id = None
+
+        if not sg_id:
+            st.error("link inválido.")
+            return
+
+        _, secret = _get_app_link_cfg()
+        payload = _verify_token(qp_token, secret) if secret else None
+
+        if not payload:
+            st.error("link inválido o expirado.")
+            return
+
+        exp = int(payload.get("exp") or 0)
+        if exp <= 0 or int(datetime.utcnow().timestamp()) > exp:
+            st.error("link expirado.")
+            return
+
+        if int(payload.get("sg_id") or 0) != int(sg_id):
+            st.error("link inválido.")
+            return
+
+        solicitud_link = get_solicitud_ctrl(int(sg_id))
+        if not solicitud_link:
+            st.error("no existe la solicitud.")
+            return
+
+        detalle_link = get_detalle_ctrl(int(sg_id)) or []
+
+        st.success("vista externa de solicitud")
+
+        st.markdown(f"""
+        ### solicitud {solicitud_link.get("folio", "")}
+
+        empleado: {solicitud_link.get("empleado_nombre", "")}  
+        clientes: {solicitud_link.get("clientes", "")}  
+        ciudades: {solicitud_link.get("ciudades", "")}  
+        estatus: {solicitud_link.get("estatus", "")}
+        """)
+
+        if detalle_link:
+            st.dataframe(pd.DataFrame(detalle_link), use_container_width=True, hide_index=True)
+        else:
+            st.info("sin detalle")
+
+        return
+
     usuario = _get_usuario_actual()
     if not usuario:
         st.warning("no hay sesión de usuario en st.session_state['usuario']")
@@ -1142,8 +1582,10 @@ def mostrar_tab_solicitudes_gastos():
 
             if ok_token:
                 st.session_state["sg_selected_id"] = int(sg_id)
-                if qp_action in ("approve", "reject"):
+                if qp_action in ("approve", "reject", "approve_close", "reject_close"):
                     st.session_state["sg_pending_action"] = qp_action
+                #if qp_action in ("approve", "reject"):
+                #    st.session_state["sg_pending_action"] = qp_action
             else:
                 st.warning("link inválido o expirado (token).")
 
@@ -1611,12 +2053,6 @@ def mostrar_tab_solicitudes_gastos():
                             remitente=correo_remitente,
                             nombre_rol=nombre_rol_aut,
                         )
-                    #ok_mail, msg_mail = _enviar_revision_a_rol_autorizador(
-                    #    solicitud=solicitud_actualizada,
-                    #    token=token,
-                    #    remitente=correo_remitente,
-                    #    nombre_rol=nombre_rol_aut,
-                    #)
 
                     if ok_mail:
                         st.success(f"estatus actualizado: enviada y correo enviado a {nombre_rol_aut}")
@@ -2061,15 +2497,13 @@ def mostrar_tab_solicitudes_gastos():
         #)
         monto_real = df_show.apply(
            lambda r: _to_float(r.get("total_xml"))
-            #if int(r.get("fiscales") or 0) == 1
             if _to_int(r.get("fiscales")) == 1
             else _to_float(r.get("importe")),
             axis=1,
         )
 
         df_show["desviacion"] = (
-            pd.to_numeric(df_show["precio_unitario"], errors="coerce").fillna(0.0)
-            - monto_real
+            monto_real - pd.to_numeric(df_show["precio_unitario"], errors="coerce").fillna(0.0)
         )
 
 
@@ -2401,19 +2835,14 @@ def mostrar_tab_solicitudes_gastos():
         st.rerun()
 
     df_tot = edited.copy()
-    #for col in ["precio_unitario", "total_xml"]:
+   
     for col in ["precio_unitario", "total_xml", "importe"]:
         if col not in df_tot.columns:
             df_tot[col] = 0
         df_tot[col] = pd.to_numeric(df_tot[col], errors="coerce").fillna(0.0)
         total_gasto_efectuado = float(df_tot["importe"].sum())
         total_gasto_estimado = float(df_tot["precio_unitario"].sum())
-        #df_tot["monto_real_desviacion"] = df_tot.apply(
-        #    lambda r: _to_float(r.get("total_xml"))
-        #    if int(r.get("fiscales") or 0) == 1
-        #    else _to_float(r.get("importe")),
-        #    axis=1,
-        #)
+        
         df_tot["monto_real_desviacion"] = df_tot.apply(
             lambda r: _to_float(r.get("total_xml"))
             if _to_int(r.get("fiscales")) == 1
@@ -2422,7 +2851,7 @@ def mostrar_tab_solicitudes_gastos():
         )
 
         total_desviacion = float(
-            (df_tot["precio_unitario"] - df_tot["monto_real_desviacion"]).sum()
+            df_tot["monto_real_desviacion"].sum() - df_tot["precio_unitario"].sum()
         )
         #total_desviacion = float((df_tot["precio_unitario"] - df_tot["importe"]).sum())
 
@@ -2611,7 +3040,9 @@ def mostrar_tab_solicitudes_gastos():
                         st.info(f"aquí sí enviaría correo a: {correo_remitente} para rol {nombre_rol_aut}")
                         ok_mail, msg_mail = True, "modo prueba: correo no enviado"
                     else:
-                        ok_mail, msg_mail = _enviar_cierre_a_rol_autorizador(
+                        #ok_mail, msg_mail = _enviar_cierre_a_rol_autorizador(
+
+                        ok_mail, msg_mail = _enviar_revision_cierre_a_rol_autorizador(
                             solicitud=solicitud_actualizada,
                             token=token,
                             remitente=correo_remitente,
