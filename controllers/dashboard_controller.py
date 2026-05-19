@@ -7,28 +7,6 @@ import models.dashboard_model as dashboard_model
 from models import conta45_model
 from models.conta45_model import reset_prorrateos_cache
 from models.dashboard_model import *
-##(
-##    polizas_por_tipo,
-##    cobertura_prorrateo,
-##    usos_por_prorrateo,
-##    catalogo_prorrateos_con_uso,
-##    detalle_todas_polizas,
-##    catalogo_proveedores, 
-##    prorrateos_por_proveedor,
-##    proveedores_resumen, 
-##    nombre_conceptos, 
-##    cargar_prorrateos_tabla,
-##    get_detalle_prorrateo,
-##    update_detalle_prorrateo_rows,
-##    get_pendientes_contabilizar,
-##    update_estatus_prorrateos,
-##    get_conceptos_aspel,
-##    get_prov_nombres_desde_sae,
-##    crear_prorrateo_cabecera,
-##    get_unidades_prorrateo_df,
-##    get_cuentas_contables_coi_df,
-##    insertar_detalle_prorrateo,
-##)
 
 def get_polizas_por_tipo(eje:int, origen:str="JAVA") -> pd.DataFrame:
     return pd.DataFrame(polizas_por_tipo(eje, origen))

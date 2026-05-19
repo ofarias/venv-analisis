@@ -1026,6 +1026,7 @@ def get_reporte_cobranza_df(fecha_corte, cliente: str | None = None, vendedor: s
 
         select
         cl.nombre, 
+        cl.rfc,
         cl.clasific as clasificacioncliente,
         cl.clave,
         c.refer,
@@ -1057,8 +1058,9 @@ def get_reporte_cobranza_df(fecha_corte, cliente: str | None = None, vendedor: s
         case
             when c.num_moned = 1 then 0
             when c.num_moned = 2 then c.impmon_ext
+            when c.num_moned = 9 then c.impmon_ext
             else 0
-        end as subtotal_mon_ext,
+        end as total_mon_ext,
         c.importe as importepesos,
         f.imp_tot3 as retencion_iva,
         f.imp_tot4 as iva,
