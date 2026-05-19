@@ -104,6 +104,8 @@ def _estatus_badge(e: str) -> str:
         return "🟡 revision comprobacion"
     if e == "cerrada":
         return "⚫ cerrada"
+    if e == "finalizada":
+        return "🟣 finalizada"
     return e
 
 

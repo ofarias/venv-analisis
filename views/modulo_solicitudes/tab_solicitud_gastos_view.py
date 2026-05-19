@@ -66,6 +66,7 @@ def _enviar_cierre_link_correo_sistema(
     solicitud: dict,
     autoriza_email: str,
     autoriza_rol: str,
+    estatus_final: str,
 ) -> tuple[bool, str]:
     destinatario = None
 
@@ -98,7 +99,7 @@ def _enviar_cierre_link_correo_sistema(
         <b>solicitante:</b> {vendedor}<br>
         <b>autorizó:</b> {autoriza_rol}<br>
         <b>correo:</b> {autoriza_email}<br>
-        <b>estatus actual:</b> contabilidad
+        <b>estatus actual:</b> {estatus_final}
       </p>
 
       <p>la solicitud avanzó al área de contabilidad.</p>
@@ -692,6 +693,8 @@ def _estatus_badge(e):
         return "🟣 poliza"
     if e == "cerrada":
         return "⚫ cerrada"
+    if e == "finalizada":
+        return "🟣 finalizada"
     return e
 
 
@@ -843,7 +846,7 @@ def _detalle_gastos_a_html(rows: list[dict], conceptos_prepago: set[str], fn_mon
 
     return html_pre + "<br>" + html_no
 
-def _enviar_cierre_aprobado_contabilidad_correo_sistema(*, solicitud: dict) -> tuple[bool, str]:
+def _enviar_cierre_aprobado_contabilidad_correo_sistema(*, solicitud: dict, estatus_final: str) -> tuple[bool, str]:
     destinatarios = _correos_unicos_validos(
         get_correos_usuarios_por_rol_ctrl("Contabilidad") or []
     )
@@ -867,7 +870,7 @@ def _enviar_cierre_aprobado_contabilidad_correo_sistema(*, solicitud: dict) -> t
         <b>vendedor:</b> {vendedor}<br>
         <b>clientes:</b> {clientes}<br>
         <b>ciudades:</b> {ciudades}<br>
-        <b>estatus actual:</b> contabilidad
+        <b>estatus actual:</b> {estatus_final}
       </p>
 
       <p>favor de ingresar al módulo para iniciar la revisión contable.</p>
@@ -988,41 +991,32 @@ def _get_dispersion_map_local():
             pass
     return out
 
-#def _resolver_estatus_despues_autorizacion_local(solicitud_id: int) -> str:
-#    detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
-#    requiere_dispersion = False
-#
-#    dispersion_map = _get_dispersion_map_local()
-#
-#    for r in detalle_rows:
-#        concepto = str(r.get("concepto") or "").strip().lower()
-#
-#        if bool(dispersion_map.get(concepto, False)):
-#            requiere_dispersion = True
-#            break
-#
-#    return "autorizada" if requiere_dispersion else "dispersion"
-
 def _resolver_estatus_despues_autorizacion_local(solicitud_id: int) -> str:
     detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
     dispersion_map = _get_dispersion_map_local()
-
     requiere_dispersion_compras = False
     requiere_gasolina_efecticard = False
-
     for r in detalle_rows:
         concepto = str(r.get("concepto") or "").strip().lower()
-
         if bool(dispersion_map.get(concepto, False)):
             requiere_dispersion_compras = True
-
         if concepto in ("gasolina", "gasolina (efecticard)"):
             requiere_gasolina_efecticard = True
-
     if requiere_dispersion_compras or requiere_gasolina_efecticard:
         return "autorizada"
-
     return "dispersion"
+
+def _resolver_estatus_despues_cierre_local(solicitud_id: int) -> str:
+    detalle_rows = get_detalle_ctrl(int(solicitud_id)) or []
+    tiene_no_prepago = False
+    for r in detalle_rows:
+        concepto = str(r.get("concepto") or "").strip()
+        if not concepto:
+            continue
+        if not _is_prepago(concepto):
+            tiene_no_prepago = True
+            break
+    return "contabilidad" if tiene_no_prepago else "finalizada"
 
 def _correos_unicos_validos(correos: list[str]) -> list[str]:
     out = []
@@ -1187,7 +1181,7 @@ def _enviar_cierre_a_rol_autorizador(*, solicitud: dict, token, remitente: str, 
     )
 
 
-def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token, remitente: str) -> tuple[bool, str]:
+def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token, remitente: str, estatus_final: str) -> tuple[bool, str]:
     remitente = str(remitente or "").strip()
     if not remitente:
         return False, "no se encontró correo del remitente."
@@ -1211,7 +1205,7 @@ def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token, remitente:
         <b>vendedor:</b> {vendedor}<br>
         <b>clientes:</b> {clientes}<br>
         <b>ciudades:</b> {ciudades}<br>
-        <b>estatus actual:</b> contabilidad
+        <b>estatus actual:</b> {estatus_final}
       </p>
       <p>favor de ingresar al módulo para iniciar la revisión contable.</p>
     </div>
@@ -1429,9 +1423,11 @@ def mostrar_tab_solicitudes_gastos():
             autoriza_email = str(payload.get("autoriza_email") or "").strip()
             autoriza_rol = str(payload.get("autoriza_rol") or "").strip()
 
+            nuevo_estatus = _resolver_estatus_despues_cierre_local(int(sg_id))
+            
             cambiar_estatus_ctrl(
                 int(sg_id),
-                "contabilidad",
+                nuevo_estatus,
                 0,
                 tipo="conta",
                 metodo="link_externo",
@@ -1443,10 +1439,11 @@ def mostrar_tab_solicitudes_gastos():
                 solicitud=solicitud_link,
                 autoriza_email=autoriza_email,
                 autoriza_rol=autoriza_rol,
+                estatus_final=nuevo_estatus,
             )
 
             ok_conta, msg_conta = _enviar_cierre_aprobado_contabilidad_correo_sistema(
-                solicitud=solicitud_link,
+                solicitud=solicitud_link, estatus_final=nuevo_estatus
             )
 
             if ok_conta:
@@ -3070,10 +3067,12 @@ def mostrar_tab_solicitudes_gastos():
                 token = st.session_state.get("microsoft_token")
                 correo_remitente = str(usuario.get("email") or "").strip()
 
+                nuevo_estatus = _resolver_estatus_despues_cierre_local(int(selected_id))
+
                 if tipo_aut == "sin_autorizacion":
                     cambiar_estatus_ctrl(
                             int(selected_id), 
-                            "contabilidad", 
+                            "nuevo_estatus", 
                             int(usuario["id"]),
                             tipo="conta",
                             metodo="app",
@@ -3085,6 +3084,7 @@ def mostrar_tab_solicitudes_gastos():
                         solicitud=solicitud_actualizada,
                         token=token,
                         remitente=correo_remitente,
+                        estatus_final=nuevo_estatus,
                     )
 
                     if ok_conta:

@@ -23,6 +23,8 @@ from controllers.solicitudes_controller import (
 from utils.envio_correo import enviar_correo
 from textwrap import dedent
 
+from views.modulo_solicitudes.tab_solicitud_gastos_view import _resolver_estatus_despues_cierre_local
+
 def _verify_token(token: str, secret: str) -> dict | None:
     try:
         raw_b64, sig_b64 = token.split(".", 1)
@@ -425,6 +427,7 @@ def _estatus_color_html(e: str) -> str:
         "cancelada": "#7f8c8d",
         "cerrada": "#8e44ad",
         "dispersion": "#f97316",
+        "finalizada": "#8e44ad",
     }
     color = colors.get(e, "#95a5a6")
 
@@ -641,7 +644,7 @@ def _enviar_revision_cierre_rechazada_correo(*, solicitud: dict, motivo: str, to
         remitente=remitente,
     )
 
-def _enviar_revision_cierre_aprobada_correo(*, solicitud: dict, token):
+def _enviar_revision_cierre_aprobada_correo(*, solicitud: dict, token, nuevo_estatus: str):
     usuario = st.session_state.get("usuario") or {}
     remitente = str(usuario.get("email") or "").strip()
     if not remitente:
@@ -661,7 +664,7 @@ def _enviar_revision_cierre_aprobada_correo(*, solicitud: dict, token):
       <p>
         <b>folio:</b> {folio}<br>
         <b>vendedor:</b> {vendedor_nombre}<br>
-        <b>estatus actual:</b> contabilidad
+        <b>estatus actual:</b> {nuevo_estatus}
       </p>
       <p>la solicitud avanzó al área de contabilidad.</p>
     </div>
@@ -675,7 +678,7 @@ def _enviar_revision_cierre_aprobada_correo(*, solicitud: dict, token):
         remitente=remitente,
     )
 
-def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token):
+def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token, nuevo_estatus: str):
     usuario = st.session_state.get("usuario") or {}
     remitente = str(usuario.get("email") or "").strip()
 
@@ -705,7 +708,7 @@ def _enviar_a_contabilidad_revision_correo(*, solicitud: dict, token):
         <b>vendedor:</b> {vendedor}<br>
         <b>clientes:</b> {clientes}<br>
         <b>ciudades:</b> {ciudades}<br>
-        <b>estatus actual:</b> contabilidad
+        <b>estatus actual:</b> {nuevo_estatus}
       </p>
 
       <p>favor de ingresar al módulo para iniciar la revisión contable.</p>
@@ -893,7 +896,6 @@ def mostrar_tab_autorizaciones_solicitudes():
         )
         
         if not puede_accion_jefe:
-            #st.warning("no tienes permiso para autorizar/rechazar o la solicitud no está en estatus enviada.")
             st.warning("no tienes permiso para ejecutar esta acción o la solicitud no está en el estatus correcto.")
             st.session_state["aut_pending_action"] = ""
         else:
@@ -903,28 +905,17 @@ def mostrar_tab_autorizaciones_solicitudes():
                 if st.button(
                     "confirmar autorizar",
                     use_container_width=True,
-                    #disabled=(pending != "approve"),
                     disabled=(pending not in ("approve", "approve_close")),
                     key="aut_btn_confirm_from_link_approve",
                 ):
                     token = st.session_state.get("microsoft_token")
+                    
+                    nuevo_estatus = _resolver_estatus_despues_cierre_local(int(sel_id))
 
-                    #nuevo_estatus, mensajes_ok, mensajes_warn = _autorizar_solicitud_y_notificar(
-                    #    solicitud=s,
-                    #    solicitud_id=int(sel_id),
-                    #    usuario_id=int(usuario.get("id") or 0),
-                    #    token=token,
-                    #)
-#
-                    #if mensajes_ok:
-                    #    st.success(f"solicitud actualizada a {nuevo_estatus}. " + " | ".join(mensajes_ok))
-#
-                    #if mensajes_warn:
-                    #    st.warning(" | ".join(mensajes_warn))
                     if pending == "approve_close":
                         cambiar_estatus_ctrl(
                             int(sel_id),
-                            "contabilidad",
+                            nuevo_estatus,
                             int(usuario.get("id") or 0),
                             tipo="conta",
                             metodo="link",
@@ -936,11 +927,13 @@ def mostrar_tab_autorizaciones_solicitudes():
                         ok_mail, msg_mail = _enviar_revision_cierre_aprobada_correo(
                             solicitud=s,
                             token=token,
+                            nuevo_estatus=nuevo_estatus,
                         )
 
                         ok_conta, msg_conta = _enviar_a_contabilidad_revision_correo(
                             solicitud=s,
                             token=token,
+                            nuevo_estatus=nuevo_estatus,
                         )
 
                         if ok_mail:
@@ -1320,36 +1313,34 @@ def mostrar_tab_autorizaciones_solicitudes():
 
         with c5:
             if st.button("✅ aprobar cierre", use_container_width=True, key="aut_btn_aprobar_cierre", type="secondary",):
+                nuevo_estatus = _resolver_estatus_despues_cierre_local(int(sel_id))
+                
                 cambiar_estatus_ctrl(
                         int(sel_id), 
-                        "contabilidad", 
+                        nuevo_estatus, 
                         int(usuario.get("id") or 0),
                         tipo="conta",
                         metodo="app",
                         usuario_nombre=str(usuario.get("nombre") or ""),
                         usuario_email=str(usuario.get("email") or ""),
                 )
-
                 token = st.session_state.get("microsoft_token")
-
                 mensajes_ok = []
                 mensajes_warn = []
-
-                # correo al solicitante
                 ok_mail, msg_mail = _enviar_revision_cierre_aprobada_correo(
                     solicitud=s,
                     token=token,
+                    nuevo_estatus=nuevo_estatus,
                 )
-
                 if ok_mail:
                     mensajes_ok.append("correo enviado al solicitante")
                 else:
                     mensajes_warn.append(f"no se pudo enviar correo al solicitante: {msg_mail}")
-
-                # 👇 NUEVO: correo a contabilidad
+            
                 ok_conta, msg_conta = _enviar_a_contabilidad_revision_correo(
                     solicitud=s,
                     token=token,
+                    nuevo_estatus=nuevo_estatus,
                 )
 
                 if ok_conta:
