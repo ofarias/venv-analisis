@@ -1071,6 +1071,7 @@ def get_reporte_cobranza_df(fecha_corte, cliente: str | None = None, vendedor: s
         case
             when c.num_moned = 1 then 0
             when c.num_moned = 2 then c.impmon_ext + coalesce(m.pagado_usd, 0)
+            when c.num_moned = 9 then c.impmon_ext + coalesce(m.pagado_usd, 0)
             else 0
         end as saldo_mon_ext,
 

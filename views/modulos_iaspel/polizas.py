@@ -1,169 +1,632 @@
-import altair as alt
+# views/modulo_polizas/polizas.py
+
 import streamlit as st
 import pandas as pd
-from datetime import date
+import matplotlib.pyplot as plt
 from io import BytesIO
-from models.conta_model import *
 
-def pantalla_polizas():
-    st.title("polizas coi")
+from controllers.polizas_controller import (
+    get_resumen_polizas_ctrl,
+    get_detalle_poliza_ctrl,
+    get_xml_con_poliza_ctrl,
+)
 
-    # ejercicio por defecto = año actual % 100
-    eje_default = date.today().year % 100
-    c1, c2, c3 = st.columns([1,1,2])
-    eje = c1.number_input("ejercicio (dos dígitos)", min_value=0, max_value=99, value=eje_default, step=1)
-    opciones = obtener_opciones(eje)
+CLIENTE_DEFAULT = "PCP220503B20"
 
-    tipos = c2.multiselect("tipo", options=opciones["tipos"], default=opciones["tipos"])
-    periodos = c3.multiselect("periodo", options=opciones["periodos"], default=opciones["periodos"])
 
-    c4, c5, c6 = st.columns([1,1,1])
-    cuenta_pref = c4.text_input("cuenta inicia con", value="")
-    concepto_like = c5.text_input("concepto contiene", value="")
-    rango = c6.date_input("rango de fechas", value=[], format="YYYY-MM-DD")
+def _fmt_money(v):
+    try:
+        return f"${float(v):,.2f}"
+    except Exception:
+        return "$0.00"
 
-    fecha_desde = rango[0] if isinstance(rango, list) and len(rango)==2 else None
-    fecha_hasta = rango[1] if isinstance(rango, list) and len(rango)==2 else None
 
-    filtros = {
-        "tipos": tipos,
-        "periodos": periodos,
-        "cuenta_pref": cuenta_pref or None,
-        "concepto_like": concepto_like or None,
-        "fecha_desde": fecha_desde,
-        "fecha_hasta": fecha_hasta,
-    }
+def _export_excel(df: pd.DataFrame) -> bytes:
+    output = BytesIO()
 
-    # paginación
-    op = st.selectbox("registros por página", [50, 100, 300, 1000, "Todos"], index=2)
-    if op == "Todos":
-        page_size, page, offset = None, 1, 0
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="xml_polizas")
+
+    return output.getvalue()
+
+
+def _normalizar_df_xml(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+
+    if "FECHA" in df.columns:
+        df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
+        df["ANIO"] = df["FECHA"].dt.year
+        df["MES"] = df["FECHA"].dt.month
+        df["MES_ANIO"] = df["FECHA"].dt.to_period("M").astype(str)
+
+    for col in [
+        "SUBTOTAL",
+        "IVA",
+        "IMPORTE",
+        "IMPORTE_MXN",
+        "TIPOCAMBIO",
+    ]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            ).fillna(0)
+
+    if "TIENE_POLIZA" in df.columns:
+        df["TIENE_POLIZA"] = (
+            df["TIENE_POLIZA"]
+            .fillna("NO")
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
     else:
-        page_size = int(op)
-        page = st.number_input("página", min_value=1, value=1, step=1)
-        offset = (page - 1) * page_size
+        df["TIENE_POLIZA"] = "NO"
 
-    total = contar_polizas(eje, filtros)
-    st.caption(f"total registros: {total:,}")
+    return df
 
-    data = obtener_polizas(eje, filtros, limit=page_size, offset=offset)
 
-    if not data:
-        st.warning("sin resultados con los filtros actuales")
-        return
+def mostrar_modulo_polizas():
+    st.title("Módulo de Pólizas")
 
-    df = pd.DataFrame(data)
+    tab_xml, tab_resumen, tab_detalle, tab_config = st.tabs([
+        "XML vs pólizas",
+        "Resumen de pólizas",
+        "Detalle de póliza",
+        "Configuración",
+    ])
 
-    # kpis
-    colk1, colk2, colk3 = st.columns(3)
-    cargos = float(df.get("CARGO", pd.Series([0])).sum())
-    abonos = float(df.get("ABONO", pd.Series([0])).sum())
-    colk1.metric("cargos", f"{cargos:,.2f}")
-    colk2.metric("abonos", f"{abonos:,.2f}")
-    colk3.metric("diferencia", f"{(cargos - abonos):,.2f}")
+    with tab_xml:
+        mostrar_tab_xml_vs_polizas()
 
-    st.dataframe(df, use_container_width=True)
+    with tab_resumen:
+        mostrar_tab_resumen_polizas()
 
-    # botón de descarga
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        df.to_excel(w, index=False, sheet_name=f"POLIZAS{eje:02d}")
-    st.download_button(
-        "descargar excel",
-        data=buf.getvalue(),
-        file_name=f"polizas_{eje:02d}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    with tab_detalle:
+        mostrar_tab_detalle_poliza()
+
+    with tab_config:
+        mostrar_tab_configuracion_polizas()
+
+
+def mostrar_tab_xml_vs_polizas():
+    st.subheader("XML de ventas vs pólizas")
+
+    cliente = st.text_input(
+        "RFC cliente excluido",
+        value=CLIENTE_DEFAULT,
+        key="polizas_xml_cliente",
+    ).strip().upper()
+
+    if st.button(
+        "Consultar XML",
+        type="primary",
+        key="btn_consultar_xml_polizas",
+    ):
+        st.session_state["polizas_df_xml"] = (
+            get_xml_con_poliza_ctrl(cliente)
+        )
+
+    df = st.session_state.get(
+        "polizas_df_xml",
+        pd.DataFrame()
     )
 
-    # resumen y gráficas
-    resumen = resumen_por_periodo(eje, filtros)
-    if resumen:
-        dfr = pd.DataFrame(resumen)
-        dfr = dfr.sort_values("PERIODO")
-        st.subheader("cargos y abonos por periodo")
+    df = _normalizar_df_xml(df)
 
-        # altair simple
-        import altair as alt
-        dfrm = dfr.melt(id_vars=["PERIODO"], value_vars=["CARGOS","ABONOS"], var_name="tipo", value_name="monto")
-        chart = alt.Chart(dfrm).mark_bar().encode(
-            x=alt.X("PERIODO:O", title="periodo"),
-            y=alt.Y("monto:Q", title="monto"),
-            color=alt.Color("tipo:N")
-        ).properties(height=320, width="container")
-        st.altair_chart(chart, use_container_width=True)
+    if df.empty:
+        st.info(
+            "Consulta los XML para revisar cuáles tienen póliza y cuáles no."
+        )
+        return
 
-        # top cuentas por monto (si existe CUENTA)
-        if "CUENTA" in df.columns and "CARGO" in df.columns and "ABONO" in df.columns:
-            st.subheader("top 15 cuentas por monto absoluto")
-            top = (
-                df.assign(MONTO=(df["CARGO"].fillna(0) - df["ABONO"].fillna(0)).abs())
-                  .groupby("CUENTA", as_index=False)["MONTO"].sum()
-                  .sort_values("MONTO", ascending=False)
-                  .head(15)
+    total_xml = len(df)
+
+    total_con_poliza = int(
+        (df["TIENE_POLIZA"] == "SI").sum()
+    )
+
+    total_sin_poliza = int(
+        (df["TIENE_POLIZA"] == "NO").sum()
+    )
+
+    importe_sin_poliza = (
+        df.loc[
+            df["TIENE_POLIZA"] == "NO",
+            "IMPORTE_MXN"
+        ].sum()
+        if "IMPORTE_MXN" in df.columns
+        else 0
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        "Total XML",
+        f"{total_xml:,}"
+    )
+
+    c2.metric(
+        "Con póliza",
+        f"{total_con_poliza:,}"
+    )
+
+    c3.metric(
+        "Sin póliza",
+        f"{total_sin_poliza:,}"
+    )
+
+    c4.metric(
+        "Importe sin póliza MXN",
+        _fmt_money(importe_sin_poliza)
+    )
+
+    st.divider()
+
+    st.subheader(
+        "Importe XML sin póliza por mes / año"
+    )
+
+    df_importe_sin = (
+        df[df["TIENE_POLIZA"] == "NO"]
+        .groupby(
+            "MES_ANIO",
+            as_index=False
+        )["IMPORTE_MXN"]
+        .sum()
+        .sort_values("MES_ANIO")
+    )
+
+    st.dataframe(
+        df_importe_sin,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "IMPORTE_MXN": st.column_config.NumberColumn(
+                "Importe MXN",
+                format="$ %.2f"
             )
-            chart2 = alt.Chart(top).mark_bar().encode(
-                x=alt.X("MONTO:Q"),
-                y=alt.Y("CUENTA:N", sort="-x")
-            ).properties(height=400, width="container")
-            st.altair_chart(chart2, use_container_width=True)
+        },
+    )
 
+    col1, col2, col3 = st.columns(3)
 
-        # --- por tipo ---
-    rt = resumen_por_tipo(eje, filtros)
-    if rt:
-        dft = pd.DataFrame(rt)
-        dft_m = dft.melt(id_vars=["TIPO_POLI"], value_vars=["CARGOS","ABONOS"],
-                        var_name="mov", value_name="monto")
-        st.subheader("Cargos y abonos por TIPO de póliza")
-        chart_t = alt.Chart(dft_m).mark_bar().encode(
-            x=alt.X("TIPO_POLI:N", title="Tipo"),
-            y=alt.Y("monto:Q", title="Monto"),
-            color="mov:N"
-        ).properties(height=320)
-        st.altair_chart(chart_t, use_container_width=True)
-
-    # --- por origen ---
-    ro = resumen_por_origen(eje, filtros)
-    if ro:
-        dfo = pd.DataFrame(ro)
-        dfo_m = dfo.melt(id_vars=["ORIGEN"], value_vars=["CARGOS","ABONOS"],
-                        var_name="mov", value_name="monto")
-        st.subheader("Cargos y abonos por ORIGEN")
-        chart_o = alt.Chart(dfo_m).mark_bar().encode(
-            x=alt.X("ORIGEN:N", title="Origen"),
-            y=alt.Y("monto:Q", title="Monto"),
-            color="mov:N"
-        ).properties(height=320)
-        st.altair_chart(chart_o, use_container_width=True)
-        
-    rc = resumen_conteo_por_origen(eje, filtros)
-    if rc:
-        dfo = pd.DataFrame(rc)  # columnas: ORIGEN, NUM_POLIZAS
-        st.subheader("Número de pólizas por ORIGEN")
-
-        # controles
-        altura = st.slider("Alto de la gráfica", 200, 800, 400, 50)
-        grosor = st.slider("Grosor de barra", 10, 80, 30, 2)
-
-        base = alt.Chart(dfo).encode(
-            x=alt.X("ORIGEN:N", title="Origen"),
-            y=alt.Y("NUM_POLIZAS:Q", title="# de pólizas")
+    with col1:
+        filtro_poliza = st.selectbox(
+            "Estatus póliza",
+            [
+                "Todos",
+                "Con póliza",
+                "Sin póliza",
+            ],
+            key="filtro_xml_poliza",
         )
 
-        barras = base.mark_bar(size=grosor).properties(height=altura)
+    with col2:
+        meses = sorted(
+            df["MES_ANIO"]
+            .dropna()
+            .unique()
+            .tolist()
+        ) if "MES_ANIO" in df.columns else []
 
-        # ← Clave: calculamos la mitad del valor para centrar el texto dentro de la barra
-        etiquetas = base.transform_calculate(
-            mid="datum.NUM_POLIZAS / 2"
-        ).mark_text(
-            align="center",
-            baseline="middle",   # centrado vertical respecto a y=mid
-            color="white",
-            fontSize=12
-        ).encode(
-            y="mid:Q",
-            text="NUM_POLIZAS:Q"
+        filtro_mes = st.multiselect(
+            "Mes / año",
+            options=meses,
+            default=meses,
+            key="filtro_xml_mes_anio",
         )
 
-        chart = (barras + etiquetas).properties(width="container")
-        st.altair_chart(chart, use_container_width=True)
+    with col3:
+        buscar = st.text_input(
+            "Buscar UUID / serie / folio",
+            key="filtro_xml_buscar",
+        ).strip().upper()
+
+    df_filtrado = df.copy()
+
+    if filtro_poliza == "Con póliza":
+        df_filtrado = df_filtrado[
+            df_filtrado["TIENE_POLIZA"] == "SI"
+        ]
+
+    elif filtro_poliza == "Sin póliza":
+        df_filtrado = df_filtrado[
+            df_filtrado["TIENE_POLIZA"] == "NO"
+        ]
+
+    if filtro_mes and "MES_ANIO" in df_filtrado.columns:
+        df_filtrado = df_filtrado[
+            df_filtrado["MES_ANIO"].isin(filtro_mes)
+        ]
+
+    if buscar:
+        cols_busqueda = [
+            c for c in [
+                "UUID",
+                "SERIE",
+                "FOLIO",
+                "NUM_POLIZ",
+            ]
+            if c in df_filtrado.columns
+        ]
+
+        if cols_busqueda:
+            mask = False
+
+            for c in cols_busqueda:
+                mask = (
+                    mask
+                    |
+                    df_filtrado[c]
+                    .astype(str)
+                    .str.upper()
+                    .str.contains(buscar, na=False)
+                )
+
+            df_filtrado = df_filtrado[mask]
+
+    st.subheader("Gráfica por mes / año")
+
+    if "MES_ANIO" in df_filtrado.columns:
+
+        df_grafica = (
+            df_filtrado
+            .groupby(
+                ["MES_ANIO", "TIENE_POLIZA"],
+                as_index=False
+            )
+            .agg(
+                XML=("UUID", "count"),
+                IMPORTE_MXN=("IMPORTE_MXN", "sum"),
+            )
+        )
+
+        df_pivot = (
+            df_grafica
+            .pivot(
+                index="MES_ANIO",
+                columns="TIENE_POLIZA",
+                values=["XML", "IMPORTE_MXN"]
+            )
+            .fillna(0)
+        )
+
+        df_pivot.columns = [
+            f"{valor}_{estatus}"
+            for valor, estatus in df_pivot.columns
+        ]
+
+        df_pivot = df_pivot.reset_index()
+
+        for col in [
+            "XML_NO",
+            "IMPORTE_MXN_NO",
+            "XML_SI",
+            "IMPORTE_MXN_SI",
+        ]:
+            if col not in df_pivot.columns:
+                df_pivot[col] = 0
+
+        df_pivot["TOTAL_XML"] = (
+            df_pivot["XML_NO"]
+            + df_pivot["XML_SI"]
+        )
+
+        df_pivot["TOTAL_MXN"] = (
+            df_pivot["IMPORTE_MXN_NO"]
+            + df_pivot["IMPORTE_MXN_SI"]
+        )
+
+        df_pivot = df_pivot.rename(columns={
+            "XML_NO": "XML sin póliza",
+            "IMPORTE_MXN_NO": "Valor sin póliza",
+            "XML_SI": "XML con póliza",
+            "IMPORTE_MXN_SI": "Valor con póliza",
+            "TOTAL_XML": "Total XML",
+            "TOTAL_MXN": "Total valor",
+        })
+
+        fig, ax = plt.subplots()
+
+        ax.bar(
+            df_pivot["MES_ANIO"],
+            df_pivot["XML con póliza"],
+            label="Con póliza",
+        )
+
+        ax.bar(
+            df_pivot["MES_ANIO"],
+            df_pivot["XML sin póliza"],
+            bottom=df_pivot["XML con póliza"],
+            label="Sin póliza",
+        )
+
+        ax.set_title(
+            "XML de venta con póliza y sin póliza"
+        )
+
+        ax.set_xlabel("Mes / año")
+
+        ax.set_ylabel(
+            "Cantidad de XML"
+        )
+
+        ax.legend()
+
+        plt.xticks(
+            rotation=45,
+            ha="right"
+        )
+
+        st.pyplot(fig)
+
+        st.dataframe(
+            df_pivot,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+
+                "XML sin póliza": st.column_config.NumberColumn(
+                    format="%d"
+                ),
+
+                "XML con póliza": st.column_config.NumberColumn(
+                    format="%d"
+                ),
+
+                "Total XML": st.column_config.NumberColumn(
+                    format="%d"
+                ),
+
+                "Valor sin póliza": st.column_config.NumberColumn(
+                    format="$ %.2f"
+                ),
+
+                "Valor con póliza": st.column_config.NumberColumn(
+                    format="$ %.2f"
+                ),
+
+                "Total valor": st.column_config.NumberColumn(
+                    format="$ %.2f"
+                ),
+            },
+        )
+
+    st.subheader("Detalle de XML")
+
+    columnas_preferidas = [
+        "TIENE_POLIZA",
+        "UUID",
+        "CLIENTE",
+        "FECHA",
+        "MES_ANIO",
+        "SERIE",
+        "FOLIO",
+        "SUBTOTAL",
+        "IVA",
+        "IMPORTE",
+        "MONEDA",
+        "TIPOCAMBIO",
+        "IMPORTE_MXN",
+        "TIPO_POLI",
+        "NUM_POLIZ",
+        "PERIODO",
+        "EJERCICIO",
+        "FECHA_POL",
+        "CONCEP_PO",
+    ]
+
+    columnas = [
+        c for c in columnas_preferidas
+        if c in df_filtrado.columns
+    ]
+
+    columnas_extra = [
+        c for c in df_filtrado.columns
+        if c not in columnas
+    ]
+
+    df_mostrar = df_filtrado[
+        columnas + columnas_extra
+    ].copy()
+
+    st.dataframe(
+        df_mostrar,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+
+            "FECHA": st.column_config.DateColumn(
+                format="DD/MM/YYYY"
+            ),
+
+            "FECHA_POL": st.column_config.DateColumn(
+                format="DD/MM/YYYY"
+            ),
+
+            "SUBTOTAL": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+
+            "IVA": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+
+            "IMPORTE": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+
+            "TIPOCAMBIO": st.column_config.NumberColumn(
+                format="%.4f"
+            ),
+
+            "IMPORTE_MXN": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+        },
+    )
+
+    st.download_button(
+        "Descargar Excel",
+        data=_export_excel(df_mostrar),
+        file_name="xml_vs_polizas.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_xml_vs_polizas",
+    )
+
+
+def mostrar_tab_resumen_polizas():
+    st.subheader(
+        "Resumen por póliza y tipo"
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        ejercicio = st.number_input(
+            "Ejercicio",
+            min_value=2000,
+            max_value=2100,
+            value=2026,
+            step=1,
+            key="polizas_ejercicio",
+        )
+
+    with col2:
+        periodo = st.selectbox(
+            "Periodo",
+            options=list(range(1, 13)),
+            index=0,
+            key="polizas_periodo",
+        )
+
+    with col3:
+        tipo_poliza = st.selectbox(
+            "Tipo de póliza",
+            options=[
+                "Todos",
+                "Ig",
+                "Eg",
+                "Dr",
+            ],
+            key="polizas_tipo",
+        )
+
+    if st.button(
+        "Consultar resumen",
+        type="primary",
+        key="btn_consultar_resumen_polizas",
+    ):
+        st.session_state["polizas_df_resumen"] = (
+            get_resumen_polizas_ctrl(
+                ejercicio=ejercicio,
+                periodo=periodo,
+                tipo_poliza=tipo_poliza,
+            )
+        )
+
+    df = st.session_state.get(
+        "polizas_df_resumen",
+        pd.DataFrame()
+    )
+
+    if df.empty:
+        st.info(
+            "Consulta el resumen de pólizas."
+        )
+        return
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def mostrar_tab_detalle_poliza():
+    st.subheader(
+        "Detalle de póliza"
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        ejercicio = st.number_input(
+            "Ejercicio detalle",
+            min_value=2000,
+            max_value=2100,
+            value=2026,
+            step=1,
+            key="detalle_polizas_ejercicio",
+        )
+
+    with col2:
+        periodo = st.selectbox(
+            "Periodo detalle",
+            options=list(range(1, 13)),
+            index=0,
+            key="detalle_polizas_periodo",
+        )
+
+    with col3:
+        tipo_poliza = st.text_input(
+            "Tipo",
+            value="Ig",
+            key="detalle_polizas_tipo",
+        ).strip()
+
+    with col4:
+        num_poliz = st.text_input(
+            "Número póliza",
+            key="detalle_polizas_num",
+        ).strip()
+
+    if st.button(
+        "Consultar detalle",
+        type="primary",
+        key="btn_consultar_detalle_poliza",
+    ):
+        if not tipo_poliza or not num_poliz:
+            st.warning(
+                "Captura tipo y número de póliza."
+            )
+        else:
+            st.session_state["polizas_df_detalle"] = (
+                get_detalle_poliza_ctrl(
+                    ejercicio=ejercicio,
+                    periodo=periodo,
+                    tipo_poliza=tipo_poliza,
+                    num_poliz=num_poliz,
+                )
+            )
+
+    df = st.session_state.get(
+        "polizas_df_detalle",
+        pd.DataFrame()
+    )
+
+    if df.empty:
+        st.info(
+            "Consulta el detalle de una póliza."
+        )
+        return
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def mostrar_tab_configuracion_polizas():
+    st.subheader(
+        "Configuración del módulo"
+    )
+
+    st.info(
+        "Aquí agregaremos reglas posteriormente."
+    )

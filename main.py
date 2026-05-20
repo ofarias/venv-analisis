@@ -13,6 +13,8 @@ import os
 from PIL import Image
 import streamlit as st
 
+from views.modulos_iaspel.polizas import mostrar_modulo_polizas
+
 # 1. Obtiene la ruta absoluta de la carpeta donde está este main.py
 DIR_PROYECTO = os.path.dirname(os.path.abspath(__file__))
 
@@ -149,6 +151,7 @@ else:
         st.stop()
 
     if "SuperAdmin" in roles:
+        menu_opciones["⚙️ Polizas "] = "polizas"
         menu_opciones["Presupuestos Ventas"] = "presupuestos_ventas"
         menu_opciones["Compras"] = "compras"
         menu_opciones["Solicitudes Contabilidad"] = "solicitudesConta"
@@ -160,7 +163,7 @@ else:
         menu_opciones["Politicas Internas"] = "PolInt"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
         menu_opciones[" Tablero CFDI"] = "tab_cfdi" 
-        menu_opciones["⚙️ Polizas "] = "polizas"
+        
         menu_opciones["⚙️ Bridge COI - JAVA "] = "bridgeCJ"
         menu_opciones[" Prorrateo View"] = "prorrateo"
         menu_opciones[" Dashboard Prorrateos"] = "dash_prorrateos"
@@ -314,8 +317,8 @@ else:
             from views.modulos_iaspel.ksae10t import tablas_iaspel
             tablas_iaspel()
         elif modulo == 'polizas':
-            from views.modulos_iaspel.polizas import pantalla_polizas
-            pantalla_polizas()
+            from views.modulos_iaspel.polizas import mostrar_modulo_polizas
+            mostrar_modulo_polizas()
         elif modulo == 'bridgeCJ':
             from views.modulos_iaspel.bridge_view import pantalla_bridge_java
             pantalla_bridge_java()
