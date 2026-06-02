@@ -5,6 +5,9 @@ from models.polizas_model import (
     obtener_detalle_poliza,
     obtener_xml_resumen_mes_anio,
     obtener_xml_con_poliza,
+    obtener_xml_con_poliza_gastos,
+    obtener_validacion_importes_uuid,
+    obtener_detalle_xml_polizas_uuid,
 )
 
 
@@ -22,3 +25,37 @@ def get_xml_resumen_mes_anio_ctrl(cliente: str = "PCP220503B20"):
 
 def get_xml_con_poliza_ctrl(cliente: str = "PCP220503B20"):
     return obtener_xml_con_poliza(cliente)
+
+
+def get_xml_con_poliza_gastos_ctrl(
+    cliente: str = "PCP220503B20",
+    anio: int | None = None,
+):
+    return obtener_xml_con_poliza_gastos(
+        cliente=cliente,
+        anio=anio,
+    )
+
+
+def get_validacion_importes_uuid_ctrl(
+    modo: str,
+    cliente: str = "PCP220503B20",
+    anio: int | None = None,
+):
+    return obtener_validacion_importes_uuid(
+        modo=modo,
+        cliente=cliente,
+        anio=anio,
+    )
+
+
+def get_detalle_xml_polizas_uuid_ctrl(
+    modo: str,
+    cliente: str = "PCP220503B20",
+    anio: int | None = None,
+):
+    return obtener_detalle_xml_polizas_uuid(
+        modo=modo,
+        cliente=cliente,
+        anio=anio,
+    )

@@ -9,6 +9,11 @@ from controllers.polizas_controller import (
     get_resumen_polizas_ctrl,
     get_detalle_poliza_ctrl,
     get_xml_con_poliza_ctrl,
+    get_validacion_importes_uuid_ctrl,
+)
+
+from views.modulos_iaspel.tab_polizas_gastos import (
+    mostrar_tab_polizas_gastos,
 )
 
 CLIENTE_DEFAULT = "PCP220503B20"
@@ -48,6 +53,12 @@ def _normalizar_df_xml(df: pd.DataFrame) -> pd.DataFrame:
         "IMPORTE",
         "IMPORTE_MXN",
         "TIPOCAMBIO",
+        "TOTAL_DEBE",
+        "TOTAL_HABER",
+        "DIF_POLIZA",
+        "DIF_XML_DEBE",
+        "DIF_XML_HABER",
+        "DIFERENCIA",
     ]:
         if col in df.columns:
             df[col] = pd.to_numeric(
@@ -72,11 +83,12 @@ def _normalizar_df_xml(df: pd.DataFrame) -> pd.DataFrame:
 def mostrar_modulo_polizas():
     st.title("Módulo de Pólizas")
 
-    tab_xml, tab_resumen, tab_detalle, tab_config = st.tabs([
+    tab_xml, tab_resumen, tab_detalle, tab_config, tab_gastos = st.tabs([
         "XML vs pólizas",
         "Resumen de pólizas",
         "Detalle de póliza",
         "Configuración",
+        "Pólizas de gastos"
     ])
 
     with tab_xml:
@@ -90,6 +102,9 @@ def mostrar_modulo_polizas():
 
     with tab_config:
         mostrar_tab_configuracion_polizas()
+    
+    with tab_gastos:
+        mostrar_tab_polizas_gastos()
 
 
 def mostrar_tab_xml_vs_polizas():
@@ -107,7 +122,11 @@ def mostrar_tab_xml_vs_polizas():
         key="btn_consultar_xml_polizas",
     ):
         st.session_state["polizas_df_xml"] = (
-            get_xml_con_poliza_ctrl(cliente)
+            get_validacion_importes_uuid_ctrl(
+                modo="ventas",
+                cliente=cliente,
+                anio=None,
+            )
         )
 
     df = st.session_state.get(
@@ -418,6 +437,14 @@ def mostrar_tab_xml_vs_polizas():
         "EJERCICIO",
         "FECHA_POL",
         "CONCEP_PO",
+        
+        "TOTAL_DEBE",
+        "TOTAL_HABER",
+        "DIF_POLIZA",
+        "DIF_XML_DEBE",
+        "DIF_XML_HABER",
+        "ESTATUS_VALIDACION",
+
     ]
 
     columnas = [
@@ -465,6 +492,25 @@ def mostrar_tab_xml_vs_polizas():
             ),
 
             "IMPORTE_MXN": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+            "TOTAL_DEBE": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+
+            "TOTAL_HABER": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+
+            "DIF_POLIZA": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+
+            "DIF_XML_DEBE": st.column_config.NumberColumn(
+                format="$ %.2f"
+            ),
+
+            "DIF_XML_HABER": st.column_config.NumberColumn(
                 format="$ %.2f"
             ),
         },

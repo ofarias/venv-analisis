@@ -151,6 +151,7 @@ else:
         st.stop()
 
     if "SuperAdmin" in roles:
+        #menu_opciones["Formulas"] = "formulas"
         menu_opciones["⚙️ Polizas "] = "polizas"
         menu_opciones["Presupuestos Ventas"] = "presupuestos_ventas"
         menu_opciones["Compras"] = "compras"
@@ -230,11 +231,9 @@ else:
         menu_opciones["Solicitudes"] = "solicitudes"
         menu_opciones["Compras"] = "compras"
 
-
-    #if menu_opciones:
-    #    seleccion = st.sidebar.selectbox("Módulos disponibles", list(menu_opciones.keys()))
-    #    modulo = menu_opciones[seleccion]
-
+    if "Formulas" in roles:
+        menu_opciones["Formulas"] = "formulas"
+    
     if menu_opciones:
         opciones_menu = list(menu_opciones.keys())
 
@@ -370,6 +369,9 @@ else:
         elif modulo =="presupuestos_ventas":
             from views.modulo_presupuesto_ventas.tab_carga_presupuesto_ventas_view import mostrar_tab_carga_presupuesto_ventas
             mostrar_tab_carga_presupuesto_ventas()
+        elif modulo =="formulas":
+            from views.modulo_formulas.formulas_view import mostrar_modulo_formulas
+            mostrar_modulo_formulas()
     else:
         st.warning("⚠️ No tienes roles asignados para acceder a los módulos..")
         ## st.json(roles)
