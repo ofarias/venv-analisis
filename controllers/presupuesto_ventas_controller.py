@@ -26,6 +26,11 @@ from models.presupuesto_ventas_sae_model import (
     obtener_vendedores_sae_model,
 )
 
+from utils.presupuesto_ventas_excel_parser import (
+    detectar_tablas_presupuesto_excel,
+    normalizar_presupuesto_excel_dinamico,
+)
+
 MESES_MAP = {
     "jan": 1,
     "january": 1,
@@ -335,17 +340,24 @@ def cargar_excel_a_staging_presupuesto_ventas_ctrl(
     comentarios: Optional[str] = None,
     limpiar_staging: bool = True,
 ) -> dict:
-    df, hoja_final = leer_excel_presupuesto_ventas_ctrl(
+
+    if not hoja:
+        raise ValueError("Debes seleccionar una hoja del archivo Excel.")
+
+    archivo.seek(0)
+
+    df_norm, tablas = normalizar_presupuesto_excel_dinamico(
         archivo=archivo,
         hoja=hoja,
-        header=header,
+        anio=int(anio),
     )
 
-    registros = normalizar_presupuesto_ventas_ctrl(df=df, anio_default=anio)
+    if df_norm is None or df_norm.empty:
+        raise ValueError("No se generaron registros para cargar a staging.")
 
     id_carga = registrar_carga_presupuesto_ventas_ctrl(
         nombre_archivo=nombre_archivo,
-        hoja_origen=hoja_final,
+        hoja_origen=hoja,
         anio=anio,
         version=version,
         comentarios=comentarios,
@@ -356,23 +368,29 @@ def cargar_excel_a_staging_presupuesto_ventas_ctrl(
         eliminar_staging_por_carga_presupuesto_ventas_model(id_carga=id_carga)
 
     total_insertados = 0
-    for reg in registros:
+
+    for _, reg in df_norm.iterrows():
         insertar_staging_presupuesto_ventas_model(
             id_carga=id_carga,
-            fila_excel=reg["fila_excel"],
-            company=reg["company"],
-            canal=reg["canal"],
-            cliente_excel=reg["cliente_excel"],
-            vendedor_excel=reg["vendedor_excel"],
-            unidad_negocio_excel=reg["unidad_negocio_excel"],
-            linea_excel=reg["linea_excel"],
-            producto_excel=reg["producto_excel"],
-            precio=reg["precio"],
-            anio=reg["anio"],
-            mes=reg["mes"],
-            cantidad_kg=reg["cantidad_kg"],
-            importe=reg["importe"],
-            comentario=reg["comentario"],
+            fila_excel=int(reg.get("fila_excel") or 0),
+            seccion=reg.get("seccion"),
+            region=reg.get("region"),
+            estatus_excel=reg.get("estatus_excel"),
+            company=reg.get("company"),
+            canal=reg.get("canal"),
+            cliente_excel=reg.get("cliente_excel"),
+            codigo_origen=reg.get("codigo_origen"),
+            vendedor_excel=reg.get("vendedor_excel"),
+            unidad_negocio_excel=reg.get("unidad_negocio_excel"),
+            linea_excel=reg.get("linea_excel"),
+            producto_excel=reg.get("producto_excel"),
+            precio=float(reg.get("precio") or 0),
+            anio=int(reg.get("anio") or anio),
+            mes=int(reg.get("mes") or 0),
+            cantidad_kg=float(reg.get("cantidad_kg") or 0),
+            importe=float(reg.get("importe") or 0),
+            valor=float(reg.get("valor") or 0),
+            comentario=reg.get("comentario"),
         )
         total_insertados += 1
 
@@ -383,11 +401,10 @@ def cargar_excel_a_staging_presupuesto_ventas_ctrl(
 
     return {
         "id_carga": id_carga,
-        "hoja": hoja_final,
-        "total_filas_excel": len(df),
+        "hoja": hoja,
+        "tablas_detectadas": len(tablas),
         "total_registros_staging": total_insertados,
     }
-
 
 def validar_staging_presupuesto_ventas_con_sae_ctrl(
     id_carga: int,
@@ -581,11 +598,13 @@ def obtener_cargas_presupuesto_ventas_ctrl(
     anio: Optional[int] = None,
     id_carga: Optional[int] = None,
     limit: int = 100,
+    usuario_id: int = None,
 ) -> pd.DataFrame:
     return obtener_cargas_presupuesto_ventas_model(
         anio=anio,
         id_carga=id_carga,
         limit=limit,
+        usuario_id=usuario_id,
     )
 
 
@@ -746,3 +765,25 @@ def recalcular_estatus_staging_presupuesto_ventas_ctrl(id_carga: int) -> dict:
         "total_pendiente": total_pendiente,
     }
 
+def detectar_tablas_presupuesto_ventas_ctrl(archivo, hoja: str) -> list[dict]:
+    return detectar_tablas_presupuesto_excel(archivo, hoja)
+
+
+def obtener_preview_presupuesto_ventas_dinamico_ctrl(
+    archivo,
+    hoja: str,
+    anio: int,
+    limit: int = 100,
+) -> dict:
+    df_norm, tablas = normalizar_presupuesto_excel_dinamico(
+        archivo=archivo,
+        hoja=hoja,
+        anio=anio,
+    )
+
+    return {
+        "hoja": hoja,
+        "tablas": tablas,
+        "preview": df_norm.head(limit).copy(),
+        "total_registros": len(df_norm),
+    }

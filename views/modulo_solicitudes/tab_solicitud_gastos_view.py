@@ -352,13 +352,27 @@ def _enviar_revision_cierre_a_rol_autorizador(
 
     asunto = f"autorización de cierre solicitud {folio}"
 
-    return enviar_correo(
-        destinatario=",".join(destinatarios),
-        asunto=asunto,
-        cuerpo_html=cuerpo_html,
-        token=token,
-        remitente=remitente,
-    )
+    ok_count = 0
+    errores = []
+
+    for destinatario in destinatarios:
+        ok_mail, msg_mail = enviar_correo(
+            destinatario=destinatario,
+            asunto=asunto,
+            cuerpo_html=cuerpo_html,
+            token=token,
+            remitente=remitente,
+        )
+
+        if ok_mail:
+            ok_count += 1
+        else:
+            errores.append(f"{destinatario}: {msg_mail}")
+
+    if ok_count > 0:
+        return True, f"correo enviado a {ok_count} destinatario(s)"
+
+    return False, " | ".join(errores)
 
 
 def _split_clientes_texto(s: str) -> list[str]:

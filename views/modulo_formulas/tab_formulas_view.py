@@ -13,10 +13,9 @@ from controllers.formulas_controller import (
 
 SEGMENTOS_COA = ["Pan", "Tortilla", "Alimentos"]
 
-
 def _usuario_id():
-    return st.session_state.get("usuario_id")
-
+    usuario = st.session_state.get("usuario", {})
+    return usuario.get("id")
 
 def _fmt_pct(v):
     try:

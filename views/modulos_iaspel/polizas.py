@@ -51,7 +51,7 @@ def _normalizar_df_xml(df: pd.DataFrame) -> pd.DataFrame:
         "SUBTOTAL",
         "IVA",
         "IMPORTE",
-        "IMPORTE_MXN",
+        "MONTO_XML",
         "TIPOCAMBIO",
         "TOTAL_DEBE",
         "TOTAL_HABER",
@@ -155,9 +155,9 @@ def mostrar_tab_xml_vs_polizas():
     importe_sin_poliza = (
         df.loc[
             df["TIENE_POLIZA"] == "NO",
-            "IMPORTE_MXN"
+            "MONTO_XML"
         ].sum()
-        if "IMPORTE_MXN" in df.columns
+        if "MONTO_XML" in df.columns
         else 0
     )
 
@@ -194,7 +194,7 @@ def mostrar_tab_xml_vs_polizas():
         .groupby(
             "MES_ANIO",
             as_index=False
-        )["IMPORTE_MXN"]
+        )["MONTO_XML"]
         .sum()
         .sort_values("MES_ANIO")
     )
@@ -204,7 +204,7 @@ def mostrar_tab_xml_vs_polizas():
         use_container_width=True,
         hide_index=True,
         column_config={
-            "IMPORTE_MXN": st.column_config.NumberColumn(
+            "MONTO_XML": st.column_config.NumberColumn(
                 "Importe MXN",
                 format="$ %.2f"
             )
@@ -300,7 +300,7 @@ def mostrar_tab_xml_vs_polizas():
             )
             .agg(
                 XML=("UUID", "count"),
-                IMPORTE_MXN=("IMPORTE_MXN", "sum"),
+                MONTO_XML=("MONTO_XML", "sum"),
             )
         )
 
@@ -309,7 +309,7 @@ def mostrar_tab_xml_vs_polizas():
             .pivot(
                 index="MES_ANIO",
                 columns="TIENE_POLIZA",
-                values=["XML", "IMPORTE_MXN"]
+                values=["XML", "MONTO_XML"]
             )
             .fillna(0)
         )
@@ -323,9 +323,9 @@ def mostrar_tab_xml_vs_polizas():
 
         for col in [
             "XML_NO",
-            "IMPORTE_MXN_NO",
+            "MONTO_XML_NO",
             "XML_SI",
-            "IMPORTE_MXN_SI",
+            "MONTO_XML_SI",
         ]:
             if col not in df_pivot.columns:
                 df_pivot[col] = 0
@@ -336,15 +336,15 @@ def mostrar_tab_xml_vs_polizas():
         )
 
         df_pivot["TOTAL_MXN"] = (
-            df_pivot["IMPORTE_MXN_NO"]
-            + df_pivot["IMPORTE_MXN_SI"]
+            df_pivot["MONTO_XML_NO"]
+            + df_pivot["MONTO_XML_SI"]
         )
 
         df_pivot = df_pivot.rename(columns={
             "XML_NO": "XML sin póliza",
-            "IMPORTE_MXN_NO": "Valor sin póliza",
+            "MONTO_XML_NO": "Valor sin póliza",
             "XML_SI": "XML con póliza",
-            "IMPORTE_MXN_SI": "Valor con póliza",
+            "MONTO_XML_SI": "Valor con póliza",
             "TOTAL_XML": "Total XML",
             "TOTAL_MXN": "Total valor",
         })
@@ -430,7 +430,7 @@ def mostrar_tab_xml_vs_polizas():
         "IMPORTE",
         "MONEDA",
         "TIPOCAMBIO",
-        "IMPORTE_MXN",
+        "MONTO_XML",
         "TIPO_POLI",
         "NUM_POLIZ",
         "PERIODO",
@@ -491,7 +491,7 @@ def mostrar_tab_xml_vs_polizas():
                 format="%.4f"
             ),
 
-            "IMPORTE_MXN": st.column_config.NumberColumn(
+            "MONTO_XML": st.column_config.NumberColumn(
                 format="$ %.2f"
             ),
             "TOTAL_DEBE": st.column_config.NumberColumn(

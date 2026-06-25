@@ -10,7 +10,8 @@ from controllers.presupuesto_ventas_controller import (
     cargar_excel_a_staging_presupuesto_ventas_ctrl,
     confirmar_importacion_presupuesto_ventas_ctrl,
     obtener_cargas_presupuesto_ventas_ctrl,
-    obtener_preview_presupuesto_ventas_ctrl,
+    obtener_preview_presupuesto_ventas_dinamico_ctrl,
+    detectar_tablas_presupuesto_ventas_ctrl,
     obtener_resumen_staging_presupuesto_ventas_ctrl,
     obtener_staging_presupuesto_ventas_ctrl,
 )
@@ -60,7 +61,7 @@ def _form_cargar_staging() -> None:
         st.error("no fue posible leer las hojas del archivo")
         return
 
-    col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
+    col1, col2, col3 = st.columns([2, 1, 2])
 
     with col1:
         hoja = st.selectbox(
@@ -81,16 +82,6 @@ def _form_cargar_staging() -> None:
         )
 
     with col3:
-        header = st.number_input(
-            "fila encabezado",
-            min_value=0,
-            max_value=20,
-            value=0,
-            step=1,
-            key="pv_header_excel",
-        )
-
-    with col4:
         version = st.text_input(
             "versión",
             value="v1",
@@ -102,6 +93,38 @@ def _form_cargar_staging() -> None:
         value="",
         key="pv_comentarios_excel",
     )
+    try:
+        archivo.seek(0)
+        tablas_detectadas = detectar_tablas_presupuesto_ventas_ctrl(
+            archivo=archivo,
+            hoja=hoja,
+        )
+
+        if tablas_detectadas:
+            st.success(f"se detectaron {len(tablas_detectadas)} tablas en la hoja seleccionada")
+
+            df_tablas = pd.DataFrame(tablas_detectadas)
+
+            cols_tablas = [
+                "seccion",
+                "region",
+                "header_excel",
+                "fila_inicio",
+                "fila_fin",
+            ]
+
+            st.dataframe(
+                df_tablas[[c for c in cols_tablas if c in df_tablas.columns]],
+                use_container_width=True,
+                hide_index=True,
+                height=180,
+            )
+        else:
+            st.warning("no se detectaron tablas válidas en esta hoja")
+
+    except Exception as e:
+        st.error(f"error al detectar tablas: {e}")
+        tablas_detectadas = []
 
     colp1, colp2 = st.columns([1, 1])
 
@@ -109,10 +132,10 @@ def _form_cargar_staging() -> None:
         if st.button("previsualizar excel", use_container_width=True):
             try:
                 archivo.seek(0)
-                preview = obtener_preview_presupuesto_ventas_ctrl(
+                preview = obtener_preview_presupuesto_ventas_dinamico_ctrl(
                     archivo=archivo,
                     hoja=hoja,
-                    header=int(header),
+                    anio=int(anio),
                     limit=50,
                 )
                 st.session_state["pv_preview_excel"] = preview
@@ -135,7 +158,7 @@ def _form_cargar_staging() -> None:
                     anio=int(anio),
                     usuario_id=usuario_id,
                     hoja=hoja,
-                    header=int(header),
+                    header=0,
                     version=version or None,
                     comentarios=comentarios or None,
                     limpiar_staging=True,
@@ -157,17 +180,24 @@ def _form_cargar_staging() -> None:
         colx1, colx2 = st.columns(2)
 
         with colx1:
-            st.write("columnas detectadas")
-            st.json(preview.get("columnas_base", {}))
+            st.write("tablas detectadas")
+            tablas = preview.get("tablas", [])
+            if tablas:
+                df_tablas = pd.DataFrame(tablas)
+                cols_tablas = ["seccion", "region", "header_excel", "fila_inicio", "fila_fin"]
+                st.dataframe(
+                    df_tablas[[c for c in cols_tablas if c in df_tablas.columns]],
+                    use_container_width=True,
+                    height=220,
+                    hide_index=True,
+                )
+            else:
+                st.info("no se detectaron tablas")
 
         with colx2:
-            st.write("columnas mes detectadas")
-            columnas_mes = preview.get("columnas_mes", [])
-            if columnas_mes:
-                st.dataframe(pd.DataFrame(columnas_mes), use_container_width=True, height=220)
-            else:
-                st.info("no se detectaron columnas de meses")
-
+            st.write("total registros")
+            st.metric("registros normalizados", preview.get("total_registros", 0))
+            
         df_preview = preview.get("preview")
         if isinstance(df_preview, pd.DataFrame):
             _mostrar_preview_df(df_preview)
@@ -176,7 +206,7 @@ def _form_cargar_staging() -> None:
 
 
 def _selector_carga_actual() -> Optional[int]:
-    cargas = obtener_cargas_presupuesto_ventas_ctrl(limit=50)
+    cargas = obtener_cargas_presupuesto_ventas_ctrl(limit=50, usuario_id=_get_usuario_id())
 
     if cargas is None or cargas.empty:
         st.info("aún no hay cargas registradas")

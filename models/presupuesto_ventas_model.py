@@ -102,6 +102,7 @@ def obtener_cargas_presupuesto_ventas_model(
     anio: int | None = None,
     id_carga: int | None = None,
     limit: int = 100,
+    usuario_id: int | None = None,
 ) -> pd.DataFrame:
     conn = obtener_conexion()
     try:
@@ -121,8 +122,9 @@ def obtener_cargas_presupuesto_ventas_model(
                 updated_at
             from presupuesto_ventas_cargas
             where 1 = 1
+            AND usuario_id = %s
         """
-        params: list = []
+        params: list = [usuario_id]
 
         if id_carga is not None:
             sql += " and id_carga = %s"
@@ -181,19 +183,24 @@ def eliminar_staging_por_carga_presupuesto_ventas_model(id_carga: int) -> bool:
 def insertar_staging_presupuesto_ventas_model(
     id_carga: int,
     fila_excel: int,
-    company: str | None,
-    canal: str | None,
-    cliente_excel: str | None,
-    vendedor_excel: str | None,
-    unidad_negocio_excel: str | None,
-    linea_excel: str | None,
-    producto_excel: str,
     precio: float,
     anio: int,
     mes: int,
     cantidad_kg: float,
     importe: float,
-    comentario: str | None,
+    seccion: str | None = None,
+    region: str | None = None,
+    estatus_excel: str | None = None,
+    company: str | None = None,
+    canal: str | None = None,
+    cliente_excel: str | None = None,
+    codigo_origen: str | None = None,
+    vendedor_excel: str | None = None,
+    unidad_negocio_excel: str | None = None,
+    linea_excel: str | None = None,
+    producto_excel: str | None = None,
+    valor: float | None = None,
+    comentario: str | None = None,
     id_unidad_negocio: int | None = None,
     id_linea: int | None = None,
     id_vendedor: int | None = None,
@@ -210,9 +217,13 @@ def insertar_staging_presupuesto_ventas_model(
             insert into presupuesto_ventas_staging (
                 id_carga,
                 fila_excel,
+                seccion,
+                region,
+                estatus_excel,
                 company,
                 canal,
                 cliente_excel,
+                codigo_origen,
                 vendedor_excel,
                 unidad_negocio_excel,
                 linea_excel,
@@ -222,6 +233,7 @@ def insertar_staging_presupuesto_ventas_model(
                 mes,
                 cantidad_kg,
                 importe,
+                valor,
                 comentario,
                 id_unidad_negocio,
                 id_linea,
@@ -230,10 +242,11 @@ def insertar_staging_presupuesto_ventas_model(
                 id_producto,
                 estatus_match,
                 observaciones
-            )
+            )       
             values (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
         """
         cur.execute(
@@ -241,9 +254,13 @@ def insertar_staging_presupuesto_ventas_model(
             (
                 int(id_carga),
                 int(fila_excel),
+                str(seccion).strip() if seccion else None,
+                str(region).strip() if region else None,
+                str(estatus_excel).strip() if estatus_excel else None,
                 str(company).strip() if company else None,
                 str(canal).strip() if canal else None,
                 str(cliente_excel).strip() if cliente_excel else None,
+                str(codigo_origen).strip() if codigo_origen else None,
                 str(vendedor_excel).strip() if vendedor_excel else None,
                 str(unidad_negocio_excel).strip() if unidad_negocio_excel else None,
                 str(linea_excel).strip() if linea_excel else None,
@@ -253,6 +270,7 @@ def insertar_staging_presupuesto_ventas_model(
                 int(mes),
                 float(cantidad_kg or 0),
                 float(importe or 0),
+                float(valor or 0),
                 str(comentario).strip() if comentario else None,
                 int(id_unidad_negocio) if id_unidad_negocio is not None else None,
                 int(id_linea) if id_linea is not None else None,
@@ -260,7 +278,7 @@ def insertar_staging_presupuesto_ventas_model(
                 int(id_cliente) if id_cliente is not None else None,
                 int(id_producto) if id_producto is not None else None,
                 str(estatus_match).strip(),
-                str(observaciones).strip() if observaciones else None,
+                str(observaciones).strip() if observaciones else None
             ),
         )
         conn.commit()

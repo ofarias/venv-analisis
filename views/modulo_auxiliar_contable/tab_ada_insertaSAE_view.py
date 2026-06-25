@@ -3,6 +3,17 @@ import streamlit as st
 from datetime import date, timedelta
 import pandas as pd
 import matplotlib.pyplot as plt
+from io import BytesIO
+import zipfile
+import re
+import xml.etree.ElementTree as ET
+from reportlab.platypus import Paragraph
+
+
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 from models.sae_model import (
     cargar_conceptos_por_prov,
@@ -20,11 +31,171 @@ from controllers.ada_controller import (
     cargar_conceptos_por_documento,
     buscar_concep_en_paga_g03,
     cargar_documentos_con_mysql,
+    obtener_xml_doctodig,
 )
 
 # ---------------------------
 # Helpers
 # ---------------------------
+
+def _safe_name(value: str) -> str:
+    value = str(value or "").strip()
+    value = re.sub(r"[^A-Za-z0-9_\-\.]", "_", value)
+    return value[:120] or "documento"
+
+
+def _xml_bytes_to_pdf_bytes(xml_bytes: bytes) -> bytes:
+    root = ET.fromstring(xml_bytes.decode("utf-8", errors="ignore").encode("utf-8"))
+    ns = {
+        "cfdi": "http://www.sat.gob.mx/cfd/4",
+        "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
+    }
+
+    comp = root
+    emisor = root.find("cfdi:Emisor", ns)
+    receptor = root.find("cfdi:Receptor", ns)
+    timbre = root.find(".//tfd:TimbreFiscalDigital", ns)
+
+    def attr(node, name):
+        return node.attrib.get(name, "") if node is not None else ""
+
+    uuid = attr(timbre, "UUID")
+    fecha = comp.attrib.get("Fecha", "")
+    serie = comp.attrib.get("Serie", "")
+    folio = comp.attrib.get("Folio", "")
+    moneda = comp.attrib.get("Moneda", "")
+    subtotal = comp.attrib.get("SubTotal", "")
+    total = comp.attrib.get("Total", "")
+    metodo = comp.attrib.get("MetodoPago", "")
+    forma = comp.attrib.get("FormaPago", "")
+    total_impuestos_trasladados = ""
+    total_impuestos_retenidos = ""
+
+    impuestos_general = root.find("cfdi:Impuestos", ns)
+
+    if impuestos_general is not None:
+        total_impuestos_trasladados = impuestos_general.attrib.get("TotalImpuestosTrasladados", "")
+        total_impuestos_retenidos = impuestos_general.attrib.get("TotalImpuestosRetenidos", "")
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("Representación impresa CFDI", styles["Title"]))
+    story.append(Spacer(1, 12))
+
+    datos = [
+        ["UUID", uuid],
+        ["Fecha", fecha],
+        ["Serie/Folio", f"{serie} {folio}".strip()],
+        ["Moneda", moneda],
+        ["Subtotal", subtotal],
+        ["Impuestos trasladados", total_impuestos_trasladados],
+        ["Impuestos retenidos", total_impuestos_retenidos],
+        ["Total", total],
+        ["Método de pago", metodo],
+        ["Forma de pago", forma],
+    ]
+
+    tabla = Table(datos, colWidths=[120, 360])
+    tabla.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.lightgrey),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(tabla)
+    story.append(Spacer(1, 14))
+
+    story.append(Paragraph("Emisor", styles["Heading2"]))
+    story.append(Paragraph(f"{attr(emisor, 'Nombre')} - {attr(emisor, 'Rfc')}", styles["Normal"]))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Receptor", styles["Heading2"]))
+    story.append(Paragraph(f"{attr(receptor, 'Nombre')} - {attr(receptor, 'Rfc')}", styles["Normal"]))
+    story.append(Spacer(1, 14))
+
+    conceptos = []
+
+    for c in root.findall(".//cfdi:Concepto", ns):
+        descripcion = c.attrib.get("Descripcion", "")
+
+        conceptos.append([
+            c.attrib.get("Cantidad", ""),
+            c.attrib.get("ClaveUnidad", ""),
+            Paragraph(descripcion, styles["Normal"]),
+            c.attrib.get("ValorUnitario", ""),
+            c.attrib.get("Importe", ""),
+        ])
+
+        lineas_imp = []
+
+        traslados = c.findall(".//cfdi:Traslado", ns)
+        for t_imp in traslados:
+            lineas_imp.append(
+                "Traslado: "
+                f"Base {t_imp.attrib.get('Base', '')} | "
+                f"Impuesto {t_imp.attrib.get('Impuesto', '')} | "
+                f"Factor {t_imp.attrib.get('TipoFactor', '')} | "
+                f"Tasa {t_imp.attrib.get('TasaOCuota', '')} | "
+                f"Importe {t_imp.attrib.get('Importe', '')}"
+            )
+
+        retenciones = c.findall(".//cfdi:Retencion", ns)
+        for r_imp in retenciones:
+            lineas_imp.append(
+                "Retención: "
+                f"Base {r_imp.attrib.get('Base', '')} | "
+                f"Impuesto {r_imp.attrib.get('Impuesto', '')} | "
+                f"Factor {r_imp.attrib.get('TipoFactor', '')} | "
+                f"Tasa {r_imp.attrib.get('TasaOCuota', '')} | "
+                f"Importe {r_imp.attrib.get('Importe', '')}"
+            )
+
+        if lineas_imp:
+            conceptos.append([
+                "",
+                "",
+                Paragraph("<br/>".join(lineas_imp), styles["Normal"]),
+                "",
+                "",
+            ])
+
+    if conceptos:
+        story.append(Paragraph("Conceptos", styles["Heading2"]))
+
+        data = [["Cantidad", "Unidad", "Descripción", "V. unitario", "Importe"]] + conceptos
+
+        t = Table(data, colWidths=[55, 55, 310, 70, 70])
+
+        estilos = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]
+
+        # combina columnas en los renglones de impuestos
+        for idx, row in enumerate(data):
+            if idx == 0:
+                continue
+
+            cantidad = str(row[0] or "").strip()
+            unidad = str(row[1] or "").strip()
+            descripcion = row[2]
+
+            if cantidad == "" and unidad == "":
+                estilos.append(("SPAN", (2, idx), (4, idx)))
+                estilos.append(("BACKGROUND", (0, idx), (-1, idx), colors.whitesmoke))
+                estilos.append(("TEXTCOLOR", (2, idx), (4, idx), colors.darkgrey))
+
+        t.setStyle(TableStyle(estilos))
+        story.append(t)
+
+    doc.build(story)
+    return buffer.getvalue()
+
 def _default_dates():
     hoy = date.today()
     first_this = hoy.replace(day=1)
@@ -65,6 +236,14 @@ def _style_en_sae(series: pd.Series) -> list[str]:
         else:
             styles.append("")
     return styles
+
+def _obtener_xml_documento(row):
+    id_doctodig = row.get("ID_DOCTODIG")
+
+    if pd.isna(id_doctodig):
+        raise ValueError("el documento no tiene ID_DOCTODIG")
+
+    return obtener_xml_doctodig(st.secrets, int(id_doctodig))
 
 def insertarSAE():
     # --- defaults pedidos ---
@@ -182,6 +361,42 @@ def insertarSAE():
     # + traer refer/no_factura/docto desde paga_raw
     # ---------------------------
     df_cmp = df.copy()
+
+    st.markdown("#### Descarga de XML y PDF")
+    if st.button("generar ZIP con XML y PDF", key="btn_zip_xml_pdf"):
+        zip_buffer = BytesIO()
+        errores = []
+
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for _, row in df_cmp.iterrows():
+                try:
+                    xml_bytes = _obtener_xml_documento(row)
+
+                    uuid = row.get("UUID", "")
+                    folio = row.get("FOLIO", "")
+                    nombre_base = _safe_name(uuid or folio or row.get("ID_DOCTODIG"))
+
+                    zipf.writestr(f"{nombre_base}.xml", xml_bytes)
+
+                    pdf_bytes = _xml_bytes_to_pdf_bytes(xml_bytes)
+                    zipf.writestr(f"{nombre_base}.pdf", pdf_bytes)
+
+                except Exception as e:
+                    errores.append(f"{row.get('ID_DOCTODIG')} - {e}")
+
+        if errores:
+            st.warning("algunos documentos no se pudieron generar.")
+            st.text("\n".join(errores[:20]))
+
+        st.download_button(
+            label="descargar XML y PDF",
+            data=zip_buffer.getvalue(),
+            file_name=f"documentos_ada_xml_pdf_{f_desde}_{f_hasta}.zip",
+            mime="application/zip",
+            key="btn_download_zip_xml_pdf",
+        )
+
+
 
     # ordenar por fecha desc (y desempate por id)
 

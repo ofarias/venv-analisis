@@ -10,9 +10,9 @@ from controllers.formulas_controller import (
     sincronizar_mp_sae_a_mysql_ctrl,
 )
 
-
 def _usuario_id():
-    return st.session_state.get("usuario_id")
+    usuario = st.session_state.get("usuario", {})
+    return usuario.get("id")
 
 
 def mostrar_tab_catalogo_mp(es_admin=False):

@@ -528,3 +528,84 @@ def cargar_conceptos_filtrados(_secrets, proveedor=None, meses=None, anio=None):
 def cargar_datoscfd_mysql_df(_secrets, fecha_desde=None, fecha_hasta=None, limit=None) -> pd.DataFrame:
     # se deja por compatibilidad con tu vista actual (si aún la usa)
     return obtener_datoscfd_mysql_df(fecha_desde=fecha_desde, fecha_hasta=fecha_hasta, limit=limit)
+
+
+def obtener_xml_doctodig(secrets, id_doctodig: int) -> bytes:
+    import fdb
+    import re
+
+    cfg = secrets["FIREBIRD_BIO_ADA"]
+
+    conn = fdb.connect(
+        host=cfg.get("host", "localhost"),
+        database=cfg["database"],
+        user=cfg["user"],
+        password=cfg["password"],
+        port=int(cfg.get("port", 3050)),
+        charset=cfg.get("charset", "ISO8859_1"),
+    )
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT XML
+            FROM DOCTOSDIG
+            WHERE ID_DOCTODIG = ?
+            """,
+            (int(id_doctodig),)
+        )
+
+        row = cur.fetchone()
+
+        if not row:
+            raise ValueError(f"no se encontró XML para ID_DOCTODIG {id_doctodig}")
+
+        xml_data = row[0]
+
+        if xml_data is None:
+            raise ValueError(f"el XML está vacío para ID_DOCTODIG {id_doctodig}")
+
+        if hasattr(xml_data, "read"):
+            raw = xml_data.read()
+        elif isinstance(xml_data, bytes):
+            raw = xml_data
+        else:
+            raw = str(xml_data).encode("latin-1", errors="ignore")
+
+        if not raw or len(raw.strip()) == 0:
+            raise ValueError(f"el XML está vacío para ID_DOCTODIG {id_doctodig}")
+
+        texto = None
+        for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252", "iso-8859-1"):
+            try:
+                texto = raw.decode(enc)
+                break
+            except Exception:
+                pass
+
+        if texto is None:
+            texto = raw.decode("latin-1", errors="ignore")
+
+        ini = texto.find("<?xml")
+        if ini == -1:
+            ini = texto.find("<cfdi:Comprobante")
+        if ini == -1:
+            ini = texto.find("<Comprobante")
+
+        if ini > 0:
+            texto = texto[ini:]
+
+        texto = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", texto).strip()
+
+        if not texto:
+            raise ValueError(f"el XML está vacío para ID_DOCTODIG {id_doctodig}")
+
+        return texto.encode("utf-8")
+
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
