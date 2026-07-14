@@ -415,6 +415,35 @@ def listar_mp_sae_model():
     )
 
 
+def listar_pt_sae_model():
+    """Existencias de producto terminado (PT) en SAE, almacén 18."""
+    sql = """
+        SELECT
+            m.CVE_ART,
+            i.DESCR,
+            m.CVE_ALM,
+            m.STATUS,
+            m.CTRL_ALM,
+            m.EXIST,
+            m.STOCK_MIN,
+            m.STOCK_MAX,
+            m.COMP_X_REC,
+            m.PEND_SURT
+        FROM MULT01 m
+        LEFT JOIN INVE01 i
+            ON i.CVE_ART = m.CVE_ART
+        WHERE m.CVE_ALM = 18
+          AND COALESCE(m.STATUS, 'A') = 'A'
+        ORDER BY m.CVE_ART
+    """
+
+    return run_query_firebird(
+        "FIREBIRD_BIO_SAE_4545",
+        sql,
+        ()
+    )
+
+
 def sincronizar_mp_sae_a_mysql_model(usuario_id=None):
     mp_sae = listar_mp_sae_model()
 

@@ -11,6 +11,9 @@ from views.modulo_compras.forms.form_producto_view import (
 from views.modulo_compras.forms.form_estandar_view import (
     mostrar_formulario_compra_estandar,
 )
+from views.modulo_compras.forms.form_mp_inventario_view import (
+    mostrar_formulario_compra_mp_inventario,
+)
 
 
 def _get_tipo_formulario(id_tipo_compra: int, tipos: list) -> str:
@@ -55,6 +58,9 @@ def mostrar_tab_solicitudes_compras():
 
     elif tipo_formulario == "STD":
         mostrar_formulario_compra_estandar(id_tipo_compra=id_tipo_compra)
+
+    elif tipo_formulario == "MP_INV":
+        mostrar_formulario_compra_mp_inventario(id_tipo_compra=id_tipo_compra)
 
     else:
         st.warning("este tipo de compra no tiene formulario configurado.")

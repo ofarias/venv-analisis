@@ -122,9 +122,12 @@ def obtener_cargas_presupuesto_ventas_model(
                 updated_at
             from presupuesto_ventas_cargas
             where 1 = 1
-            AND usuario_id = %s
         """
-        params: list = [usuario_id]
+        params: list = []
+
+        if usuario_id is not None and int(usuario_id) > 0:
+            sql += " and usuario_id = %s"
+            params.append(int(usuario_id))
 
         if id_carga is not None:
             sql += " and id_carga = %s"
@@ -296,6 +299,10 @@ def actualizar_match_staging_presupuesto_ventas_model(
     id_vendedor: int | None = None,
     id_cliente: int | None = None,
     id_producto: int | None = None,
+    cve_prod: str | None = None,
+    cve_clie: str | None = None,
+    cve_vend: str | None = None,
+    cve_linea: str | None = None,
     estatus_match: str | None = None,
     observaciones: str | None = None,
 ) -> bool:
@@ -325,6 +332,22 @@ def actualizar_match_staging_presupuesto_ventas_model(
         if id_producto is not None:
             sets.append("id_producto = %s")
             params.append(int(id_producto))
+
+        if cve_prod is not None:
+            sets.append("cve_prod = %s")
+            params.append(str(cve_prod).strip() if cve_prod else None)
+
+        if cve_clie is not None:
+            sets.append("cve_clie = %s")
+            params.append(str(cve_clie).strip() if cve_clie else None)
+
+        if cve_vend is not None:
+            sets.append("cve_vend = %s")
+            params.append(str(cve_vend).strip() if cve_vend else None)
+
+        if cve_linea is not None:
+            sets.append("cve_linea = %s")
+            params.append(str(cve_linea).strip() if cve_linea else None)
 
         if estatus_match is not None:
             sets.append("estatus_match = %s")
@@ -372,9 +395,13 @@ def obtener_staging_presupuesto_ventas_model(
                 id_staging,
                 id_carga,
                 fila_excel,
+                seccion,
+                region,
+                estatus_excel,
                 company,
                 canal,
                 cliente_excel,
+                codigo_origen,
                 vendedor_excel,
                 unidad_negocio_excel,
                 linea_excel,
@@ -384,12 +411,17 @@ def obtener_staging_presupuesto_ventas_model(
                 mes,
                 cantidad_kg,
                 importe,
+                valor,
                 comentario,
                 id_unidad_negocio,
                 id_linea,
                 id_vendedor,
                 id_cliente,
                 id_producto,
+                cve_prod,
+                cve_clie,
+                cve_vend,
+                cve_linea,
                 estatus_match,
                 observaciones,
                 created_at,
@@ -444,6 +476,58 @@ def obtener_staging_presupuesto_ventas_model(
             conn.close()
         except Exception:
             pass
+
+def actualizar_cantidad_staging_presupuesto_ventas_model(
+    id_staging: int,
+    cantidad_kg: float | None = None,
+    importe: float | None = None,
+    precio: float | None = None,
+    valor: float | None = None,
+) -> bool:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+
+        sets: list[str] = []
+        params: list = []
+
+        if cantidad_kg is not None:
+            sets.append("cantidad_kg = %s")
+            params.append(float(cantidad_kg))
+
+        if importe is not None:
+            sets.append("importe = %s")
+            params.append(float(importe))
+
+        if precio is not None:
+            sets.append("precio = %s")
+            params.append(float(precio))
+
+        if valor is not None:
+            sets.append("valor = %s")
+            params.append(float(valor))
+
+        if not sets:
+            return False
+
+        sets.append("updated_at = current_timestamp")
+
+        sql = f"""
+            update presupuesto_ventas_staging
+            set {", ".join(sets)}
+            where id_staging = %s
+        """
+        params.append(int(id_staging))
+
+        cur.execute(sql, tuple(params))
+        conn.commit()
+        return True
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 def obtener_resumen_staging_presupuesto_ventas_model(id_carga: int) -> pd.DataFrame:
     conn = obtener_conexion()
@@ -505,13 +589,16 @@ def insertar_presupuesto_desde_staging_model(
                 where s.id_carga = %s
                   and s.estatus_match = %s
                   and s.id_unidad_negocio is not null
-                  and s.id_producto is not null
+                  and (s.cve_prod is not null or s.id_producto is not null)
             """
             cur.execute(sql_delete, (int(id_carga), str(solo_estatus_match).strip()))
 
         sql_insert = """
             insert into presupuesto_ventas (
                 id_carga,
+                seccion,
+                region,
+                estatus_excel,
                 anio,
                 mes,
                 id_unidad_negocio,
@@ -519,10 +606,16 @@ def insertar_presupuesto_desde_staging_model(
                 id_vendedor,
                 id_cliente,
                 id_producto,
+                cve_prod,
+                cve_clie,
+                cve_vend,
+                cve_linea,
                 cantidad_kg,
                 precio,
                 importe,
+                valor,
                 company,
+                codigo_origen,
                 canal,
                 comentario,
                 estatus,
@@ -530,6 +623,9 @@ def insertar_presupuesto_desde_staging_model(
             )
             select
                 s.id_carga,
+                s.seccion,
+                s.region,
+                s.estatus_excel,
                 s.anio,
                 s.mes,
                 s.id_unidad_negocio,
@@ -537,10 +633,16 @@ def insertar_presupuesto_desde_staging_model(
                 s.id_vendedor,
                 s.id_cliente,
                 s.id_producto,
+                s.cve_prod,
+                s.cve_clie,
+                s.cve_vend,
+                s.cve_linea,
                 s.cantidad_kg,
                 s.precio,
                 s.importe,
+                s.valor,
                 s.company,
+                s.codigo_origen,
                 s.canal,
                 s.comentario,
                 'activo',
@@ -549,7 +651,7 @@ def insertar_presupuesto_desde_staging_model(
             where s.id_carga = %s
               and s.estatus_match = %s
               and s.id_unidad_negocio is not null
-              and s.id_producto is not null
+              and (s.cve_prod is not null or s.id_producto is not null)
         """
         cur.execute(
             sql_insert,
@@ -588,6 +690,9 @@ def obtener_presupuesto_ventas_model(
             select
                 id_presupuesto,
                 id_carga,
+                seccion,
+                region,
+                estatus_excel,
                 anio,
                 mes,
                 id_unidad_negocio,
@@ -595,10 +700,14 @@ def obtener_presupuesto_ventas_model(
                 cve_vend,
                 cve_clie,
                 cve_prod,
+                company,
+                cliente_excel,
+                codigo_origen,
+                producto_excel,
                 cantidad_kg,
                 precio,
                 importe,
-                company,
+                valor,
                 canal,
                 comentario,
                 estatus,
@@ -656,6 +765,9 @@ def obtener_presupuesto_ventas_model(
             return pd.DataFrame(columns=[
                 "id_presupuesto",
                 "id_carga",
+                "seccion",
+                "region",
+                "estatus_excel",
                 "anio",
                 "mes",
                 "id_unidad_negocio",
@@ -663,10 +775,14 @@ def obtener_presupuesto_ventas_model(
                 "cve_vend",
                 "cve_clie",
                 "cve_prod",
+                "company",
+                "cliente_excel",
+                "codigo_origen",
+                "producto_excel",
                 "cantidad_kg",
                 "precio",
                 "importe",
-                "company",
+                "valor",
                 "canal",
                 "comentario",
                 "estatus",
@@ -774,6 +890,286 @@ def obtener_resumen_presupuesto_ventas_model(
 
         return pd.DataFrame(rows)
 
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def insertar_presupuesto_ventas_desde_df_model(
+    id_carga: int,
+    usuario_id: int,
+    df: pd.DataFrame,
+) -> int:
+    if df is None or df.empty:
+        return 0
+
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        sql = """
+            insert into presupuesto_ventas (
+                id_carga, seccion, region, estatus_excel,
+                company, cliente_excel, codigo_origen, cve_prod, producto_excel,
+                precio, anio, mes, valor, cantidad_kg, importe,
+                canal, comentario, estatus, usuario_id
+            ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+        """
+        total = 0
+        for _, row in df.iterrows():
+            cur.execute(sql, (
+                int(id_carga),
+                str(row.get("seccion") or "").strip() or None,
+                str(row.get("region") or "").strip() or None,
+                str(row.get("estatus_excel") or "").strip() or None,
+                str(row.get("company") or "").strip() or None,
+                str(row.get("cliente_excel") or "").strip() or None,
+                str(row.get("codigo_origen") or "").strip() or None,
+                str(row.get("cve_prod") or "").strip() or None,
+                str(row.get("producto_excel") or "").strip() or None,
+                float(row.get("precio") or 0),
+                int(row.get("anio") or 0),
+                int(row.get("mes") or 0),
+                float(row.get("valor") or 0),
+                float(row.get("cantidad_kg") or 0),
+                float(row.get("importe") or 0),
+                str(row.get("canal") or "").strip() or None,
+                str(row.get("comentario") or "").strip() or None,
+                int(usuario_id),
+            ))
+            total += 1
+        conn.commit()
+        return total
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def insertar_presupuesto_ventas_unitario_model(
+    id_carga: int,
+    seccion: str,
+    region: str | None,
+    anio: int,
+    mes: int,
+    company: str | None,
+    cliente_excel: str | None,
+    codigo_origen: str | None,
+    producto_excel: str,
+    cve_prod: str | None,
+    estatus_excel: str | None,
+    precio: float,
+    valor: float,
+    cantidad_kg: float,
+    importe: float,
+    usuario_id: int,
+) -> int:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            insert into presupuesto_ventas (
+                id_carga, seccion, region, estatus_excel,
+                company, cliente_excel, codigo_origen, cve_prod, producto_excel,
+                precio, anio, mes, valor, cantidad_kg, importe,
+                estatus, usuario_id
+            ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+        """, (
+            int(id_carga),
+            str(seccion).strip() if seccion else None,
+            str(region).strip() if region else None,
+            str(estatus_excel).strip() if estatus_excel else None,
+            str(company).strip() if company else None,
+            str(cliente_excel).strip() if cliente_excel else None,
+            str(codigo_origen).strip() if codigo_origen else None,
+            str(cve_prod).strip() if cve_prod else None,
+            str(producto_excel).strip(),
+            float(precio or 0),
+            int(anio),
+            int(mes),
+            float(valor or 0),
+            float(cantidad_kg or 0),
+            float(importe or 0),
+            int(usuario_id),
+        ))
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def actualizar_presupuesto_ventas_model(
+    id_presupuesto: int,
+    valor: float | None = None,
+    precio: float | None = None,
+    cantidad_kg: float | None = None,
+    importe: float | None = None,
+    cliente_excel: str | None = None,
+    producto_excel: str | None = None,
+    company: str | None = None,
+    codigo_origen: str | None = None,
+    comentario: str | None = None,
+    estatus_excel: str | None = None,
+) -> bool:
+    sets: list[str] = []
+    params: list = []
+
+    if valor is not None:
+        sets.append("valor = %s"); params.append(float(valor))
+    if precio is not None:
+        sets.append("precio = %s"); params.append(float(precio))
+    if cantidad_kg is not None:
+        sets.append("cantidad_kg = %s"); params.append(float(cantidad_kg))
+    if importe is not None:
+        sets.append("importe = %s"); params.append(float(importe))
+    if cliente_excel is not None:
+        sets.append("cliente_excel = %s"); params.append(str(cliente_excel).strip())
+    if producto_excel is not None:
+        sets.append("producto_excel = %s"); params.append(str(producto_excel).strip())
+    if company is not None:
+        sets.append("company = %s"); params.append(str(company).strip())
+    if codigo_origen is not None:
+        sets.append("codigo_origen = %s"); params.append(str(codigo_origen).strip())
+    if comentario is not None:
+        sets.append("comentario = %s"); params.append(str(comentario).strip())
+    if estatus_excel is not None:
+        sets.append("estatus_excel = %s"); params.append(str(estatus_excel).strip())
+
+    if not sets:
+        return False
+
+    sets.append("updated_at = current_timestamp")
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"update presupuesto_ventas set {', '.join(sets)} where id_presupuesto = %s",
+            tuple(params + [int(id_presupuesto)]),
+        )
+        conn.commit()
+        return True
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def actualizar_cve_prod_presupuesto_ventas_model(
+    id_carga: int,
+    producto_excel: str,
+    cliente_excel: str | None,
+    codigo_origen: str | None,
+    company: str | None,
+    cve_prod: str | None,
+) -> int:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        sql = (
+            "update presupuesto_ventas "
+            "set cve_prod = %s, updated_at = current_timestamp "
+            "where id_carga = %s and producto_excel = %s"
+        )
+        params: list = [str(cve_prod).strip() if cve_prod else None, int(id_carga), str(producto_excel)]
+        if cliente_excel is not None:
+            sql += " and cliente_excel = %s"
+            params.append(str(cliente_excel))
+        else:
+            sql += " and cliente_excel is null"
+        if codigo_origen is not None:
+            sql += " and codigo_origen = %s"
+            params.append(str(codigo_origen))
+        else:
+            sql += " and codigo_origen is null"
+        if company is not None:
+            sql += " and company = %s"
+            params.append(str(company))
+        else:
+            sql += " and company is null"
+        cur.execute(sql, tuple(params))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def eliminar_presupuesto_ventas_por_registro_model(
+    id_carga: int,
+    seccion: str,
+    region: str | None,
+    producto_excel: str,
+    cliente_excel: str | None,
+    codigo_origen: str | None,
+    company: str | None,
+) -> int:
+    """Elimina TODOS los meses (todo el registro de la fila pivoteada) que
+    coincidan con la combinación company/cliente/código/producto en una carga+sección+región."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        sql = (
+            "delete from presupuesto_ventas "
+            "where id_carga = %s and seccion = %s and producto_excel = %s"
+        )
+        params: list = [int(id_carga), str(seccion), str(producto_excel)]
+
+        if region is not None:
+            sql += " and region = %s"; params.append(str(region))
+        else:
+            sql += " and region is null"
+        if cliente_excel is not None:
+            sql += " and cliente_excel = %s"; params.append(str(cliente_excel))
+        else:
+            sql += " and cliente_excel is null"
+        if codigo_origen is not None:
+            sql += " and codigo_origen = %s"; params.append(str(codigo_origen))
+        else:
+            sql += " and codigo_origen is null"
+        if company is not None:
+            sql += " and company = %s"; params.append(str(company))
+        else:
+            sql += " and company is null"
+
+        cur.execute(sql, tuple(params))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def eliminar_presupuesto_ventas_por_carga_model(id_carga: int) -> bool:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute("delete from presupuesto_ventas where id_carga = %s", (int(id_carga),))
+        conn.commit()
+        return True
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def eliminar_carga_presupuesto_ventas_model(id_carga: int) -> bool:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute("delete from presupuesto_ventas_cargas where id_carga = %s", (int(id_carga),))
+        conn.commit()
+        return True
     finally:
         try:
             conn.close()

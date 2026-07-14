@@ -26,7 +26,8 @@ def listar_formulas_readonly_model():
         SELECT
             id, nombre, segmento, version, estado, fecha, nota,
             es_alterna, alterna_ref, alterna_motivo, activa,
-            consumo, cve_sae, creado_en, actualizado_en
+            consumo, cve_sae, carrier, enzimas, auxiliares, empaque,
+            creado_en, actualizado_en
         FROM formulas
         ORDER BY nombre, id
     """)
@@ -34,6 +35,11 @@ def listar_formulas_readonly_model():
     rows = _fetchall_dict(cur)
     cur.close()
     conn.close()
+
+    for row in rows:
+        for c in ("carrier", "enzimas", "auxiliares", "empaque"):
+            row[c] = _parse_json(row.get(c))
+
     return rows
 
 

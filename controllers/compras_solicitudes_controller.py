@@ -17,6 +17,8 @@ from models.compras_solicitudes_model import (
     crear_solicitud_estandar_detalle_model,
     get_cabecera_solicitud_estandar_model,
     get_detalle_solicitud_estandar_model,
+    crear_solicitud_mp_inventario_detalle_model,
+    get_detalle_solicitud_mp_inventario_model,
 )
 
 from models.sae45_model import buscar_producto_sae
@@ -79,8 +81,8 @@ def crear_solicitud_producto_ctrl(
         return False, f"error: {str(e)}"
 
 
-def obtener_solicitudes_pendientes_usuario_ctrl(solicitante: str):
-    return get_solicitudes_pendientes_usuario_model(solicitante)
+def obtener_solicitudes_pendientes_usuario_ctrl(solicitante: str, ver_todas: bool = False):
+    return get_solicitudes_pendientes_usuario_model(solicitante, ver_todas=ver_todas)
 
 
 def obtener_detalle_solicitud_compra_ctrl(id_solicitud_compra: int):
@@ -243,3 +245,63 @@ def obtener_cabecera_solicitud_estandar_ctrl(id_solicitud_compra: int):
 
 def obtener_detalle_solicitud_estandar_ctrl(id_solicitud_compra: int):
     return get_detalle_solicitud_estandar_model(id_solicitud_compra)
+
+
+def obtener_tipo_compra_mp_inventario_ctrl() -> dict | None:
+    tipos = get_tipos_compra_activos_model() or []
+    for t in tipos:
+        if str(t.get("tipo_formulario") or "").strip().upper() == "MP_INV":
+            return t
+    return None
+
+
+def crear_solicitud_mp_inventario_ctrl(
+    *,
+    id_tipo_compra: int,
+    fecha_solicitud,
+    solicitante: str,
+    observaciones_generales: str,
+    detalle: list,
+):
+    try:
+        solicitante = (solicitante or "").strip()
+        observaciones_generales = (observaciones_generales or "").strip()
+
+        if not id_tipo_compra:
+            return False, "falta el tipo de compra"
+
+        if not fecha_solicitud:
+            return False, "falta la fecha de solicitud"
+
+        if not solicitante:
+            return False, "falta el solicitante interno"
+
+        if not detalle:
+            return False, "no hay materias primas para guardar"
+
+        id_solicitud_compra = crear_solicitud_cabecera_model(
+            id_tipo_compra=id_tipo_compra,
+            fecha_solicitud=fecha_solicitud,
+            solicitante=solicitante,
+            observaciones_generales=observaciones_generales,
+        )
+
+        if not id_solicitud_compra:
+            return False, "no se pudo crear la cabecera"
+
+        ok = crear_solicitud_mp_inventario_detalle_model(
+            id_solicitud_compra=id_solicitud_compra,
+            detalle=detalle,
+        )
+
+        if not ok:
+            return False, "error al guardar el detalle de materias primas"
+
+        return True, f"solicitud creada correctamente folio #{id_solicitud_compra}"
+
+    except Exception as e:
+        return False, f"error: {str(e)}"
+
+
+def obtener_detalle_solicitud_mp_inventario_ctrl(id_solicitud_compra: int):
+    return get_detalle_solicitud_mp_inventario_model(id_solicitud_compra)

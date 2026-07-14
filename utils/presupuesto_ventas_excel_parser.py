@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime as _DT
 from typing import Any
 
 import pandas as pd
@@ -126,67 +127,26 @@ def _es_fila_header(row_values: list[Any]) -> bool:
     )
 
 def _mapear_header(header_values: list[Any]) -> dict:
-    cols = {}
-
-    joined = " ".join(_norm(v) for v in header_values)
-
-    es_header_cam = "CAM" in joined and "CARIBE" in joined
-    es_header_mexico = "MEXICO" in joined
-
-    for idx, val in enumerate(header_values):
-        n = _norm(val)
-
-        if not n:
-            continue
-
-        if n in {"STATUS", "ESTATUS"} or "BUDGET" in n:
-            cols["estatus"] = idx
-
-        elif "COMPANY" in n or "EMPRESA" in n:
-            cols["company"] = idx
-
-        elif "CLIENTE" in n or "CUSTOMER" in n or "COUNTRY" in n or "PAIS" in n:
-            cols["cliente"] = idx
-
-        elif "CODIGO" in n or "CÓDIGO" in n or "CODE" in n:
-            cols["codigo_origen"] = idx
-
-        elif "PRODUCTO" in n or "PRODUCT" in n:
-            cols["producto"] = idx
-
-        elif "PRECIO" in n or "PRICE" in n or "USD / KG" in n or "USD/KG" in n:
-            cols["precio"] = idx
-
+    # Las columnas son fijas en todas las secciones del Excel:
+    # col0=STATUS  col1=COMPANY  col2=CANAL/PAIS  col3=CON-xxxx  col4=Clave-B (opt)
+    # col5=PRODUCTO  col6=PRECIO  col7-18=Meses Ene-Dic
+    # Solo los meses se detectan por etiqueta porque son los únicos que varían.
     meses = []
     for idx, val in enumerate(header_values):
         mes = _detectar_mes(val)
         if mes:
-            meses.append({
-                "idx": idx,
-                "mes": mes,
-                "header": _txt(val),
-            })
+            meses.append({"idx": idx, "mes": mes, "header": _txt(val)})
 
-    cols["meses"] = meses
-
-    # Fallback para tablas CAM & Caribe / MEXICO donde no viene PRODUCTO como encabezado.
-    # Formato observado:
-    # A = estatus
-    # B = company
-    # C = cliente / país
-    # D = código origen opcional
-    # E = código SAE / producto SAE opcional
-    # F = producto
-    # G = precio USD/Kg
-    if (es_header_cam or es_header_mexico) and meses:
-        cols.setdefault("estatus", 0)
-        cols.setdefault("company", 1)
-        cols.setdefault("cliente", 2)
-        cols.setdefault("codigo_origen", 4)
-        cols.setdefault("producto", 5)
-        cols.setdefault("precio", 6)
-
-    return cols
+    return {
+        "estatus":       0,
+        "company":       1,
+        "cliente":       2,
+        "codigo_origen": 3,
+        "cve_prod":      4,
+        "producto":      5,
+        "precio":        6,
+        "meses":         meses,
+    }
 
 
 def _obtener(row_values: list[Any], idx: int | None):
@@ -301,6 +261,7 @@ def normalizar_presupuesto_excel_dinamico(
             company = _txt(_obtener(rv, cols.get("company")))
             cliente = _txt(_obtener(rv, cols.get("cliente")))
             codigo = _txt(_obtener(rv, cols.get("codigo_origen")))
+            cve_prod = _txt(_obtener(rv, cols.get("cve_prod")))
             precio = _float(_obtener(rv, cols.get("precio")))
 
             for m in meses:
@@ -323,6 +284,7 @@ def normalizar_presupuesto_excel_dinamico(
                     "canal": None,
                     "cliente_excel": cliente or None,
                     "codigo_origen": codigo or None,
+                    "cve_prod": cve_prod or None,
                     "vendedor_excel": None,
                     "unidad_negocio_excel": None,
                     "linea_excel": None,
@@ -336,4 +298,518 @@ def normalizar_presupuesto_excel_dinamico(
                     "comentario": None,
                 })
 
-    return pd.DataFrame(registros), tablas
+    if not registros:
+        return pd.DataFrame(registros), tablas
+
+    df = pd.DataFrame(registros)
+
+    # Si el Excel tiene más de una fila para la misma combinación
+    # (seccion, region, mes, product, cliente, etc.), las sumamos para no
+    # violar la unique key de la tabla destino.
+    KEY = ["seccion", "region", "anio", "mes", "company",
+           "cliente_excel", "codigo_origen", "producto_excel"]
+    key_presentes = [c for c in KEY if c in df.columns]
+
+    _SEN = "\x00"
+    for c in key_presentes:
+        df[c] = df[c].fillna(_SEN)
+
+    agg: dict = {}
+    for c in ("fila_excel", "estatus_excel", "canal", "cve_prod",
+              "vendedor_excel", "unidad_negocio_excel", "linea_excel",
+              "comentario", "precio"):
+        if c in df.columns:
+            agg[c] = "first"
+    for c in ("valor", "cantidad_kg", "importe"):
+        if c in df.columns:
+            agg[c] = "sum"
+
+    df = df.groupby(key_presentes).agg(agg).reset_index()
+
+    for c in key_presentes:
+        df[c] = df[c].replace(_SEN, None)
+
+    return df, tablas
+
+
+# ── Vendedor format parsers ───────────────────────────────────────────────────
+# Handles: ALIMENTOS (datetime month cols), BAKING, JUICE, BREWING DP3 (Clave SAE)
+
+def _es_datetime(v: Any) -> bool:
+    return isinstance(v, _DT)
+
+
+def _mes_desde_datetime(v: Any) -> int | None:
+    if isinstance(v, _DT):
+        return v.month
+    return None
+
+
+def _detectar_formato_vendedor(df: pd.DataFrame) -> str:
+    """
+    Scan up to 40 rows to identify the vendedor format.
+    Returns: 'alimentos', 'baking', 'juice', 'brewing_dp3', or 'standard'
+    """
+    for i in range(min(len(df), 40)):
+        row = df.iloc[i].tolist()
+        str_set = {_norm(v) for v in row if pd.notna(v) and _txt(v)}
+        has_dt = any(_es_datetime(v) for v in row)
+
+        # ALIMENTOS: datetime month columns + "CODIGO UNIVERSAL" or "MATERIAL" in same header row
+        if has_dt:
+            if any("CODIGO UNIVERSAL" in s or s in ("MATERIAL", "LOCATION DESCRIPTION")
+                   for s in str_set):
+                return "alimentos"
+
+        # BREWING DP3: "CLAVE SAE" column header + month names
+        if "CLAVE SAE" in str_set:
+            if any(_detectar_mes(v) for v in row):
+                return "brewing_dp3"
+
+        # JUICE: "COMPANY" + "CODIGO UNIVERSAL" + "PRODUCTO" in same header row
+        if ("COMPANY" in str_set
+                and "CODIGO UNIVERSAL" in str_set
+                and "PRODUCTO" in str_set):
+            return "juice"
+
+        # BAKING: any cell contains "CODIGO UNIVERSAL" + month name in same row
+        if any("CODIGO UNIVERSAL" in s for s in str_set):
+            if any(_detectar_mes(v) for v in row):
+                return "baking"
+
+    return "standard"
+
+
+def _base_reg(
+    seccion: str,
+    region: str,
+    anio: int,
+    mes: int,
+    company: str | None,
+    cliente_excel: str | None,
+    codigo_origen: str | None,
+    cve_prod: str | None,
+    producto_excel: str,
+    precio: float,
+    valor: float,
+    estatus_excel: str | None,
+    fila_excel: int,
+) -> dict:
+    cantidad_kg = valor if seccion == "KG" else 0.0
+    importe = valor if seccion == "USD" else round(valor * precio, 2)
+    return {
+        "fila_excel": fila_excel,
+        "seccion": seccion,
+        "region": region,
+        "estatus_excel": estatus_excel or None,
+        "company": company or None,
+        "canal": None,
+        "cliente_excel": cliente_excel or None,
+        "codigo_origen": codigo_origen or None,
+        "cve_prod": cve_prod or None,
+        "vendedor_excel": None,
+        "unidad_negocio_excel": None,
+        "linea_excel": None,
+        "producto_excel": producto_excel,
+        "precio": precio,
+        "anio": int(anio),
+        "mes": int(mes),
+        "cantidad_kg": cantidad_kg,
+        "importe": importe,
+        "valor": valor,
+        "comentario": None,
+    }
+
+
+_LABEL_ROWS = {"KG", "USD", "TOTAL", "SUBTOTAL", "CAMBIOS DP",
+               "ORDEN COLOCADA", "KG BY MTH", "PRECIO USD"}
+
+
+def _dedup_vendedor(registros: list[dict]) -> pd.DataFrame:
+    """Aggregate duplicate key rows (same as normalizar_presupuesto_excel_dinamico)."""
+    if not registros:
+        return pd.DataFrame(registros)
+
+    df = pd.DataFrame(registros)
+
+    KEY = ["seccion", "region", "anio", "mes", "company",
+           "cliente_excel", "codigo_origen", "producto_excel"]
+    key_presentes = [c for c in KEY if c in df.columns]
+
+    _SEN = "\x00"
+    for c in key_presentes:
+        df[c] = df[c].fillna(_SEN)
+
+    agg: dict = {}
+    for c in ("fila_excel", "estatus_excel", "canal", "cve_prod",
+              "vendedor_excel", "unidad_negocio_excel", "linea_excel",
+              "comentario", "precio"):
+        if c in df.columns:
+            agg[c] = "first"
+    for c in ("valor", "cantidad_kg", "importe"):
+        if c in df.columns:
+            agg[c] = "sum"
+
+    df = df.groupby(key_presentes).agg(agg).reset_index()
+
+    for c in key_presentes:
+        df[c] = df[c].replace(_SEN, None)
+
+    return df
+
+
+def _parsear_alimentos(df: pd.DataFrame, anio: int) -> pd.DataFrame:
+    """
+    ALIMENTOS vendedor format.
+    Header rows contain datetime month objects + "CODIGO UNIVERSAL"/"MATERIAL" labels.
+    Data: col1=region, col2=company, col3=cve_prod(B-code), col4=product, col18=precio
+    """
+    # Locate all header rows: ≥6 datetime month columns + cve/material marker
+    header_rows: list[tuple[int, list[tuple[int, int]]]] = []
+
+    for i in range(len(df)):
+        row = df.iloc[i].tolist()
+        str_set = {_norm(v) for v in row if pd.notna(v) and _txt(v)}
+        dt_cols = [(j, _mes_desde_datetime(v))
+                   for j, v in enumerate(row)
+                   if _mes_desde_datetime(v) is not None]
+
+        if (len(dt_cols) >= 6
+                and any("CODIGO UNIVERSAL" in s or "MATERIAL" == s for s in str_set)):
+            header_rows.append((i, dt_cols))
+
+    if not header_rows:
+        return pd.DataFrame()
+
+    registros: list[dict] = []
+
+    for h_num, (header_i, dt_cols) in enumerate(header_rows):
+        end_i = (header_rows[h_num + 1][0]
+                 if h_num + 1 < len(header_rows) else len(df))
+
+        for row_i in range(header_i + 1, end_i):
+            row = df.iloc[row_i].tolist()
+
+            # Skip rows with almost no data (separator / total lines)
+            non_null = [v for v in row if pd.notna(v) and _txt(v)]
+            if len(non_null) <= 2:
+                continue
+
+            cve_prod = _txt(_obtener(row, 3))
+            producto = _txt(_obtener(row, 4))
+
+            if not cve_prod or not producto:
+                continue
+
+            if _norm(cve_prod) in _LABEL_ROWS or _norm(producto) in _LABEL_ROWS:
+                continue
+
+            region_raw = _norm(_obtener(row, 1))
+            if "MEXICO" in region_raw or "MÉXICO" in region_raw:
+                region = "MEXICO"
+            elif "CAM" in region_raw or "CARIBE" in region_raw:
+                region = "CAM & Caribe"
+            else:
+                region = region_raw or "MEXICO"
+
+            company = _txt(_obtener(row, 2))
+            precio = _float(_obtener(row, 18)) if len(row) > 18 else 0.0
+
+            for col_idx, mes in dt_cols:
+                valor = _float(_obtener(row, col_idx))
+                if valor == 0:
+                    continue
+                registros.append(_base_reg(
+                    seccion="KG", region=region, anio=anio, mes=mes,
+                    company=company, cliente_excel=None, codigo_origen=None,
+                    cve_prod=cve_prod, producto_excel=producto,
+                    precio=precio, valor=valor, estatus_excel=None,
+                    fila_excel=row_i + 1,
+                ))
+
+    return _dedup_vendedor(registros)
+
+
+def _parsear_baking(df: pd.DataFrame, anio: int) -> pd.DataFrame:
+    """
+    BAKING vendedor format (single table).
+    Header: col2=PRODUCTO, col3=Codigo Universal, col4=Inventario(skip), col5+=month names
+    Data:   col0=company(NZMX), col2=product, col3=B-code(cve_prod), col5+=monthly KG
+    """
+    header_i = None
+    month_cols: list[tuple[int, int]] = []
+
+    for i in range(min(len(df), 25)):
+        row = df.iloc[i].tolist()
+        str_set = {_norm(v) for v in row if pd.notna(v) and _txt(v)}
+
+        if not any("CODIGO UNIVERSAL" in s for s in str_set):
+            continue
+
+        mcs = [(j, _detectar_mes(v))
+               for j, v in enumerate(row)
+               if _detectar_mes(v) is not None]
+        if mcs:
+            header_i = i
+            month_cols = mcs
+            break
+
+    if header_i is None or not month_cols:
+        return pd.DataFrame()
+
+    registros: list[dict] = []
+
+    for row_i in range(header_i + 1, len(df)):
+        row = df.iloc[row_i].tolist()
+
+        cve_prod = _txt(_obtener(row, 3))
+        producto = _txt(_obtener(row, 2))
+
+        if not cve_prod or not producto:
+            continue
+        if _norm(cve_prod) in _LABEL_ROWS or _norm(producto) in _LABEL_ROWS:
+            continue
+
+        company = _txt(_obtener(row, 0))
+
+        for col_idx, mes in month_cols:
+            valor = _float(_obtener(row, col_idx))
+            if valor == 0:
+                continue
+            registros.append(_base_reg(
+                seccion="KG", region="MEXICO", anio=anio, mes=mes,
+                company=company or None, cliente_excel=None, codigo_origen=None,
+                cve_prod=cve_prod, producto_excel=producto,
+                precio=0.0, valor=valor, estatus_excel=None,
+                fila_excel=row_i + 1,
+            ))
+
+    return _dedup_vendedor(registros)
+
+
+def _parsear_juice(df: pd.DataFrame, anio: int) -> pd.DataFrame:
+    """
+    JUICE vendedor format (single table).
+    Header: col2=Company, col3=CODIGO UNIVERSAL, col4=PRODUCTO, col5=PRECIO, col6+=months
+    Data:   col1=estatus, col2=company, col3=cve_prod, col4=product, col5=price, col6+=monthly KG
+    """
+    header_i = None
+    month_cols: list[tuple[int, int]] = []
+
+    for i in range(min(len(df), 25)):
+        row = df.iloc[i].tolist()
+        str_set = {_norm(v) for v in row if pd.notna(v) and _txt(v)}
+
+        if "COMPANY" not in str_set or "CODIGO UNIVERSAL" not in str_set:
+            continue
+
+        mcs = [(j, _detectar_mes(v))
+               for j, v in enumerate(row)
+               if _detectar_mes(v) is not None]
+        if mcs:
+            header_i = i
+            month_cols = mcs
+            break
+
+    if header_i is None or not month_cols:
+        return pd.DataFrame()
+
+    registros: list[dict] = []
+
+    for row_i in range(header_i + 1, len(df)):
+        row = df.iloc[row_i].tolist()
+
+        cve_prod = _txt(_obtener(row, 3))
+        producto = _txt(_obtener(row, 4))
+
+        if not cve_prod or not producto:
+            continue
+        if _norm(cve_prod) in _LABEL_ROWS or _norm(producto) in _LABEL_ROWS:
+            continue
+
+        # Skip totals row: col5 contains text (e.g. "Kg by MTH")
+        precio_raw = _obtener(row, 5)
+        if isinstance(precio_raw, str) and "KG" in precio_raw.upper():
+            continue
+
+        company = _txt(_obtener(row, 2))
+        precio = _float(precio_raw)
+        estatus = _txt(_obtener(row, 1))
+
+        for col_idx, mes in month_cols:
+            valor = _float(_obtener(row, col_idx))
+            if valor == 0:
+                continue
+            registros.append(_base_reg(
+                seccion="KG", region="MEXICO", anio=anio, mes=mes,
+                company=company or None, cliente_excel=None, codigo_origen=None,
+                cve_prod=cve_prod, producto_excel=producto,
+                precio=precio, valor=valor, estatus_excel=estatus or None,
+                fila_excel=row_i + 1,
+            ))
+
+    return _dedup_vendedor(registros)
+
+
+def _parsear_brewing_dp3(df: pd.DataFrame, anio: int) -> pd.DataFrame:
+    """
+    BREWING DP3 format with 'Clave SAE' column and MEXICO + CAM sections.
+    Mexico header: col1=Company, col3=Clave SAE(cve_prod), col5=PRODUCTO, col6=PRECIO, col7+=months
+    CAM header:    col5='CAM & Caribe', col7+=month names; data col4=cve_prod, col5=product, col6=price
+    """
+    sections: list[dict] = []
+
+    for i in range(len(df)):
+        row = df.iloc[i].tolist()
+        str_set = {_norm(v) for v in row if pd.notna(v) and _txt(v)}
+        row_text = " ".join(str_set)
+
+        has_sae  = "CLAVE SAE" in str_set
+        has_univ = any("CODIGO UNIVERSAL" in s for s in str_set)
+        has_cam  = "CAM" in row_text and "CARIBE" in row_text
+
+        mcs = [(j, _detectar_mes(v))
+               for j, v in enumerate(row)
+               if _detectar_mes(v) is not None]
+
+        if has_sae or has_univ:
+            # MEXICO (or labelled-CAM) section header
+            if not mcs:
+                continue
+
+            region = "CAM & Caribe" if has_cam else "MEXICO"
+
+            cve_col = next(
+                (j for j, v in enumerate(row)
+                 if "CLAVE SAE" in _norm(v) or "CODIGO UNIVERSAL" in _norm(v)),
+                3,
+            )
+            # MEXICO layout: col_cve | col_alt_code | col_product | col_price | months
+            sections.append({
+                "region": region,
+                "header_i": i,
+                "month_cols": mcs,
+                "cve_col": cve_col,
+                "company_col": 1,
+                "cliente_col": 2,
+                "prod_col": cve_col + 2,
+                "price_col": cve_col + 3,
+            })
+
+        elif has_cam and mcs:
+            # CAM & Caribe section header (no "Clave SAE" keyword)
+            # data layout: col1=company, col2=country, col4=cve_prod, col5=product, col6=price
+            sections.append({
+                "region": "CAM & Caribe",
+                "header_i": i,
+                "month_cols": mcs,
+                "cve_col": 4,
+                "company_col": 1,
+                "cliente_col": 2,
+                "prod_col": 5,
+                "price_col": 6,
+            })
+
+    if not sections:
+        return pd.DataFrame()
+
+    registros: list[dict] = []
+
+    for s_idx, sec in enumerate(sections):
+        header_i = sec["header_i"]
+        end_i = (sections[s_idx + 1]["header_i"]
+                 if s_idx + 1 < len(sections) else len(df))
+
+        for row_i in range(header_i + 1, end_i):
+            row = df.iloc[row_i].tolist()
+
+            cve_prod = _txt(_obtener(row, sec["cve_col"]))
+            producto = _txt(_obtener(row, sec["prod_col"]))
+
+            if not cve_prod or not producto:
+                continue
+
+            norm_c = _norm(cve_prod)
+            norm_p = _norm(producto)
+            if norm_c in _LABEL_ROWS or norm_p in _LABEL_ROWS:
+                continue
+            # skip header-like values that leaked into data rows
+            if "CLAVE SAE" in norm_c or "CODIGO UNIVERSAL" in norm_c:
+                continue
+
+            company = _txt(_obtener(row, sec["company_col"]))
+            cliente = _txt(_obtener(row, sec["cliente_col"]))
+            estatus = _txt(_obtener(row, 0))
+            precio = _float(_obtener(row, sec["price_col"]))
+
+            for col_idx, mes in sec["month_cols"]:
+                valor = _float(_obtener(row, col_idx))
+                if valor == 0:
+                    continue
+                registros.append(_base_reg(
+                    seccion="KG", region=sec["region"], anio=anio, mes=mes,
+                    company=company or None,
+                    cliente_excel=cliente or None,
+                    codigo_origen=cliente or None,
+                    cve_prod=cve_prod, producto_excel=producto,
+                    precio=precio, valor=valor,
+                    estatus_excel=estatus or None,
+                    fila_excel=row_i + 1,
+                ))
+
+    return _dedup_vendedor(registros)
+
+
+def normalizar_presupuesto_vendedor_excel(
+    archivo,
+    hoja: str,
+    anio: int,
+) -> tuple[pd.DataFrame, list[dict]]:
+    """Entry point for vendedor formats (ALIMENTOS, BAKING, JUICE, BREWING DP3)."""
+    archivo.seek(0)
+    raw = pd.read_excel(archivo, sheet_name=hoja, header=None, dtype=object)
+
+    formato = _detectar_formato_vendedor(raw)
+
+    parsers = {
+        "alimentos":   _parsear_alimentos,
+        "baking":      _parsear_baking,
+        "juice":       _parsear_juice,
+        "brewing_dp3": _parsear_brewing_dp3,
+    }
+
+    fn = parsers.get(formato)
+    if fn is None:
+        return pd.DataFrame(), []
+
+    result = fn(raw, anio)
+    return (result if result is not None else pd.DataFrame()), []
+
+
+def normalizar_presupuesto_excel_auto(
+    archivo,
+    hoja: str,
+    anio: int,
+) -> tuple[pd.DataFrame, list[dict]]:
+    """
+    Auto-detect format and normalize.
+    Vendedor formats are detected first; falls back to the standard parser.
+    """
+    archivo.seek(0)
+    raw = pd.read_excel(archivo, sheet_name=hoja, header=None, dtype=object)
+
+    formato = _detectar_formato_vendedor(raw)
+
+    if formato == "standard":
+        return normalizar_presupuesto_excel_dinamico(archivo, hoja, anio)
+
+    parsers = {
+        "alimentos":   _parsear_alimentos,
+        "baking":      _parsear_baking,
+        "juice":       _parsear_juice,
+        "brewing_dp3": _parsear_brewing_dp3,
+    }
+
+    fn = parsers[formato]
+    result = fn(raw, anio)
+    return (result if result is not None else pd.DataFrame()), []

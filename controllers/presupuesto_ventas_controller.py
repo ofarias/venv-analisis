@@ -6,12 +6,22 @@ from typing import Any, Optional
 
 import pandas as pd
 
+import streamlit as st
+
 from models.presupuesto_ventas_model import (
+    actualizar_cantidad_staging_presupuesto_ventas_model,
+    actualizar_cve_prod_presupuesto_ventas_model,
     actualizar_estatus_carga_presupuesto_ventas_model,
     actualizar_match_staging_presupuesto_ventas_model,
+    actualizar_presupuesto_ventas_model,
+    eliminar_carga_presupuesto_ventas_model,
+    eliminar_presupuesto_ventas_por_carga_model,
+    eliminar_presupuesto_ventas_por_registro_model,
     eliminar_staging_por_carga_presupuesto_ventas_model,
     insertar_carga_presupuesto_ventas_model,
     insertar_presupuesto_desde_staging_model,
+    insertar_presupuesto_ventas_desde_df_model,
+    insertar_presupuesto_ventas_unitario_model,
     insertar_staging_presupuesto_ventas_model,
     obtener_cargas_presupuesto_ventas_model,
     obtener_presupuesto_ventas_model,
@@ -20,6 +30,7 @@ from models.presupuesto_ventas_model import (
     obtener_staging_presupuesto_ventas_model,
 )
 from models.presupuesto_ventas_sae_model import (
+    obtener_catalogo_productos_pv_model,
     obtener_clientes_sae_model,
     obtener_lineas_sae_model,
     obtener_productos_sae_model,
@@ -28,6 +39,7 @@ from models.presupuesto_ventas_sae_model import (
 
 from utils.presupuesto_ventas_excel_parser import (
     detectar_tablas_presupuesto_excel,
+    normalizar_presupuesto_excel_auto,
     normalizar_presupuesto_excel_dinamico,
 )
 
@@ -346,7 +358,7 @@ def cargar_excel_a_staging_presupuesto_ventas_ctrl(
 
     archivo.seek(0)
 
-    df_norm, tablas = normalizar_presupuesto_excel_dinamico(
+    df_norm, tablas = normalizar_presupuesto_excel_auto(
         archivo=archivo,
         hoja=hoja,
         anio=int(anio),
@@ -515,7 +527,7 @@ def validar_staging_presupuesto_ventas_con_sae_ctrl(
             cve_prod=cve_prod,
             cve_clie=cve_clie,
             cve_vend=cve_vend,
-            cve_linea=cve_linea,
+            cve_linea=cve_linea if cve_linea else None,
             id_unidad_negocio=id_unidad_negocio,
             estatus_match=estatus_match,
             observaciones="|".join(observaciones) if observaciones else None,
@@ -593,6 +605,13 @@ def confirmar_importacion_presupuesto_ventas_ctrl(
         "id_carga": id_carga,
         "total_insertados": total_insertados,
     }
+
+def eliminar_carga_completa_presupuesto_ventas_ctrl(id_carga: int) -> dict:
+    eliminar_presupuesto_ventas_por_carga_model(id_carga)
+    eliminar_staging_por_carga_presupuesto_ventas_model(id_carga)
+    eliminar_carga_presupuesto_ventas_model(id_carga)
+    return {"id_carga": id_carga, "eliminado": True}
+
 
 def obtener_cargas_presupuesto_ventas_ctrl(
     anio: Optional[int] = None,
@@ -687,10 +706,7 @@ def asignar_clave_producto_staging_presupuesto_ventas_ctrl(
     cve_prod: str,
     cve_linea: Optional[str] = None,
 ) -> int:
-    staging = obtener_staging_presupuesto_ventas_model(
-        id_carga=id_carga,
-        limit=200000,
-    )
+    staging = obtener_staging_presupuesto_ventas_model(id_carga=id_carga, limit=200000)
 
     if staging.empty:
         return 0
@@ -699,8 +715,7 @@ def asignar_clave_producto_staging_presupuesto_ventas_ctrl(
     total_actualizados = 0
 
     for _, row in staging.iterrows():
-        producto_row = _clean_upper(row.get("producto_excel"))
-        if producto_row != producto_excel_buscar:
+        if _clean_upper(row.get("producto_excel")) != producto_excel_buscar:
             continue
 
         actualizar_match_staging_presupuesto_ventas_model(
@@ -711,6 +726,129 @@ def asignar_clave_producto_staging_presupuesto_ventas_ctrl(
         total_actualizados += 1
 
     return total_actualizados
+
+
+def asignar_clave_cliente_staging_presupuesto_ventas_ctrl(
+    id_carga: int,
+    cliente_excel: str,
+    cve_clie: str,
+) -> int:
+    staging = obtener_staging_presupuesto_ventas_model(id_carga=id_carga, limit=200000)
+
+    if staging.empty:
+        return 0
+
+    buscar = _clean_upper(cliente_excel)
+    total = 0
+
+    for _, row in staging.iterrows():
+        if _clean_upper(row.get("cliente_excel")) != buscar:
+            continue
+        actualizar_match_staging_presupuesto_ventas_model(
+            id_staging=int(row["id_staging"]),
+            cve_clie=str(cve_clie).strip(),
+        )
+        total += 1
+
+    return total
+
+
+def asignar_clave_vendedor_staging_presupuesto_ventas_ctrl(
+    id_carga: int,
+    vendedor_excel: str,
+    cve_vend: str,
+) -> int:
+    staging = obtener_staging_presupuesto_ventas_model(id_carga=id_carga, limit=200000)
+
+    if staging.empty:
+        return 0
+
+    buscar = _clean_upper(vendedor_excel)
+    total = 0
+
+    for _, row in staging.iterrows():
+        if _clean_upper(row.get("vendedor_excel")) != buscar:
+            continue
+        actualizar_match_staging_presupuesto_ventas_model(
+            id_staging=int(row["id_staging"]),
+            cve_vend=str(cve_vend).strip(),
+        )
+        total += 1
+
+    return total
+
+
+def asignar_clave_linea_staging_presupuesto_ventas_ctrl(
+    id_carga: int,
+    linea_excel: str,
+    cve_linea: str,
+) -> int:
+    staging = obtener_staging_presupuesto_ventas_model(id_carga=id_carga, limit=200000)
+
+    if staging.empty:
+        return 0
+
+    buscar = _clean_upper(linea_excel)
+    total = 0
+
+    for _, row in staging.iterrows():
+        if _clean_upper(row.get("linea_excel")) != buscar:
+            continue
+        actualizar_match_staging_presupuesto_ventas_model(
+            id_staging=int(row["id_staging"]),
+            cve_linea=str(cve_linea).strip(),
+        )
+        total += 1
+
+    return total
+
+
+def actualizar_cantidad_staging_presupuesto_ventas_ctrl(
+    id_staging: int,
+    cantidad_kg: Optional[float] = None,
+    importe: Optional[float] = None,
+    precio: Optional[float] = None,
+    valor: Optional[float] = None,
+) -> bool:
+    return actualizar_cantidad_staging_presupuesto_ventas_model(
+        id_staging=id_staging,
+        cantidad_kg=cantidad_kg,
+        importe=importe,
+        precio=precio,
+        valor=valor,
+    )
+
+
+def obtener_productos_sae_presupuesto_ventas_ctrl(
+    cve_art: Optional[str] = None,
+    descr: Optional[str] = None,
+    limit: int = 5000,
+) -> pd.DataFrame:
+    return obtener_productos_sae_model(cve_art=cve_art, descr=descr, limit=limit)
+
+
+def obtener_clientes_sae_presupuesto_ventas_ctrl(
+    clave: Optional[str] = None,
+    nombre: Optional[str] = None,
+    limit: int = 5000,
+) -> pd.DataFrame:
+    return obtener_clientes_sae_model(clave=clave, nombre=nombre, limit=limit)
+
+
+def obtener_vendedores_sae_presupuesto_ventas_ctrl(
+    cve_vend: Optional[str] = None,
+    nombre: Optional[str] = None,
+    limit: int = 1000,
+) -> pd.DataFrame:
+    return obtener_vendedores_sae_model(cve_vend=cve_vend, nombre=nombre, limit=limit)
+
+
+def obtener_lineas_sae_presupuesto_ventas_ctrl(
+    cve_lin: Optional[str] = None,
+    desc_lin: Optional[str] = None,
+    limit: int = 500,
+) -> pd.DataFrame:
+    return obtener_lineas_sae_model(cve_lin=cve_lin, desc_lin=desc_lin, limit=limit)
 
 def recalcular_estatus_staging_presupuesto_ventas_ctrl(id_carga: int) -> dict:
     staging = obtener_staging_presupuesto_ventas_model(
@@ -728,10 +866,14 @@ def recalcular_estatus_staging_presupuesto_ventas_ctrl(id_carga: int) -> dict:
         id_staging = int(row["id_staging"])
 
         id_unidad_negocio = row.get("id_unidad_negocio")
+        cve_prod = row.get("cve_prod")
         id_producto = row.get("id_producto")
 
         tiene_unidad = not pd.isna(id_unidad_negocio) and id_unidad_negocio not in ("", None)
-        tiene_producto = not pd.isna(id_producto) and id_producto not in ("", None)
+        tiene_producto = (
+            (not pd.isna(cve_prod) and cve_prod not in ("", None))
+            or (not pd.isna(id_producto) and id_producto not in ("", None))
+        )
 
         if tiene_unidad and tiene_producto:
             estatus = "completo"
@@ -787,3 +929,195 @@ def obtener_preview_presupuesto_ventas_dinamico_ctrl(
         "preview": df_norm.head(limit).copy(),
         "total_registros": len(df_norm),
     }
+
+# ── carga directa sin staging ─────────────────────────────────────────────────
+
+def cargar_excel_directo_presupuesto_ventas_ctrl(
+    archivo,
+    nombre_archivo: str,
+    hoja: str,
+    anio: int,
+    usuario_id: int,
+    version: Optional[str] = None,
+    comentarios: Optional[str] = None,
+    reemplazar: bool = True,
+) -> dict:
+    if not hoja:
+        raise ValueError("Debes seleccionar una hoja del archivo Excel.")
+
+    archivo.seek(0)
+    df_norm, tablas = normalizar_presupuesto_excel_auto(
+        archivo=archivo,
+        hoja=hoja,
+        anio=int(anio),
+    )
+
+    if df_norm is None or df_norm.empty:
+        raise ValueError("No se generaron registros para cargar.")
+
+    id_carga = insertar_carga_presupuesto_ventas_model(
+        nombre_archivo=nombre_archivo,
+        hoja_origen=hoja,
+        anio=anio,
+        version=version,
+        comentarios=comentarios,
+        usuario_id=usuario_id,
+    )
+
+    if reemplazar:
+        eliminar_presupuesto_ventas_por_carga_model(id_carga)
+
+    total = insertar_presupuesto_ventas_desde_df_model(
+        id_carga=id_carga,
+        usuario_id=usuario_id,
+        df=df_norm,
+    )
+
+    actualizar_estatus_carga_presupuesto_ventas_model(
+        id_carga=id_carga,
+        estatus="activo",
+        comentarios=f"total={total}",
+    )
+
+    return {
+        "id_carga": id_carga,
+        "hoja": hoja,
+        "tablas_detectadas": len(tablas),
+        "total_registros": total,
+    }
+
+
+def obtener_presupuesto_ventas_ctrl(
+    id_carga: Optional[int] = None,
+    anio: Optional[int] = None,
+    mes: Optional[int] = None,
+    seccion: Optional[str] = None,
+    region: Optional[str] = None,
+    limit: int = 200000,
+) -> pd.DataFrame:
+    df = obtener_presupuesto_ventas_model(
+        id_carga=id_carga,
+        anio=anio,
+        mes=mes,
+        limit=limit,
+    )
+    if df is None or df.empty:
+        return df
+    if seccion and "seccion" in df.columns:
+        df = df[df["seccion"].astype(str) == seccion]
+    if region and "region" in df.columns:
+        df = df[df["region"].astype(str) == region]
+    return df.reset_index(drop=True)
+
+
+def insertar_presupuesto_ventas_unitario_ctrl(
+    id_carga: int,
+    seccion: str,
+    region: Optional[str],
+    anio: int,
+    mes: int,
+    company: Optional[str],
+    cliente_excel: Optional[str],
+    codigo_origen: Optional[str],
+    producto_excel: str,
+    cve_prod: Optional[str],
+    estatus_excel: Optional[str],
+    precio: float,
+    valor: float,
+    cantidad_kg: float,
+    importe: float,
+    usuario_id: int,
+) -> int:
+    return insertar_presupuesto_ventas_unitario_model(
+        id_carga=id_carga,
+        seccion=seccion,
+        region=region,
+        anio=anio,
+        mes=mes,
+        company=company,
+        cliente_excel=cliente_excel,
+        codigo_origen=codigo_origen,
+        producto_excel=producto_excel,
+        cve_prod=cve_prod,
+        estatus_excel=estatus_excel,
+        precio=precio,
+        valor=valor,
+        cantidad_kg=cantidad_kg,
+        importe=importe,
+        usuario_id=usuario_id,
+    )
+
+
+def actualizar_presupuesto_ventas_ctrl(
+    id_presupuesto: int,
+    valor: Optional[float] = None,
+    precio: Optional[float] = None,
+    cantidad_kg: Optional[float] = None,
+    importe: Optional[float] = None,
+    cliente_excel: Optional[str] = None,
+    producto_excel: Optional[str] = None,
+    company: Optional[str] = None,
+    codigo_origen: Optional[str] = None,
+    comentario: Optional[str] = None,
+    estatus_excel: Optional[str] = None,
+) -> bool:
+    return actualizar_presupuesto_ventas_model(
+        id_presupuesto=id_presupuesto,
+        valor=valor,
+        precio=precio,
+        cantidad_kg=cantidad_kg,
+        importe=importe,
+        cliente_excel=cliente_excel,
+        producto_excel=producto_excel,
+        company=company,
+        codigo_origen=codigo_origen,
+        comentario=comentario,
+        estatus_excel=estatus_excel,
+    )
+
+
+def eliminar_registro_presupuesto_ventas_ctrl(
+    id_carga: int,
+    seccion: str,
+    region: Optional[str],
+    producto_excel: str,
+    cliente_excel: Optional[str] = None,
+    codigo_origen: Optional[str] = None,
+    company: Optional[str] = None,
+) -> int:
+    """Elimina un registro completo (todos sus meses) de la tabla presupuesto."""
+    return eliminar_presupuesto_ventas_por_registro_model(
+        id_carga=id_carga,
+        seccion=seccion,
+        region=region,
+        producto_excel=producto_excel,
+        cliente_excel=cliente_excel,
+        codigo_origen=codigo_origen,
+        company=company,
+    )
+
+
+def actualizar_cve_prod_presupuesto_ventas_ctrl(
+    id_carga: int,
+    producto_excel: str,
+    cliente_excel: Optional[str],
+    codigo_origen: Optional[str],
+    company: Optional[str],
+    cve_prod: Optional[str],
+) -> int:
+    return actualizar_cve_prod_presupuesto_ventas_model(
+        id_carga=id_carga,
+        producto_excel=producto_excel,
+        cliente_excel=cliente_excel,
+        codigo_origen=codigo_origen,
+        company=company,
+        cve_prod=cve_prod,
+    )
+
+
+@st.cache_data(ttl=3600, show_spinner="cargando catálogo SAE…")
+def obtener_catalogo_productos_pv_ctrl() -> pd.DataFrame:
+    try:
+        return obtener_catalogo_productos_pv_model()
+    except Exception:
+        return pd.DataFrame(columns=["cve_prod", "descr"])

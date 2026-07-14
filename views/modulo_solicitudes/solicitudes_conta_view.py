@@ -8,6 +8,7 @@ from views.modulo_solicitudes.tab_catalogo_conceptos_view import mostrar_tab_cat
 from views.modulo_solicitudes.tab_usuarios_forma_pago_view import mostrar_tab_usuarios_forma_pago
 from views.modulo_solicitudes.tab_autorizaciones_solicitudes_view import mostrar_tab_autorizaciones_solicitudes
 from views.modulo_solicitudes.tab_revisa_contabilidad_view import mostrar_tab_revisa_contabilidad
+from views.shared.tab_carga_xml_pdf_view import mostrar_tab_carga_xml_pdf
 
 
 def mostrar_modulo_solicitudes_conta():
@@ -16,9 +17,9 @@ def mostrar_modulo_solicitudes_conta():
 
     puede_ver_aut = any(r in roles for r in ["admin", "jefe ventas", "contabilidad", "compras"])
     puede_ver_rev_conta = any(r in roles for r in ["admin", "contabilidad"])
-    
-    labels = ["autorizaciones", "revisión contabilidad", "catálogo conceptos", "formas de pago usuario"]
-    
+
+    labels = ["autorizaciones", "revisión contabilidad", "catálogo conceptos", "formas de pago usuario", "carga xml/pdf"]
+
     tabs = st.tabs(labels)
     idx = 0
     if puede_ver_aut:
@@ -33,5 +34,8 @@ def mostrar_modulo_solicitudes_conta():
         mostrar_tab_catalogo_conceptos()
         idx += 1
     with tabs[idx]:
-  
+
         mostrar_tab_usuarios_forma_pago()
+    idx += 1
+    with tabs[idx]:
+        mostrar_tab_carga_xml_pdf(key_prefix="conta_cxp")

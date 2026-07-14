@@ -151,9 +151,11 @@ else:
         st.stop()
 
     if "SuperAdmin" in roles:
-        #menu_opciones["Formulas"] = "formulas"
+        menu_opciones["Formulas"] = "formulas"
         menu_opciones["⚙️ Polizas "] = "polizas"
         menu_opciones["Presupuestos Ventas"] = "presupuestos_ventas"
+        menu_opciones["📉 Forecast"] = "forecast"
+        menu_opciones["💰 Presupuesto Finanzas"] = "presupuesto_finanzas"
         menu_opciones["Compras"] = "compras"
         menu_opciones["Solicitudes Contabilidad"] = "solicitudesConta"
         menu_opciones["Solicitudes"] = "solicitudes"
@@ -198,6 +200,10 @@ else:
         menu_opciones["🕓 Historial de versiones"] = "historial_versiones"
         menu_opciones["🗂️ Tipos de documento"] = "tipos_documento"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
+        menu_opciones["🐇 Carga Multiple"] = "carga_multiple"
+        menu_opciones["⚙️ Administración de Archivos"] = "config"
+        menu_opciones["📊 Matriz de permisos"] = "matriz_permisos"
+
 
     if "Usuarios_Presupuestos" in roles:
         menu_opciones["💸 Registro de Gastos"] = "regGasto"
@@ -223,7 +229,13 @@ else:
     if "Ventas" in roles:
         menu_opciones["Solicitudes"] = "solicitudes"
         menu_opciones["🧑🏻‍💻 Navegar"] = "navegar"
+        menu_opciones["📉 Forecast"] = "forecast"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
+
+    if "Forecast" in roles:
+        menu_opciones["📉 Forecast"] = "forecast"
+        menu_opciones["Presupuestos Ventas"] = "presupuestos_ventas"
+        menu_opciones["💰 Presupuesto Finanzas"] = "presupuesto_finanzas"
         #menu_opciones["Administracion de Presupuestos"] = "presupuestos"
         #menu_opciones["💸 Registro de Gastos"] = "regGasto"
 
@@ -367,11 +379,17 @@ else:
             from views.modulo_compras.compras_view import mostrar_modulo_compras
             mostrar_modulo_compras()
         elif modulo =="presupuestos_ventas":
-            from views.modulo_presupuesto_ventas.tab_carga_presupuesto_ventas_view import mostrar_tab_carga_presupuesto_ventas
-            mostrar_tab_carga_presupuesto_ventas()
+            from views.modulo_presupuesto_ventas.presupuesto_ventas_view import mostrar_modulo_presupuesto_ventas
+            mostrar_modulo_presupuesto_ventas()
         elif modulo =="formulas":
             from views.modulo_formulas.formulas_view import mostrar_modulo_formulas
             mostrar_modulo_formulas()
+        elif modulo == "forecast":
+            from views.modulo_forecast.forecast_view import mostrar_modulo_forecast
+            mostrar_modulo_forecast()
+        elif modulo == "presupuesto_finanzas":
+            from views.modulo_presupuesto_finanzas.presupuesto_finanzas_view import mostrar_modulo_presupuesto_finanzas
+            mostrar_modulo_presupuesto_finanzas()
     else:
         st.warning("⚠️ No tienes roles asignados para acceder a los módulos..")
         ## st.json(roles)

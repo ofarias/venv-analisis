@@ -189,12 +189,14 @@ def get_tipos_compra_activos_model():
         conn.close()
 
 
-def get_solicitudes_pendientes_usuario_model(solicitante: str) -> pd.DataFrame:
+def get_solicitudes_pendientes_usuario_model(solicitante: str, ver_todas: bool = False) -> pd.DataFrame:
     conn = obtener_conexion()
     try:
         cur = conn.cursor(dictionary=True)
 
-        sql = """
+        filtro_solicitante = "" if ver_todas else "AND TRIM(UPPER(s.solicitante)) = TRIM(UPPER(%s))"
+
+        sql = f"""
             SELECT
                 s.id_solicitud_compra,
                 s.fecha_solicitud,
@@ -211,7 +213,7 @@ def get_solicitudes_pendientes_usuario_model(solicitante: str) -> pd.DataFrame:
             LEFT JOIN compras_solicitudes_producto p
                 ON p.id_solicitud_compra = s.id_solicitud_compra
             WHERE s.activo = 1
-              AND TRIM(UPPER(s.solicitante)) = TRIM(UPPER(%s))
+              {filtro_solicitante}
               AND TRIM(LOWER(s.estatus)) NOT IN ('cerrada', 'cancelada')
             GROUP BY
                 s.id_solicitud_compra,
@@ -225,7 +227,8 @@ def get_solicitudes_pendientes_usuario_model(solicitante: str) -> pd.DataFrame:
             ORDER BY s.id_solicitud_compra DESC
         """
 
-        cur.execute(sql, (solicitante,))
+        params = () if ver_todas else (solicitante,)
+        cur.execute(sql, params)
         rows = cur.fetchall() or []
 
         if not rows:
@@ -365,7 +368,8 @@ def get_cabecera_solicitud_compra_model(id_solicitud_compra: int) -> dict:
                 s.solicitante,
                 s.estatus,
                 s.observaciones_generales,
-                t.nombre AS tipo_compra
+                t.nombre AS tipo_compra,
+                t.tipo_formulario AS tipo_formulario
             FROM compras_solicitudes s
             INNER JOIN compras_tipos t
                 ON t.id_tipo_compra = s.id_tipo_compra
@@ -656,6 +660,112 @@ def get_detalle_solicitud_estandar_model(id_solicitud_compra: int) -> pd.DataFra
     finally:
         conn.close()
 
-        
+
+# -------------------------
+# DETALLE MATERIA PRIMA (INVENTARIO) — generado desde forecast o captura manual
+# -------------------------
+def crear_solicitud_mp_inventario_detalle_model(
+    *,
+    id_solicitud_compra: int,
+    detalle: list[dict],
+) -> bool:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+
+        sql = """
+            INSERT INTO compras_solicitudes_mp_inventario_detalle (
+                id_solicitud_compra,
+                cve_mp,
+                mp_nombre,
+                cantidad_kg,
+                existencia_mp_kg,
+                anio,
+                mes,
+                id_version_forecast,
+                observaciones
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+
+        data_insert = []
+
+        for row in detalle:
+            cve_mp = str(row.get("cve_mp") or "").strip()
+            mp_nombre = str(row.get("mp_nombre") or "").strip()
+            cantidad_kg = row.get("cantidad_kg")
+
+            if not cve_mp and not mp_nombre:
+                continue
+
+            data_insert.append((
+                int(id_solicitud_compra),
+                cve_mp or None,
+                mp_nombre or None,
+                float(cantidad_kg) if cantidad_kg not in (None, "") else 0,
+                float(row["existencia_mp_kg"]) if row.get("existencia_mp_kg") not in (None, "") else None,
+                int(row["anio"]) if row.get("anio") not in (None, "") else None,
+                int(row["mes"]) if row.get("mes") not in (None, "") else None,
+                int(row["id_version_forecast"]) if row.get("id_version_forecast") not in (None, "") else None,
+                str(row.get("observaciones") or "").strip() or None,
+            ))
+
+        if not data_insert:
+            return False
+
+        cur.executemany(sql, data_insert)
+        conn.commit()
+        return True
+
+    except Exception:
+        conn.rollback()
+        return False
+
+    finally:
+        conn.close()
+
+
+def get_detalle_solicitud_mp_inventario_model(id_solicitud_compra: int) -> pd.DataFrame:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+
+        sql = """
+            SELECT
+                id_detalle_mp_inv,
+                cve_mp,
+                mp_nombre,
+                cantidad_kg,
+                existencia_mp_kg,
+                anio,
+                mes,
+                id_version_forecast,
+                observaciones
+            FROM compras_solicitudes_mp_inventario_detalle
+            WHERE id_solicitud_compra = %s
+            ORDER BY id_detalle_mp_inv
+        """
+        cur.execute(sql, (int(id_solicitud_compra),))
+        rows = cur.fetchall() or []
+
+        if not rows:
+            return pd.DataFrame(columns=[
+                "id_detalle_mp_inv",
+                "cve_mp",
+                "mp_nombre",
+                "cantidad_kg",
+                "existencia_mp_kg",
+                "anio",
+                "mes",
+                "id_version_forecast",
+                "observaciones",
+            ])
+
+        return pd.DataFrame(rows)
+
+    finally:
+        conn.close()
+
+
 
 

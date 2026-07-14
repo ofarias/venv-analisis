@@ -28,6 +28,45 @@ def _df_from_cursor(cur, default_columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
+
+def obtener_catalogo_productos_pv_model(limit: int = 10000) -> pd.DataFrame:
+    con = _conn_sae_from_secrets(st.secrets)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "select first ? i.cve_art as cve_prod, i.descr "
+            "from inve01 i "
+            "where coalesce(i.status, 'A') <> 'B' "
+            "order by i.cve_art",
+            (int(limit),),
+        )
+        return _df_from_cursor(cur, ["cve_prod", "descr"])
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+def obtener_mapa_cve_original_sae_model() -> pd.DataFrame:
+    """Mapa CVE_ORIGINAL -> CVE_PROD desde INVE_CLIB01 (SAE), usado para corregir
+    claves de producto importadas de fuentes externas (p.ej. presupuesto de finanzas)."""
+    con = _conn_sae_from_secrets(st.secrets)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "select cve_prod, cve_original "
+            "from inve_clib01 "
+            "where cve_original is not null"
+        )
+        return _df_from_cursor(cur, ["cve_prod", "cve_original"])
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
 def obtener_clientes_sae_model(
     solo_activos: bool = True,
     clave: Optional[str] = None,

@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 
 from controllers.compras_solicitudes_controller import (
@@ -6,9 +7,13 @@ from controllers.compras_solicitudes_controller import (
     obtener_cabecera_solicitud_compra_ctrl,
     obtener_cabecera_solicitud_estandar_ctrl,
     obtener_detalle_solicitud_estandar_ctrl,
+    obtener_detalle_solicitud_mp_inventario_ctrl,
     enviar_solicitud_compra_ctrl,
     eliminar_solicitud_compra_ctrl,
 )
+
+_MESES = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
+          7: "jul", 8: "ago", 9: "sep", 10: "oct", 11: "nov", 12: "dic"}
 
 
 def _get_usuario_actual():
@@ -52,6 +57,36 @@ def _mostrar_detalle_materias_primas(id_solicitud: int):
         use_container_width=True,
         hide_index=True,
     )
+
+
+def _mostrar_detalle_mp_inventario(id_solicitud: int):
+    detalle = obtener_detalle_solicitud_mp_inventario_ctrl(id_solicitud)
+
+    if detalle.empty:
+        st.info("esta solicitud no tiene detalle de materia prima.")
+        return
+
+    versiones = detalle["id_version_forecast"].dropna().unique() if "id_version_forecast" in detalle.columns else []
+    if len(versiones) > 0:
+        lista_versiones = ", ".join(str(int(v)) for v in versiones)
+        st.caption(f"generado desde forecast versión(es): {lista_versiones}")
+
+    df_show = detalle.copy()
+    if "mes" in df_show.columns:
+        df_show["mes"] = df_show["mes"].map(lambda m: _MESES.get(int(m), m) if pd.notna(m) else m)
+
+    cols_det = [
+        "cve_mp", "mp_nombre", "cantidad_kg", "existencia_mp_kg",
+        "anio", "mes", "observaciones",
+    ]
+    cols_det = [c for c in cols_det if c in df_show.columns]
+
+    st.dataframe(
+        df_show[cols_det],
+        use_container_width=True,
+        hide_index=True,
+    )
+
 
 def _mostrar_detalle_estandar(id_solicitud: int):
     cab_est = obtener_cabecera_solicitud_estandar_ctrl(id_solicitud)
@@ -107,7 +142,11 @@ def _mostrar_detalle_estandar(id_solicitud: int):
 
 
 def mostrar_tab_solicitudes_pendientes():
-    st.subheader("mis solicitudes pendientes")
+    usuario = _get_usuario_actual()
+    roles = usuario.get("roles", [])
+    es_superadmin = "SuperAdmin" in roles
+
+    st.subheader("todas las solicitudes pendientes" if es_superadmin else "mis solicitudes pendientes")
 
     solicitante_actual = _get_solicitante_actual()
 
@@ -115,21 +154,24 @@ def mostrar_tab_solicitudes_pendientes():
         st.warning("no se pudo identificar el usuario actual.")
         return
 
-    df = obtener_solicitudes_pendientes_usuario_ctrl(solicitante_actual)
+    df = obtener_solicitudes_pendientes_usuario_ctrl(solicitante_actual, ver_todas=es_superadmin)
 
     if df.empty:
-        st.info("no tienes solicitudes pendientes.")
+        st.info("no hay solicitudes pendientes." if es_superadmin else "no tienes solicitudes pendientes.")
         return
 
     cols_show = [
         "id_solicitud_compra",
         "fecha_solicitud",
         "tipo_compra",
+        "solicitante",
         "estatus",
         "total_renglones",
         "observaciones_generales",
         "created_at",
     ]
+    if not es_superadmin:
+        cols_show.remove("solicitante")
     cols_show = [c for c in cols_show if c in df.columns]
 
     st.dataframe(
@@ -141,10 +183,16 @@ def mostrar_tab_solicitudes_pendientes():
     st.divider()
     st.markdown("### detalle de solicitud")
 
-    opciones = {
-        f'{int(row["id_solicitud_compra"])} - {str(row["tipo_compra"] or "").strip()} - {str(row["estatus"] or "").strip()}': int(row["id_solicitud_compra"])
-        for _, row in df.iterrows()
-    }
+    if es_superadmin:
+        opciones = {
+            f'{int(row["id_solicitud_compra"])} - {str(row["solicitante"] or "").strip()} - {str(row["tipo_compra"] or "").strip()} - {str(row["estatus"] or "").strip()}': int(row["id_solicitud_compra"])
+            for _, row in df.iterrows()
+        }
+    else:
+        opciones = {
+            f'{int(row["id_solicitud_compra"])} - {str(row["tipo_compra"] or "").strip()} - {str(row["estatus"] or "").strip()}': int(row["id_solicitud_compra"])
+            for _, row in df.iterrows()
+        }
 
     seleccion = st.selectbox(
         "selecciona una solicitud",
@@ -156,7 +204,7 @@ def mostrar_tab_solicitudes_pendientes():
 
     cab = obtener_cabecera_solicitud_compra_ctrl(id_solicitud)
     estatus_actual = str(cab.get("estatus") or "").strip().lower()
-    tipo_compra = str(cab.get("tipo_compra") or "").strip()
+    tipo_formulario = str(cab.get("tipo_formulario") or "").strip().upper()
 
     c1, c2, c3, c4 = st.columns([2, 2, 2, 4])
 
@@ -216,8 +264,11 @@ def mostrar_tab_solicitudes_pendientes():
 
     st.divider()
 
-    if tipo_compra == "Materias Primas":
+    if tipo_formulario == "MP":
         st.markdown("#### detalle de materias primas")
         _mostrar_detalle_materias_primas(id_solicitud)
+    elif tipo_formulario == "MP_INV":
+        st.markdown("#### detalle de materia prima (inventario)")
+        _mostrar_detalle_mp_inventario(id_solicitud)
     else:
         _mostrar_detalle_estandar(id_solicitud)

@@ -9,6 +9,7 @@ from models.conta45_model import insertar_poliza_y_auxiliares
 from views.modulo_auxiliar_contable.tab_ada_insertaSAE_view import insertarSAE
 from views.modulos_iaspel.tab_poliza_ventas_view import mostrar_tab_poliza_ventas
 from views.modulos_iaspel.tab_poliza_costo_ventas_view import mostrar_tab_poliza_costo_venta
+from views.shared.tab_carga_xml_pdf_view import mostrar_tab_carga_xml_pdf
 from controllers.ada_controller import (
     cargar_tipos,
     cargar_documentos,
@@ -60,14 +61,15 @@ def _first_series(dframe: pd.DataFrame, candidates):
 def pantalla_dashboard_aux_conta():
     st.subheader("documentos fiscales (ada)")
 
-    tabs = st.tabs([ "Insertar en SAE", "Poliza Ventas", "Poliza Costo de Venta"])
-    
+    tabs = st.tabs([ "Insertar en SAE", "Poliza Ventas", "Poliza Costo de Venta", "carga xml/pdf"])
+
     tab_insertaSAE = tabs[0]
     tab_PolizaVentas = tabs[1]
     tab_PolizaCosto = tabs[2]
+    tab_CargaXmlPdf = tabs[3]
     with tab_insertaSAE:
         insertarSAE()
-    
+
     with tab_PolizaVentas:
         st.write("Poliza de Ventas ")
         mostrar_tab_poliza_ventas()
@@ -75,3 +77,6 @@ def pantalla_dashboard_aux_conta():
     with tab_PolizaCosto:
         st.write("Poliza de costo de Venta")
         mostrar_tab_poliza_costo_venta()
+
+    with tab_CargaXmlPdf:
+        mostrar_tab_carga_xml_pdf(key_prefix="auxconta_cxp")
