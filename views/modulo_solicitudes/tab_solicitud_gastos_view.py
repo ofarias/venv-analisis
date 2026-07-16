@@ -1679,7 +1679,8 @@ def mostrar_tab_solicitudes_gastos():
     solicitud = None
     if modo == "editar" and selected_id:
         solicitud = get_solicitud_ctrl(int(selected_id))
-        if solicitud and usuario.get("rol") != "Admin":
+        puede_ver_ajenas = usuario.get("rol") == "Admin" or _tiene_rol(usuario.get("roles"), "admin", "superadmin")
+        if solicitud and not puede_ver_ajenas:
             if int(solicitud.get("empleado_id") or 0) != int(usuario["id"]):
                 st.session_state["sg_selected_id"] = None
                 st.warning("no tienes acceso a esa solicitud")
@@ -1770,8 +1771,12 @@ def mostrar_tab_solicitudes_gastos():
     #)
     #empleado_nombre = usuarios_map[empleado_id]["nombre"]
 
-    empleado_id = int(usuario["id"])
-    empleado_nombre = str(usuario.get("nombre") or "").strip()
+    if modo == "editar" and solicitud:
+        empleado_id = int(solicitud.get("empleado_id") or usuario["id"])
+        empleado_nombre = str(solicitud.get("empleado_nombre") or usuario.get("nombre") or "").strip()
+    else:
+        empleado_id = int(usuario["id"])
+        empleado_nombre = str(usuario.get("nombre") or "").strip()
 
     estatus_actual = (solicitud["estatus"] if solicitud else "captura") if modo == "editar" else "captura"
     puede_editar_cabecera = estatus_actual in ("captura", "rechazada")
