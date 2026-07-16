@@ -2220,7 +2220,8 @@ def mostrar_tab_solicitudes_gastos():
         )
 
     with b2:
-        empleado_id_filtro = None if usuario.get("rol") == "Admin" else int(usuario["id"])
+        puede_ver_todas = usuario.get("rol") == "Admin" or _tiene_rol(usuario.get("roles"), "admin", "superadmin")
+        empleado_id_filtro = None if puede_ver_todas else int(usuario["id"])
 
         rows = listar_solicitudes_ctrl(
             folio_like=folio_like,
@@ -2250,7 +2251,7 @@ def mostrar_tab_solicitudes_gastos():
         if selected_id_widget and int(selected_id_widget) != int(st.session_state.get("sg_selected_id") or 0):
             nuevo_id = int(selected_id_widget)
 
-            if usuario.get("rol") == "Admin":
+            if puede_ver_todas:
                 st.session_state["sg_selected_id"] = nuevo_id
                 st.rerun()
             else:

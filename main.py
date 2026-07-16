@@ -203,7 +203,7 @@ else:
         menu_opciones["🐇 Carga Multiple"] = "carga_multiple"
         menu_opciones["⚙️ Administración de Archivos"] = "config"
         menu_opciones["📊 Matriz de permisos"] = "matriz_permisos"
-
+        
 
     if "Usuarios_Presupuestos" in roles:
         menu_opciones["💸 Registro de Gastos"] = "regGasto"
