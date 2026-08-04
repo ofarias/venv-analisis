@@ -6,6 +6,7 @@ from models.formulas_readonly_model import (
     listar_materias_primas_readonly_model,
     listar_ordenes_produccion_readonly_model,
     obtener_orden_produccion_readonly_model,
+    listar_pt_sin_formula_model,
 )
 
 
@@ -27,3 +28,7 @@ def listar_ordenes_produccion_readonly_ctrl():
 
 def obtener_orden_produccion_readonly_ctrl(ord_id):
     return obtener_orden_produccion_readonly_model(ord_id)
+
+
+def listar_pt_sin_formula_ctrl():
+    return pd.DataFrame(listar_pt_sin_formula_model())
