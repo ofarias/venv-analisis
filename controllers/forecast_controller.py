@@ -94,6 +94,7 @@ def guardar_forecast_fila_ctrl(
     venta_real_mes_ant: float = 0.0,
     venta_real_prom_3m: float = 0.0,
     presupuesto_valor: float = 0.0,
+    tipo: str = "venta",
 ) -> None:
     upsert_forecast_detalle_model(
         id_version=id_version,
@@ -110,6 +111,7 @@ def guardar_forecast_fila_ctrl(
         venta_real_mes_ant=venta_real_mes_ant,
         venta_real_prom_3m=venta_real_prom_3m,
         presupuesto_valor=presupuesto_valor,
+        tipo=tipo,
     )
 
 
@@ -117,9 +119,10 @@ def obtener_forecast_detalle_ctrl(
     id_version: int,
     seccion: Optional[str] = None,
     region: Optional[str] = None,
+    tipo: Optional[str] = None,
 ) -> pd.DataFrame:
     return obtener_forecast_detalle_model(
-        id_version=id_version, seccion=seccion, region=region
+        id_version=id_version, seccion=seccion, region=region, tipo=tipo
     )
 
 
@@ -235,6 +238,7 @@ def generar_propuesta_ctrl(
     metodo: str,
     usuario_id: int,
     usuario_datos_id: Optional[int] = None,
+    tipo: str = "venta",
 ) -> dict:
     """Genera propuesta automática y la persiste en forecast_detalle.
 
@@ -304,6 +308,7 @@ def generar_propuesta_ctrl(
             venta_real_mes_ant=float(row.get("venta_real_mes_ant") or 0),
             venta_real_prom_3m=float(row.get("venta_real_prom_3m") or 0),
             presupuesto_valor=float(row.get("presupuesto_valor") or 0),
+            tipo=tipo,
         )
         guardados += 1
 
@@ -322,7 +327,7 @@ def recalcular_alertas_ctrl(
     meses: list[int],
 ) -> int:
     limpiar_alertas_forecast_model(id_version)
-    df_forecast = obtener_forecast_detalle_model(id_version=id_version, seccion="KG")
+    df_forecast = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="venta")
     if df_forecast is None or df_forecast.empty:
         return 0
 
@@ -395,7 +400,7 @@ def calcular_necesidades_compra_ctrl(
     A partir de este detalle se puede agrupar tanto por materia prima como por
     producto terminado.
     """
-    df_forecast = obtener_forecast_detalle_model(id_version=id_version, seccion="KG")
+    df_forecast = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="venta")
     if df_forecast is None or df_forecast.empty:
         return pd.DataFrame()
 
@@ -562,7 +567,7 @@ def calcular_mdi_ctrl(
     """
     Retorna DataFrame MDI: cve_prod + columnas de meses con stock proyectado y semáforo.
     """
-    df_forecast = obtener_forecast_detalle_model(id_version=id_version, seccion="KG")
+    df_forecast = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="venta")
     if df_forecast is None or df_forecast.empty:
         return pd.DataFrame()
 

@@ -4,6 +4,7 @@ from datetime import date
 
 import pandas as pd
 import streamlit as st
+from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, JsCode
 
 from controllers.forecast_controller import (
     generar_propuesta_ctrl,
@@ -25,10 +26,41 @@ _TABS_SEC = [
     ("KG México",        "KG",  "MEXICO"),
 ]
 
-_METODOS_LABEL = {
+_TIPOS = [
+    ("venta",  "🟢 Venta (Forecast)"),
+    ("compra", "🔵 Compra (Demand Plan)"),
+]
+
+_METODOS_LABEL_VENTA = {
+    "manual": "Manual",
+}
+_METODOS_LABEL_COMPRA = {
     "manual": "Manual",
     "pc_anio": "Presupuesto Compras",
 }
+
+# resalta en verde los valores positivos y en rojo los negativos; 0 sin color
+# — mismo criterio y colores que presupuesto_ventas_view.py / presupuesto_compras_view.py
+_CELL_STYLE_VALORES = JsCode("""
+function(params) {
+    if (params.value > 0) {
+        return {backgroundColor: '#d4edda', color: '#155724'};
+    }
+    if (params.value < 0) {
+        return {backgroundColor: '#f8d7da', color: '#721c24'};
+    }
+    return null;
+}
+""")
+
+
+def _value_formatter_js(decimales: int) -> JsCode:
+    return JsCode(f"""
+    function(params) {{
+        if (params.value === null || params.value === undefined || params.value === '') return '';
+        return Number(params.value).toFixed({decimales});
+    }}
+    """)
 
 
 def _etiqueta_carga_pv(r: dict) -> str:
@@ -43,11 +75,16 @@ def _etiqueta_carga_pv(r: dict) -> str:
     return f"{nombre} [{anio_carga}]" if nombre else f"carga #{r.get('id_carga')}"
 
 
-def _metodos_opciones(usuario_datos_id: int) -> dict:
-    """Opciones del selector de método: fijas (manual, presupuesto compras)
-    + una por cada carga de presupuesto de ventas del dueño de la versión,
-    identificada por su comentario/industria."""
-    opciones = dict(_METODOS_LABEL)
+def _metodos_opciones(usuario_datos_id: int, tipo: str) -> dict:
+    """Opciones del selector de método, según el tipo del sub-tab activo:
+    - compra: fijas (manual, presupuesto compras) — no aplican las cargas de
+      presupuesto de ventas.
+    - venta: manual + una opción por cada carga de presupuesto de ventas del
+      dueño de la versión, identificada por su comentario/industria."""
+    if tipo == "compra":
+        return dict(_METODOS_LABEL_COMPRA)
+
+    opciones = dict(_METODOS_LABEL_VENTA)
     try:
         df_cargas_pv = obtener_cargas_presupuesto_ventas_ctrl(limit=50, usuario_id=usuario_datos_id)
     except Exception:
@@ -97,10 +134,10 @@ def _mes_editable(anio: int, mes: int) -> bool:
 
 
 def _pivot_forecast(df: pd.DataFrame, meses: list[int], precio_map: dict | None = None) -> pd.DataFrame:
-    """Convierte detalle long → wide con columnas de meses. "total_kg" es la
-    suma de los meses mostrados; "total_usd" la convierte a dólares con el
-    precio SAE del producto (precio_map: cve_prod → precio) — mismo criterio
-    que "Total Kilos Año"/"Total USD Año" en presupuesto de ventas."""
+    """Convierte detalle long → wide con columnas de meses. "precio" es el
+    precio SAE del producto; "total_kg" es la suma de los meses mostrados;
+    "total_usd" la convierte a dólares con ese precio — mismo criterio que
+    "Total Kilos Año"/"Total USD Año" en presupuesto de ventas."""
     if df is None or df.empty:
         return pd.DataFrame()
     cols_id = ["cve_prod", "producto_excel"]
@@ -123,9 +160,10 @@ def _pivot_forecast(df: pd.DataFrame, meses: list[int], precio_map: dict | None 
 
     precio_map = precio_map or {}
     precio_prod = wide["cve_prod"].astype(str).str.strip().map(precio_map).fillna(0.0)
+    wide["precio"] = precio_prod
     wide["total_usd"] = wide["total_kg"] * precio_prod
 
-    col_order = cols_id + ["total_kg", "total_usd"] + ref_cols + meses_cols
+    col_order = cols_id + ["precio", "total_kg", "total_usd"] + ref_cols + meses_cols
     return wide[[c for c in col_order if c in wide.columns]]
 
 
@@ -135,7 +173,7 @@ def mostrar_tab_construccion(
     usuario_id = _get_usuario_id()
     es_admin = _puede_editar_sin_restriccion()
 
-    # selector de meses a proyectar
+    # selector de meses a proyectar — compartido entre Venta y Compra
     mes_opciones = list(_MESES.items())
     meses_sel = st.multiselect(
         "meses a proyectar",
@@ -160,16 +198,60 @@ def mostrar_tab_construccion(
             "el forecast a partir del 4º mes en adelante"
         )
 
+    st.divider()
+
+    try:
+        df_cat_precio = obtener_catalogo_productos_pv_ctrl()
+    except Exception:
+        df_cat_precio = pd.DataFrame()
+    precio_map = {
+        str(r.get("cve_prod") or "").strip(): float(r.get("precio") or 0.0)
+        for r in df_cat_precio.to_dict("records")
+    } if df_cat_precio is not None and not df_cat_precio.empty else {}
+
+    tipo_tabs = st.tabs([label for _, label in _TIPOS])
+    for tab_ui, (tipo, _label) in zip(tipo_tabs, _TIPOS):
+        with tab_ui:
+            _mostrar_construccion_tipo(
+                tipo=tipo,
+                id_version=id_version,
+                id_carga_pv=id_carga_pv,
+                anio=anio,
+                metodo_default=metodo_default,
+                usuario_datos_id=usuario_datos_id,
+                usuario_id=usuario_id,
+                es_admin=es_admin,
+                meses_sel=meses_sel,
+                meses_editables=meses_editables,
+                precio_map=precio_map,
+            )
+
+
+def _mostrar_construccion_tipo(
+    tipo: str,
+    id_version: int,
+    id_carga_pv: int | None,
+    anio: int,
+    metodo_default: str,
+    usuario_datos_id: int,
+    usuario_id: int,
+    es_admin: bool,
+    meses_sel: list[int],
+    meses_editables: list[int],
+    precio_map: dict,
+) -> None:
     # botón generar propuesta automática
-    metodos_opciones = _metodos_opciones(usuario_datos_id)
+    metodos_opciones = _metodos_opciones(usuario_datos_id, tipo)
     # "presupuesto" (guardado en metodo_default) no es una clave de este
     # selector — si la versión quedó vinculada a una carga puntual
-    # (id_carga_pv), se preselecciona esa opción "pv_carga:<id>"
-    metodo_default_ui = metodo_default
-    if metodo_default == "presupuesto" and id_carga_pv:
+    # (id_carga_pv), se preselecciona esa opción "pv_carga:<id>" — solo
+    # aplica al sub-tab de venta, que es el único ligado a presupuesto de ventas
+    metodo_default_ui = metodo_default if tipo == "venta" else "manual"
+    if tipo == "venta" and metodo_default == "presupuesto" and id_carga_pv:
         candidato = f"pv_carga:{int(id_carga_pv)}"
         if candidato in metodos_opciones:
             metodo_default_ui = candidato
+
     col_m, col_btn = st.columns([2, 1])
     with col_m:
         metodo = st.selectbox(
@@ -177,12 +259,12 @@ def mostrar_tab_construccion(
             list(metodos_opciones.keys()),
             index=list(metodos_opciones.keys()).index(metodo_default_ui) if metodo_default_ui in metodos_opciones else 0,
             format_func=lambda k: metodos_opciones[k],
-            key="fc_metodo_auto",
+            key=f"fc_metodo_auto_{tipo}",
         )
     with col_btn:
         st.write("")
         st.write("")
-        if st.button("⚡ generar propuesta", use_container_width=True, key="fc_btn_generar"):
+        if st.button("⚡ generar propuesta", use_container_width=True, key=f"fc_btn_generar_{tipo}"):
             if not meses_editables:
                 st.warning("los meses seleccionados están dentro de la ventana bloqueada (mes actual + 3 siguientes)")
             else:
@@ -198,32 +280,24 @@ def mostrar_tab_construccion(
                             metodo=metodo,
                             usuario_id=usuario_id,
                             usuario_datos_id=usuario_datos_id,
+                            tipo=tipo,
                         )
                 st.success("propuesta generada — revisa y ajusta los valores")
                 st.rerun()
 
     st.divider()
 
-    try:
-        df_cat_precio = obtener_catalogo_productos_pv_ctrl()
-    except Exception:
-        df_cat_precio = pd.DataFrame()
-    precio_map = {
-        str(r.get("cve_prod") or "").strip(): float(r.get("precio") or 0.0)
-        for r in df_cat_precio.to_dict("records")
-    } if df_cat_precio is not None and not df_cat_precio.empty else {}
-
     sub_tabs = st.tabs([t[0] for t in _TABS_SEC])
 
     for tab_ui, (label, seccion, region) in zip(sub_tabs, _TABS_SEC):
         with tab_ui:
             df_det = obtener_forecast_detalle_ctrl(
-                id_version=id_version, seccion=seccion, region=region
+                id_version=id_version, seccion=seccion, region=region, tipo=tipo
             )
 
             if df_det is None or df_det.empty:
                 st.info(f"sin datos para {label} — usa 'generar propuesta' o carga manualmente")
-                _panel_carga_manual(id_version, seccion, region, anio, meses_editables, usuario_id)
+                _panel_carga_manual(id_version, seccion, region, anio, meses_editables, usuario_id, tipo)
                 continue
 
             df_det["mes"] = pd.to_numeric(df_det["mes"], errors="coerce").astype(int)
@@ -234,46 +308,76 @@ def mostrar_tab_construccion(
 
             if df_det.empty:
                 st.info(f"sin datos para los meses seleccionados en {label}")
-                _panel_carga_manual(id_version, seccion, region, anio, meses_editables, usuario_id)
+                _panel_carga_manual(id_version, seccion, region, anio, meses_editables, usuario_id, tipo)
                 continue
 
             pivot_orig = _pivot_forecast(df_det, meses_sel, precio_map)
-            fmt = "%.0f" if seccion == "KG" else "%.2f"
+            decimales = 0 if seccion == "KG" else 2
 
-            col_cfg: dict = {
-                "cve_prod": st.column_config.TextColumn("cve prod", disabled=True),
-                "producto_excel": st.column_config.TextColumn("producto", disabled=True),
-                "total_kg": st.column_config.NumberColumn("Total KG", format="%.0f", disabled=True),
-                "total_usd": st.column_config.NumberColumn("Total USD", format="%.2f", disabled=True),
-                "venta_real_mes_ant": st.column_config.NumberColumn("vta año ant", format="%.2f", disabled=True),
-                "venta_real_prom_3m": st.column_config.NumberColumn("prom 3m", format="%.2f", disabled=True),
-                "presupuesto_valor": st.column_config.NumberColumn("presupuesto", format="%.2f", disabled=True),
-            }
+            gb = GridOptionsBuilder.from_dataframe(pivot_orig)
+            gb.configure_default_column(editable=False, resizable=True, width=100)
+
+            gb.configure_column("cve_prod", headerName="cve prod", editable=False, width=130)
+            gb.configure_column("producto_excel", headerName="producto", editable=False, width=220)
+            gb.configure_column(
+                "precio", headerName="precio", editable=False, width=100,
+                type=["numericColumn"], valueFormatter=_value_formatter_js(4),
+            )
+            gb.configure_column(
+                "total_kg", headerName="Total KG", editable=False, width=110,
+                type=["numericColumn"], valueFormatter=_value_formatter_js(0),
+            )
+            gb.configure_column(
+                "total_usd", headerName="Total USD", editable=False, width=110,
+                type=["numericColumn"], valueFormatter=_value_formatter_js(2),
+            )
+            gb.configure_column(
+                "venta_real_mes_ant", headerName="vta año ant", editable=False, width=110,
+                type=["numericColumn"], valueFormatter=_value_formatter_js(2),
+            )
+            gb.configure_column(
+                "venta_real_prom_3m", headerName="prom 3m", editable=False, width=100,
+                type=["numericColumn"], valueFormatter=_value_formatter_js(2),
+            )
+            gb.configure_column(
+                "presupuesto_valor", headerName="presupuesto", editable=False, width=110,
+                type=["numericColumn"], valueFormatter=_value_formatter_js(2),
+            )
             for m in meses_sel:
                 mn = _MESES[m]
-                if mn in pivot_orig.columns:
-                    editable_mes = es_admin or _mes_editable(anio, m)
-                    col_cfg[mn] = st.column_config.NumberColumn(
-                        mn.upper() if editable_mes else f"🔒 {mn.upper()}",
-                        format=fmt,
-                        disabled=not editable_mes,
-                    )
+                if mn not in pivot_orig.columns:
+                    continue
+                editable_mes = es_admin or _mes_editable(anio, m)
+                gb.configure_column(
+                    mn,
+                    headerName=mn.upper() if editable_mes else f"🔒 {mn.upper()}",
+                    editable=editable_mes,
+                    width=90,
+                    type=["numericColumn"],
+                    cellEditor="agNumberCellEditor",
+                    cellStyle=_CELL_STYLE_VALORES,
+                    valueFormatter=_value_formatter_js(decimales),
+                )
 
-            edited = st.data_editor(
+            st.caption("🟩 valor positivo  |  🟥 valor negativo  |  🔒 mes bloqueado (regla de los 3 meses)")
+
+            grid_response = AgGrid(
                 pivot_orig,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
+                gridOptions=gb.build(),
+                update_on=[("cellValueChanged", 600)],
+                data_return_mode=DataReturnMode.AS_INPUT,
+                fit_columns_on_grid_load=False,
+                allow_unsafe_jscode=True,
                 height=min(56 + len(pivot_orig) * 35, 680),
-                column_config=col_cfg,
-                key=f"fc_editor_{seccion}_{region}_{id_version}",
+                key=f"fc_editor_{tipo}_{seccion}_{region}_{id_version}",
             )
+            edited = pd.DataFrame(grid_response.get("data", []))
 
             if st.button("💾 guardar cambios", type="primary",
                          use_container_width=True,
-                         key=f"fc_save_{seccion}_{region}_{id_version}"):
+                         key=f"fc_save_{tipo}_{seccion}_{region}_{id_version}"):
                 cambios = _guardar_cambios_pivot(
-                    pivot_orig, edited, df_det, id_version, seccion, region, anio, meses_sel, usuario_id, es_admin,
+                    pivot_orig, edited, df_det, id_version, seccion, region, anio, meses_sel, usuario_id, es_admin, tipo,
                 )
                 if cambios:
                     st.success(f"{cambios} registros guardados")
@@ -281,7 +385,7 @@ def mostrar_tab_construccion(
                 else:
                     st.info("sin cambios detectados")
 
-            _panel_carga_manual(id_version, seccion, region, anio, meses_editables, usuario_id)
+            _panel_carga_manual(id_version, seccion, region, anio, meses_editables, usuario_id, tipo)
 
 
 def _guardar_cambios_pivot(
@@ -295,6 +399,7 @@ def _guardar_cambios_pivot(
     meses_sel: list[int],
     usuario_id: int,
     es_admin: bool,
+    tipo: str,
 ) -> int:
     cambios = 0
     for i in range(len(orig)):
@@ -307,12 +412,12 @@ def _guardar_cambios_pivot(
 
         for mes in meses_sel:
             # defensa adicional: la columna ya viene bloqueada en la UI
-            # (disabled=True), esto solo evita persistir un cambio si de
+            # (editable=False), esto solo evita persistir un cambio si de
             # todas formas llegara uno para un mes bloqueado
             if not es_admin and not _mes_editable(anio, mes):
                 continue
             mn = _MESES[mes]
-            if mn not in orig.columns:
+            if mn not in orig.columns or i >= len(edited):
                 continue
             val_orig = float(orig.iloc[i].get(mn) or 0)
             val_edit = float(edited.iloc[i].get(mn) or 0)
@@ -333,6 +438,7 @@ def _guardar_cambios_pivot(
                 venta_real_mes_ant=float(ref_row.get("venta_real_mes_ant") or 0) if not ref_row.empty else 0.0,
                 venta_real_prom_3m=float(ref_row.get("venta_real_prom_3m") or 0) if not ref_row.empty else 0.0,
                 presupuesto_valor=float(ref_row.get("presupuesto_valor") or 0) if not ref_row.empty else 0.0,
+                tipo=tipo,
             )
             cambios += 1
     return cambios
@@ -345,6 +451,7 @@ def _panel_carga_manual(
     anio: int,
     meses_sel: list[int],
     usuario_id: int,
+    tipo: str,
 ) -> None:
     """Formulario para agregar manualmente una fila al forecast."""
     with st.expander("➕ agregar producto manualmente"):
@@ -353,10 +460,10 @@ def _panel_carga_manual(
         except Exception:
             df_cat = pd.DataFrame()
 
-        nom_key = f"fc_man_nom_{seccion}_{region}"
+        nom_key = f"fc_man_nom_{tipo}_{seccion}_{region}"
 
         if df_cat is not None and not df_cat.empty:
-            sel_key = f"fc_man_prod_{seccion}_{region}"
+            sel_key = f"fc_man_prod_{tipo}_{seccion}_{region}"
             opciones_prod = {"(escribe cve_prod)": ""} | {
                 f"{r['cve_prod']}  {r['descr']}": r['cve_prod']
                 for r in df_cat.to_dict("records")
@@ -377,7 +484,7 @@ def _panel_carga_manual(
             )
             cve_prod = opciones_prod[sel_prod]
         else:
-            cve_prod = st.text_input("cve_prod", key=f"fc_man_cve_{seccion}_{region}")
+            cve_prod = st.text_input("cve_prod", key=f"fc_man_cve_{tipo}_{seccion}_{region}")
 
         prod_excel = st.text_input("nombre producto (opcional)", key=nom_key)
 
@@ -393,10 +500,10 @@ def _panel_carga_manual(
                 with col:
                     valores[mes] = st.number_input(
                         _MESES[mes].upper(), min_value=0.0, value=0.0, format="%.4f",
-                        key=f"fc_man_val_{seccion}_{region}_{mes}"
+                        key=f"fc_man_val_{tipo}_{seccion}_{region}_{mes}"
                     )
 
-        if st.button("agregar", key=f"fc_man_btn_{seccion}_{region}"):
+        if st.button("agregar", key=f"fc_man_btn_{tipo}_{seccion}_{region}"):
             if not cve_prod.strip():
                 st.error("ingresa cve_prod")
                 return
@@ -406,6 +513,7 @@ def _panel_carga_manual(
                     cve_prod=cve_prod.strip(), producto_excel=prod_excel.strip() or None,
                     anio=anio, mes=mes, forecast=val,
                     justificacion=None, metodo="manual", usuario_id=usuario_id,
+                    tipo=tipo,
                 )
             st.success("producto agregado")
             st.rerun()

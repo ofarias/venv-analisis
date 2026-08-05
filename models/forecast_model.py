@@ -126,6 +126,7 @@ def upsert_forecast_detalle_model(
     venta_real_mes_ant: float = 0.0,
     venta_real_prom_3m: float = 0.0,
     presupuesto_valor: float = 0.0,
+    tipo: str = "venta",
 ) -> int:
     conn = obtener_conexion()
     try:
@@ -133,10 +134,10 @@ def upsert_forecast_detalle_model(
         cur.execute(
             """
             INSERT INTO forecast_detalle
-                (id_version, seccion, region, cve_prod, producto_excel, anio, mes,
+                (id_version, tipo, seccion, region, cve_prod, producto_excel, anio, mes,
                  venta_real_mes_ant, venta_real_prom_3m, presupuesto_valor,
                  forecast, justificacion, metodo, usuario_id)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
                 forecast             = VALUES(forecast),
                 justificacion        = VALUES(justificacion),
@@ -148,7 +149,7 @@ def upsert_forecast_detalle_model(
                 updated_at           = current_timestamp
             """,
             (
-                int(id_version), str(seccion), region or None,
+                int(id_version), str(tipo), str(seccion), region or None,
                 str(cve_prod).strip() if cve_prod else None,
                 str(producto_excel).strip() if producto_excel else None,
                 int(anio), int(mes),
@@ -169,6 +170,7 @@ def obtener_forecast_detalle_model(
     id_version: int,
     seccion: Optional[str] = None,
     region: Optional[str] = None,
+    tipo: Optional[str] = None,
 ) -> pd.DataFrame:
     conn = obtener_conexion()
     try:
@@ -181,12 +183,15 @@ def obtener_forecast_detalle_model(
         if region:
             sql += " AND region = %s"
             params.append(str(region))
+        if tipo:
+            sql += " AND tipo = %s"
+            params.append(str(tipo))
         sql += " ORDER BY cve_prod, anio, mes"
         cur.execute(sql, tuple(params))
         rows = cur.fetchall() or []
         if not rows:
             return pd.DataFrame(columns=[
-                "id_forecast", "id_version", "seccion", "region", "cve_prod",
+                "id_forecast", "id_version", "tipo", "seccion", "region", "cve_prod",
                 "producto_excel", "anio", "mes", "venta_real_mes_ant",
                 "venta_real_prom_3m", "presupuesto_valor", "forecast",
                 "justificacion", "metodo", "usuario_id", "created_at", "updated_at",

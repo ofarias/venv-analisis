@@ -471,7 +471,7 @@ def mostrar_tab_real_vs_forecast(
     for tab_ui, (label, seccion, region) in zip(sub_tabs, _TABS_SEC):
         with tab_ui:
             df_fc = obtener_forecast_detalle_ctrl(
-                id_version=id_version, seccion=seccion, region=region
+                id_version=id_version, seccion=seccion, region=region, tipo="venta"
             )
             if productos_linea is not None and df_fc is not None and not df_fc.empty:
                 df_fc = df_fc[

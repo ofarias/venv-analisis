@@ -28,8 +28,8 @@ def mostrar_tab_dashboard(id_version: int, anio: int) -> None:
         return
 
     # ── datos base ────────────────────────────────────────────────────────────
-    df_fc_kg  = obtener_forecast_detalle_ctrl(id_version=id_version, seccion="KG")
-    df_fc_usd = obtener_forecast_detalle_ctrl(id_version=id_version, seccion="USD")
+    df_fc_kg  = obtener_forecast_detalle_ctrl(id_version=id_version, seccion="KG", tipo="venta")
+    df_fc_usd = obtener_forecast_detalle_ctrl(id_version=id_version, seccion="USD", tipo="venta")
     df_alertas = obtener_alertas_ctrl(id_version=id_version)
 
     if (df_fc_kg is None or df_fc_kg.empty) and (df_fc_usd is None or df_fc_usd.empty):
