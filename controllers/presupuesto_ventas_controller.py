@@ -18,24 +18,33 @@ from models.presupuesto_ventas_model import (
     eliminar_presupuesto_ventas_por_carga_model,
     eliminar_presupuesto_ventas_por_registro_model,
     eliminar_staging_por_carga_presupuesto_ventas_model,
+    guardar_presupuesto_ventas_batch_model,
     insertar_carga_presupuesto_ventas_model,
     insertar_presupuesto_desde_staging_model,
     insertar_presupuesto_ventas_desde_df_model,
     insertar_presupuesto_ventas_unitario_model,
+    insertar_presupuesto_ventas_linea_estatus_model,
     insertar_staging_presupuesto_ventas_model,
     obtener_cargas_presupuesto_ventas_model,
+    obtener_presupuesto_ventas_lineas_model,
+    obtener_presupuesto_ventas_lineas_pendientes_model,
     obtener_presupuesto_ventas_model,
     obtener_resumen_presupuesto_ventas_model,
     obtener_resumen_staging_presupuesto_ventas_model,
     obtener_staging_presupuesto_ventas_model,
+    upsert_presupuesto_ventas_linea_model,
 )
 from models.presupuesto_ventas_sae_model import (
     obtener_catalogo_productos_pv_model,
     obtener_clientes_sae_model,
+    obtener_existencias_productos_sae_model,
     obtener_lineas_sae_model,
+    obtener_ordenes_compra_pendientes_sae_model,
     obtener_productos_sae_model,
+    obtener_ultimo_precio_venta_sae_model,
     obtener_vendedores_sae_model,
 )
+from controllers.solicitudes_controller import buscar_clientes_sae_ctrl
 
 from utils.presupuesto_ventas_excel_parser import (
     detectar_tablas_presupuesto_excel,
@@ -1097,6 +1106,20 @@ def eliminar_registro_presupuesto_ventas_ctrl(
     )
 
 
+def guardar_presupuesto_ventas_batch_ctrl(
+    inserts: list[dict],
+    updates: list[dict],
+    cve_prod_updates: list[dict],
+    identidad_updates: Optional[list[dict]] = None,
+) -> dict:
+    return guardar_presupuesto_ventas_batch_model(
+        inserts=inserts,
+        updates=updates,
+        cve_prod_updates=cve_prod_updates,
+        identidad_updates=identidad_updates or [],
+    )
+
+
 def actualizar_cve_prod_presupuesto_ventas_ctrl(
     id_carga: int,
     producto_excel: str,
@@ -1120,4 +1143,103 @@ def obtener_catalogo_productos_pv_ctrl() -> pd.DataFrame:
     try:
         return obtener_catalogo_productos_pv_model()
     except Exception:
-        return pd.DataFrame(columns=["cve_prod", "descr"])
+        return pd.DataFrame(columns=["cve_prod", "descr", "cve_linea", "linea", "precio", "codigo_origen"])
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def obtener_ultimo_precio_venta_ctrl(cve_art: str, cve_clie: Optional[str] = None) -> float:
+    """Precio de respaldo cuando el precio público (tabla de precios x art) es 0:
+    el último precio de venta en facturas cruzado con el cliente si se conoce,
+    o el último precio de venta a cualquier cliente si no."""
+    try:
+        if cve_clie:
+            precio = obtener_ultimo_precio_venta_sae_model(cve_art=cve_art, cve_clie=cve_clie)
+            if precio:
+                return precio
+        return obtener_ultimo_precio_venta_sae_model(cve_art=cve_art) or 0.0
+    except Exception:
+        return 0.0
+
+
+@st.cache_data(ttl=3600, show_spinner="cargando catálogo de clientes SAE…")
+def obtener_catalogo_clientes_pv_ctrl() -> pd.DataFrame:
+    """Mismo catálogo de clientes SAE que consume el módulo de Solicitudes
+    (buscar_clientes_sae_ctrl) — se reutiliza aquí para no mantener una
+    segunda fuente de verdad."""
+    try:
+        return pd.DataFrame(buscar_clientes_sae_ctrl(q="", limit=5000))
+    except Exception:
+        return pd.DataFrame(columns=["clave", "nombre", "rfc", "calle", "municipio", "estado"])
+
+
+@st.cache_data(ttl=3600, show_spinner="cargando existencias SAE…")
+def obtener_existencias_productos_pv_ctrl() -> pd.DataFrame:
+    try:
+        return obtener_existencias_productos_sae_model()
+    except Exception:
+        return pd.DataFrame(columns=[
+            "cve_art", "descr", "lin_prod", "linea", "uni_med",
+            "existencia", "peso", "costo_prom", "ult_costo", "status",
+        ])
+
+
+@st.cache_data(ttl=900, show_spinner="cargando órdenes de compra pendientes SAE…")
+def obtener_ordenes_compra_pendientes_pv_ctrl() -> pd.DataFrame:
+    try:
+        return obtener_ordenes_compra_pendientes_sae_model()
+    except Exception:
+        return pd.DataFrame(columns=[
+            "cve_doc", "serie", "folio", "fecha_doc", "fecha_rec",
+            "cve_prov", "proveedor", "cve_art", "producto", "cve_linea", "linea",
+            "cantidad", "unidad", "precio",
+        ])
+
+
+# ── autorización por línea ──────────────────────────────────────────────────
+
+def upsert_presupuesto_ventas_linea_ctrl(
+    id_carga: int,
+    company: Optional[str],
+    cliente_excel: Optional[str],
+    codigo_origen: Optional[str],
+    producto_excel: str,
+    estatus: str,
+    usuario_id: int,
+) -> tuple[int, Optional[str]]:
+    return upsert_presupuesto_ventas_linea_model(
+        id_carga=id_carga,
+        company=company,
+        cliente_excel=cliente_excel,
+        codigo_origen=codigo_origen,
+        producto_excel=producto_excel,
+        estatus=estatus,
+        usuario_id=usuario_id,
+    )
+
+
+def insertar_presupuesto_ventas_linea_estatus_ctrl(
+    linea_id: int,
+    estatus_anterior: Optional[str],
+    estatus_nuevo: str,
+    usuario_id: Optional[int],
+    usuario_nombre: Optional[str],
+    usuario_email: Optional[str],
+    comentario: Optional[str],
+) -> int:
+    return insertar_presupuesto_ventas_linea_estatus_model(
+        linea_id=linea_id,
+        estatus_anterior=estatus_anterior,
+        estatus_nuevo=estatus_nuevo,
+        usuario_id=usuario_id,
+        usuario_nombre=usuario_nombre,
+        usuario_email=usuario_email,
+        comentario=comentario,
+    )
+
+
+def obtener_presupuesto_ventas_lineas_ctrl(id_carga: int) -> pd.DataFrame:
+    return obtener_presupuesto_ventas_lineas_model(id_carga)
+
+
+def obtener_presupuesto_ventas_lineas_pendientes_ctrl() -> pd.DataFrame:
+    return obtener_presupuesto_ventas_lineas_pendientes_model()

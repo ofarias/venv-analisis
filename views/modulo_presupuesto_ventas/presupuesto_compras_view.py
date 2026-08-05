@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from io import BytesIO
 from typing import Optional
 
@@ -11,45 +10,25 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, JsCode
 
-from controllers.presupuesto_ventas_controller import (
-    cargar_excel_directo_presupuesto_ventas_ctrl,
-    eliminar_carga_completa_presupuesto_ventas_ctrl,
-    eliminar_registro_presupuesto_ventas_ctrl,
-    guardar_presupuesto_ventas_batch_ctrl,
-    insertar_presupuesto_ventas_linea_estatus_ctrl,
-    obtener_cargas_presupuesto_ventas_ctrl,
-    obtener_catalogo_clientes_pv_ctrl,
-    obtener_catalogo_productos_pv_ctrl,
-    obtener_existencias_productos_pv_ctrl,
-    obtener_ordenes_compra_pendientes_pv_ctrl,
-    obtener_presupuesto_ventas_ctrl,
-    obtener_presupuesto_ventas_lineas_ctrl,
-    obtener_presupuesto_ventas_lineas_pendientes_ctrl,
-    obtener_ultimo_precio_venta_ctrl,
-    registrar_carga_presupuesto_ventas_ctrl,
-    upsert_presupuesto_ventas_linea_ctrl,
-)
-from views.modulo_presupuesto_ventas.presupuesto_compras_view import (
-    _enviar_notificacion_vendedor_compras,
-    _panel_carga as _panel_carga_compras,
-    _panel_crear_manual as _panel_crear_manual_compras,
-    _panel_gestionar_cargas as _panel_gestionar_cargas_compras,
-    _panel_pivot as _panel_pivot_compras,
-    _selector_carga as _selector_carga_compras,
-)
-from controllers.presupuesto_admin_controller import (
-    obtener_presupuesto_ventas_compras_ctrl,
-    obtener_roles_usuario_id_ctrl,
-    obtener_usuario_por_id_ctrl,
-    obtener_usuarios_presupuesto_ctrl,
-)
 from controllers.presupuesto_compras_controller import (
+    cargar_excel_directo_presupuesto_compras_ctrl,
+    eliminar_carga_completa_presupuesto_compras_ctrl,
+    eliminar_registro_presupuesto_compras_ctrl,
+    guardar_presupuesto_compras_batch_ctrl,
     insertar_presupuesto_compras_linea_estatus_ctrl,
+    obtener_cargas_presupuesto_compras_ctrl,
+    obtener_catalogo_clientes_pv_compras_ctrl,
+    obtener_catalogo_productos_pv_compras_ctrl,
+    obtener_existencias_productos_pv_compras_ctrl,
+    obtener_ordenes_compra_pendientes_pv_compras_ctrl,
     obtener_presupuesto_compras_ctrl,
+    obtener_presupuesto_compras_lineas_ctrl,
     obtener_presupuesto_compras_lineas_pendientes_ctrl,
+    registrar_carga_presupuesto_compras_ctrl,
     upsert_presupuesto_compras_linea_ctrl,
 )
 from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
+from utils.banxico import obtener_tipo_cambio_fix_banxico
 from utils.envio_correo import enviar_correo
 
 
@@ -111,17 +90,11 @@ def _tiene_rol(roles: list[str], *objetivos: str) -> bool:
     return bool(roles_set.intersection(objetivos_set))
 
 
-def _puede_ver_todos_presupuesto() -> bool:
-    usuario = st.session_state.get("usuario") or {}
-    return _tiene_rol(usuario.get("roles"), "forecastadmin", "superadmin")
-
-
 # ── autorización por línea ──────────────────────────────────────────────────
-# mismo esquema que usa solicitudes de gastos (tab_solicitud_gastos_view.py:
-# _tipo_autorizacion_solicitud / _rol_autorizador_solicitud): el rol de quien
-# somete decide quién autoriza. "Gerente de Ventas" no requiere autorización;
-# "Jefe de Ventas"/"Supervisor de Ventas" los autoriza el Gerente; cualquier
-# otro perfil (p.ej. "Ventas") lo autoriza el Jefe de Ventas.
+# misma cascada que presupuesto de ventas (no hay roles "Jefe/Gerente de
+# Compras" definidos — el pedido describe una sola jerarquía de autorización,
+# la de ventas, aplicada por igual a los presupuestos de venta y de compra
+# que arma el mismo equipo).
 
 _ESTATUS_LINEA_BADGE = {
     "captura": "🔵 captura",
@@ -129,57 +102,6 @@ _ESTATUS_LINEA_BADGE = {
     "autorizada": "🟢 autorizada",
     "rechazada": "🔴 rechazada",
 }
-
-# colores de fondo para la columna "Autorización" en tablas de solo lectura
-# (st.dataframe con pandas Styler) — mismos tonos que usa AgGrid en la
-# tabla de captura para valores positivos/negativos
-_COLOR_FONDO_AUTORIZACION = {
-    "captura": "#cfe2ff",
-    "enviada": "#fff3cd",
-    "autorizada": "#d4edda",
-    "rechazada": "#f8d7da",
-}
-
-
-def _color_fondo_autorizacion(valor: str) -> str:
-    texto = str(valor or "")
-    for estatus, color in _COLOR_FONDO_AUTORIZACION.items():
-        if estatus in texto:
-            return f"background-color: {color}; color: #111"
-    return ""
-
-
-# mismos tonos que usa AgGrid (_CELL_STYLE_VALORES) en la tabla de captura
-# para resaltar valores positivos/negativos en las columnas de mes
-def _color_valor_mes(valor) -> str:
-    try:
-        v = float(valor)
-    except (TypeError, ValueError):
-        return ""
-    if v > 0:
-        return "background-color: #d4edda; color: #155724"
-    if v < 0:
-        return "background-color: #f8d7da; color: #721c24"
-    return ""
-
-
-def _formatear_numeros(estilo, df_mostrado: pd.DataFrame, meses_cols: list[str]):
-    """Aplica formato de miles/decimales a "Precio" y "Total USD Año" (con $
-    y 2 decimales), "Total Kilos Año" (miles y 2 decimales) y a los meses
-    (miles y decimales — 4 en filas de sección KG, 2 en el resto, igual que
-    en la tabla de presupuesto)."""
-    for col in ("Precio", "Total USD Año"):
-        if col in df_mostrado.columns:
-            estilo = estilo.format("${:,.2f}", subset=[col])
-    if "Total Kilos Año" in df_mostrado.columns:
-        estilo = estilo.format("{:,.2f}", subset=["Total Kilos Año"])
-    if meses_cols and "Sección" in df_mostrado.columns:
-        mask_kg = df_mostrado["Sección"].astype(str) == "KG"
-        estilo = estilo.format("{:,.4f}", subset=(mask_kg, meses_cols))
-        estilo = estilo.format("{:,.2f}", subset=(~mask_kg, meses_cols))
-    elif meses_cols:
-        estilo = estilo.format("{:,.2f}", subset=meses_cols)
-    return estilo
 
 
 def _tipo_autorizacion_linea() -> str:
@@ -201,7 +123,7 @@ def _rol_autorizador_linea() -> str:
     return ""
 
 
-def _cambiar_estatus_linea_ventas(
+def _cambiar_estatus_linea_compras(
     *,
     id_carga: int,
     company: Optional[str],
@@ -214,7 +136,7 @@ def _cambiar_estatus_linea_ventas(
     usuario_email: Optional[str],
     comentario: Optional[str] = None,
 ) -> int:
-    linea_id, estatus_anterior = upsert_presupuesto_ventas_linea_ctrl(
+    linea_id, estatus_anterior = upsert_presupuesto_compras_linea_ctrl(
         id_carga=id_carga,
         company=company,
         cliente_excel=cliente_excel,
@@ -223,7 +145,7 @@ def _cambiar_estatus_linea_ventas(
         estatus=estatus_nuevo,
         usuario_id=usuario_id,
     )
-    insertar_presupuesto_ventas_linea_estatus_ctrl(
+    insertar_presupuesto_compras_linea_estatus_ctrl(
         linea_id=linea_id,
         estatus_anterior=estatus_anterior,
         estatus_nuevo=estatus_nuevo,
@@ -235,7 +157,7 @@ def _cambiar_estatus_linea_ventas(
     return linea_id
 
 
-def _enviar_notificacion_autorizador_ventas(
+def _enviar_notificacion_autorizador_compras(
     *, lineas: list[dict], id_carga: int, anio: int, nombre_rol: str, token, remitente: str,
 ) -> tuple[bool, str]:
     destinatarios = sorted({
@@ -249,10 +171,10 @@ def _enviar_notificacion_autorizador_ventas(
         f"<td>{l.get('cliente_excel', '') or ''}</td></tr>"
         for l in lineas
     )
-    asunto = f"Presupuesto de ventas {anio} — solicitud de autorización (carga {id_carga})"
+    asunto = f"Presupuesto de compra {anio} — solicitud de autorización (carga {id_carga})"
     cuerpo_html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 14px; color: #111;">
-        <p>Se solicitó autorización para {len(lineas)} línea(s) del presupuesto de ventas
+        <p>Se solicitó autorización para {len(lineas)} línea(s) del presupuesto de compra
         {anio} (carga {id_carga}).</p>
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse;">
             <tr style="background:#1F4E78; color:#fff;">
@@ -260,7 +182,7 @@ def _enviar_notificacion_autorizador_ventas(
             </tr>
             {filas_html}
         </table>
-        <p>Entra a la app, módulo <b>Presupuesto de Ventas → ✅ autorizaciones</b>,
+        <p>Entra a la app, módulo <b>Presupuesto de Ventas → Presupuesto Compra → ✅ autorizaciones</b>,
         para autorizar o rechazar.</p>
     </div>
     """
@@ -270,19 +192,19 @@ def _enviar_notificacion_autorizador_ventas(
     )
 
 
-def _enviar_notificacion_vendedor_ventas(
+def _enviar_notificacion_vendedor_compras(
     *, destinatario: str, aprobado: bool, id_carga: int, anio: int,
     producto_excel: str, motivo: Optional[str], token, remitente: str,
 ) -> tuple[bool, str]:
     if not destinatario:
         return False, "sin correo del vendedor"
     asunto = (
-        f"Presupuesto de ventas {anio} — línea {'autorizada' if aprobado else 'rechazada'}"
+        f"Presupuesto de compra {anio} — línea {'autorizada' if aprobado else 'rechazada'}"
     )
     motivo_html = f"<p><b>Motivo:</b> {motivo}</p>" if (not aprobado and motivo) else ""
     cuerpo_html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 14px; color: #111;">
-        <p>La línea <b>{producto_excel}</b> del presupuesto de ventas {anio}
+        <p>La línea <b>{producto_excel}</b> del presupuesto de compra {anio}
         (carga {id_carga}) fue
         <b style="color:{'#16a34a' if aprobado else '#dc2626'}">
             {'AUTORIZADA' if aprobado else 'RECHAZADA'}
@@ -308,13 +230,29 @@ def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, list]:
     """Returns (sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio,
     code_to_linea, code_to_origen, options_list).
 
-    code_to_precio (precio público en SAE), code_to_linea (cve_linea, "cve — desc")
-    y code_to_origen (inve_clib01.camplib10) se usan para autocompletar esos
-    campos al agregar un registro nuevo — el usuario no los captura a mano.
+    code_to_precio es en realidad el costo (ult_costo de SAE / tipo de cambio
+    FIX oficial de Banxico del día), no el precio público — se usa ese nombre
+    de variable por continuidad con el resto del módulo. code_to_linea
+    (cve_linea, "cve — desc") y code_to_origen (inve_clib01.camplib10) se usan
+    para autocompletar esos campos al agregar un registro nuevo — el usuario
+    no los captura a mano.
     """
-    df = obtener_catalogo_productos_pv_ctrl()
+    df = obtener_catalogo_productos_pv_compras_ctrl()
     if df is None or df.empty:
         return set(), {}, {"": None}, {}, {}, {}, {}, [""]
+
+    df_existencias = obtener_existencias_productos_pv_compras_ctrl()
+    code_to_ult_costo: dict = {}
+    if df_existencias is not None and not df_existencias.empty:
+        for r in df_existencias.to_dict("records"):
+            code_art = str(r.get("cve_art") or "").strip()
+            if code_art:
+                code_to_ult_costo[code_art] = float(r.get("ult_costo") or 0.0)
+
+    try:
+        tipo_cambio = obtener_tipo_cambio_fix_banxico()
+    except Exception:
+        tipo_cambio = 0.0
 
     records = df.to_dict("records")
     sae_set: set = set()
@@ -336,7 +274,8 @@ def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, list]:
         code_to_label[code] = label
         code_to_desc[code] = desc
         label_to_code[label] = code
-        code_to_precio[code] = float(r.get("precio") or 0.0)
+        ult_costo = code_to_ult_costo.get(code, 0.0)
+        code_to_precio[code] = round(ult_costo / tipo_cambio, 4) if tipo_cambio else 0.0
         cve_linea = str(r.get("cve_linea") or "").strip()
         desc_linea = str(r.get("linea") or "").strip()
         code_to_linea[code] = (cve_linea, f"{cve_linea} — {desc_linea}" if desc_linea else cve_linea)
@@ -354,7 +293,7 @@ def _catalogo_clientes_sae() -> tuple[set, list]:
     buscar_clientes_sae_ctrl). Returns (clientes_set, opciones) donde cada
     opción es "clave - nombre - estado", igual que en Solicitudes — usado
     para exigir cliente de SAE cuando el estatus es "Budgeted"."""
-    df = obtener_catalogo_clientes_pv_ctrl()
+    df = obtener_catalogo_clientes_pv_compras_ctrl()
     if df is None or df.empty:
         return set(), [""]
 
@@ -439,71 +378,6 @@ def _construir_pivot(
     return pivot, mapping, row_meta
 
 
-def _pivotear_meses(
-    df: pd.DataFrame,
-    cols_grupo: list[str],
-    col_valor: str = "valor",
-) -> pd.DataFrame:
-    """Pivotea un dataframe 'largo' (una fila por mes) a 'ancho', con una
-    columna ene..dic por grupo — mismo formato que la tabla de presupuesto.
-    Se usa en las tablas de solo lectura ("ver todos", "autorizaciones")."""
-    cols_grupo = [c for c in cols_grupo if c in df.columns] if df is not None else []
-
-    if df is None or df.empty or not cols_grupo:
-        return pd.DataFrame(columns=cols_grupo + list(_MESES.values()))
-
-    df = df.copy()
-    for c in cols_grupo:
-        df[c] = df[c].fillna("")
-    df["mes"] = pd.to_numeric(df["mes"], errors="coerce").fillna(0).astype(int)
-    df[col_valor] = pd.to_numeric(df[col_valor], errors="coerce").fillna(0.0)
-
-    pivot = df.pivot_table(
-        index=cols_grupo,
-        columns="mes",
-        values=col_valor,
-        aggfunc="sum",
-        fill_value=0.0,
-    ).reset_index()
-    pivot = pivot.rename(columns=_MESES)
-
-    for m in _MESES.values():
-        if m not in pivot.columns:
-            pivot[m] = 0.0
-
-    return pivot[[c for c in (cols_grupo + list(_MESES.values())) if c in pivot.columns]]
-
-
-def _agregar_totales_anio(pivote: pd.DataFrame) -> pd.DataFrame:
-    """Calcula total_kg_anio/total_usd_anio a partir de los meses ya
-    pivoteados (columna "valor") + "seccion" + "precio" — NO se usan las
-    columnas cantidad_kg/importe guardadas en BD porque en registros
-    antiguos pueden venir en NULL, lo que hace que la suma salga en 0 sin
-    avisar. Mismo criterio que _guardar_pivot: en sección KG, "valor" son
-    los kilos y el importe es valor×precio; en cualquier otra sección
-    "valor" ya es el monto en USD."""
-    if pivote is None or pivote.empty:
-        pivote = pivote.copy() if pivote is not None else pd.DataFrame()
-        pivote["total_kg_anio"] = pd.Series(dtype=float)
-        pivote["total_usd_anio"] = pd.Series(dtype=float)
-        return pivote
-
-    pivote = pivote.copy()
-    meses_cols = [m for m in _MESES.values() if m in pivote.columns]
-    suma_anio = pivote[meses_cols].sum(axis=1) if meses_cols else pd.Series(0.0, index=pivote.index)
-    # comparación insensible a mayúsculas/espacios — hay datos (sobre todo
-    # cargas antiguas por Excel) donde "seccion" no llega como "KG" exacto
-    es_kg = (
-        pivote["seccion"].astype(str).str.strip().str.upper() == "KG"
-        if "seccion" in pivote.columns else pd.Series(False, index=pivote.index)
-    )
-    precio_col = pd.to_numeric(pivote["precio"], errors="coerce").fillna(0.0) if "precio" in pivote.columns else 0.0
-
-    pivote["total_kg_anio"] = suma_anio.where(es_kg, 0.0)
-    pivote["total_usd_anio"] = (suma_anio * precio_col).where(es_kg, suma_anio)
-    return pivote
-
-
 _ENCABEZADOS_EXPORT = {
     "company": "Company",
     "cliente_excel": "Cliente",
@@ -512,7 +386,7 @@ _ENCABEZADOS_EXPORT = {
     "_cve_prod_label": "Cve prod / SAE",
     "_status": "En catálogo SAE",
     "estatus_excel": "Estatus",
-    "precio": "Precio USD/Kg",
+    "precio": "Costo USD/Kg",
 }
 
 
@@ -577,7 +451,7 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
 
 # ── plantilla de carga ("layout") ───────────────────────────────────────────
 #
-# Formato "standard" del parser (utils/presupuesto_ventas_excel_parser.py):
+# Formato "standard" del parser (utils/presupuesto_compras_excel_parser.py):
 #   - fila ancla de sección: debe contener TURNOVER+VOLUME+KG (→ KG) o
 #     TURNOVER+USD (→ USD), en cualquier celda de la fila.
 #   - fila ancla de región: debe contener MEXICO o CAM+CARIBE.
@@ -618,7 +492,7 @@ _LAYOUT_BLOQUES = [
 ]
 
 _LAYOUT_INSTRUCCIONES = [
-    "PLANTILLA DE CARGA — PRESUPUESTO DE VENTAS",
+    "PLANTILLA DE CARGA — PRESUPUESTO DE COMPRAS",
     "",
     "Reglas para que la carga se procese correctamente:",
     "1. No borres ni renombres las filas que dicen \"TURNOVER in VOLUME KG\" / \"TURNOVER in USD\" "
@@ -856,7 +730,7 @@ def _guardar_pivot(
         return 0, errores
 
     try:
-        resultado = guardar_presupuesto_ventas_batch_ctrl(
+        resultado = guardar_presupuesto_compras_batch_ctrl(
             inserts=inserts,
             updates=updates,
             cve_prod_updates=cve_prod_updates,
@@ -878,7 +752,7 @@ def _guardar_pivot(
 # ── panel: selector de carga ──────────────────────────────────────────────────
 
 def _selector_carga() -> Optional[int]:
-    df = obtener_cargas_presupuesto_ventas_ctrl(limit=50, usuario_id=_get_usuario_id())
+    df = obtener_cargas_presupuesto_compras_ctrl(limit=50, usuario_id=_get_usuario_id())
 
     if df is None or df.empty:
         st.info("aún no hay presupuestos cargados")
@@ -889,12 +763,12 @@ def _selector_carga() -> Optional[int]:
         for r in df.to_dict(orient="records")
     }
     labels = list(opciones.keys())
-    default = st.session_state.get("pv_id_carga")
+    default = st.session_state.get("pc_id_carga")
     idx = next((i for i, l in enumerate(labels) if opciones[l] == default), 0)
 
-    label = st.selectbox("presupuesto", options=labels, index=idx, key="pv_select_carga")
+    label = st.selectbox("presupuesto", options=labels, index=idx, key="pc_select_carga")
     id_carga = opciones[label]
-    st.session_state["pv_id_carga"] = id_carga
+    st.session_state["pc_id_carga"] = id_carga
     return id_carga
 
 
@@ -905,20 +779,20 @@ def _panel_crear_manual() -> None:
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
             anio = st.number_input(
-                "año", min_value=2020, max_value=2100, value=2026, step=1, key="pv_manual_anio"
+                "año", min_value=2020, max_value=2100, value=2026, step=1, key="pc_manual_anio"
             )
         with col2:
-            version = st.text_input("versión", value="manual", key="pv_manual_version")
+            version = st.text_input("versión", value="manual", key="pc_manual_version")
         with col3:
-            comentarios = st.text_input("comentarios", value="", key="pv_manual_comentarios")
+            comentarios = st.text_input("comentarios", value="", key="pc_manual_comentarios")
 
-        if st.button("crear presupuesto manual", key="pv_btn_manual"):
+        if st.button("crear presupuesto manual", key="pc_btn_manual"):
             usuario_id = _get_usuario_id()
             if usuario_id <= 0:
                 st.error("no se encontró el usuario en sesión")
                 return
             try:
-                id_carga = registrar_carga_presupuesto_ventas_ctrl(
+                id_carga = registrar_carga_presupuesto_compras_ctrl(
                     nombre_archivo="Presupuesto manual",
                     hoja_origen="manual",
                     anio=int(anio),
@@ -926,7 +800,7 @@ def _panel_crear_manual() -> None:
                     comentarios=comentarios or None,
                     usuario_id=usuario_id,
                 )
-                st.session_state["pv_id_carga"] = int(id_carga)
+                st.session_state["pc_id_carga"] = int(id_carga)
                 st.success(f"presupuesto manual creado — id={id_carga}")
                 st.rerun()
             except Exception as e:
@@ -939,16 +813,16 @@ def _panel_carga() -> None:
     st.download_button(
         "⬇️ descargar layout de carga",
         data=_generar_layout_presupuesto_bytes(),
-        file_name="layout_presupuesto_ventas.xlsx",
+        file_name="layout_presupuesto_compras.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="pv_btn_layout",
+        key="pc_btn_layout",
         help="plantilla en blanco con el formato que espera la carga (incluye hoja de instrucciones)",
     )
 
     archivo = st.file_uploader(
-        "sube el archivo de presupuesto ventas",
+        "sube el archivo de presupuesto compras",
         type=["xlsx", "xls"],
-        key="pv_archivo",
+        key="pc_archivo",
     )
     if archivo is None:
         return
@@ -960,22 +834,22 @@ def _panel_carga() -> None:
 
     col1, col2, col3 = st.columns([2, 1, 2])
     with col1:
-        hoja = st.selectbox("hoja", options=hojas, key="pv_hoja")
+        hoja = st.selectbox("hoja", options=hojas, key="pc_hoja")
     with col2:
-        anio = st.number_input("año", min_value=2020, max_value=2100, value=2026, step=1, key="pv_anio")
+        anio = st.number_input("año", min_value=2020, max_value=2100, value=2026, step=1, key="pc_anio")
     with col3:
-        version = st.text_input("versión", value="v1", key="pv_version")
+        version = st.text_input("versión", value="v1", key="pc_version")
 
-    comentarios = st.text_input("comentarios", value="", key="pv_comentarios")
+    comentarios = st.text_input("comentarios", value="", key="pc_comentarios")
 
-    if st.button("cargar presupuesto", type="primary", use_container_width=True, key="pv_btn_cargar"):
+    if st.button("cargar presupuesto", type="primary", use_container_width=True, key="pc_btn_cargar"):
         usuario_id = _get_usuario_id()
         if usuario_id <= 0:
             st.error("no se encontró el usuario en sesión")
             return
         try:
             archivo.seek(0)
-            res = cargar_excel_directo_presupuesto_ventas_ctrl(
+            res = cargar_excel_directo_presupuesto_compras_ctrl(
                 archivo=archivo,
                 nombre_archivo=archivo.name,
                 hoja=hoja,
@@ -985,7 +859,7 @@ def _panel_carga() -> None:
                 comentarios=comentarios or None,
                 reemplazar=True,
             )
-            st.session_state["pv_id_carga"] = int(res["id_carga"])
+            st.session_state["pc_id_carga"] = int(res["id_carga"])
             st.success(
                 f"cargado — id={res['id_carga']} | "
                 f"tablas={res['tablas_detectadas']} | "
@@ -1017,11 +891,11 @@ def _form_agregar_registro(
     clientes_set: set,
     clientes_opciones: list[str],
 ) -> None:
-    prefix = f"pv_man_{seccion}_{region}_{id_carga}"
+    prefix = f"pc_man_{seccion}_{region}_{id_carga}"
     with st.expander("➕ agregar registro"):
         st.caption(
             "campos obligatorios: **nombre producto** y **al menos un mes con valor distinto de cero** "
-            "— company, cliente y estatus son opcionales; precio, línea y código origen se "
+            "— company, cliente y estatus son opcionales; costo, línea y código origen se "
             "obtienen de SAE al elegir el producto y no se pueden editar a mano"
         )
         col1, col2 = st.columns(2)
@@ -1052,7 +926,7 @@ def _form_agregar_registro(
             st.session_state[nom_key] = code_to_desc.get(code, "") if code else ""
 
         cve_label = st.selectbox(
-            "producto SAE (opcional — autocompleta nombre, precio, línea y código origen)",
+            "producto SAE (opcional — autocompleta nombre, costo, línea y código origen)",
             sae_opciones, key=sel_key, on_change=_autofill_producto,
         )
         producto_excel = st.text_input("nombre producto *obligatorio*", key=nom_key)
@@ -1068,17 +942,6 @@ def _form_agregar_registro(
         linea_desc = code_to_linea.get(_code_sel, ("", ""))[1] if _code_sel else ""
         codigo_origen = code_to_origen.get(_code_sel, "") if _code_sel else ""
 
-        # si el precio público (tabla de precios x art) es 0, se usa como
-        # respaldo el último precio de venta en facturas — cruzado con el
-        # cliente si ya se conoce, o el último precio a cualquier cliente si no
-        _cve_clie_sel = (
-            cliente.strip().split(" - ", 1)[0].strip()
-            if cliente.strip() in clientes_set
-            else None
-        )
-        if _code_sel and precio == 0:
-            precio = obtener_ultimo_precio_venta_ctrl(cve_art=_code_sel, cve_clie=_cve_clie_sel)
-
         col4, col5, col6, col7 = st.columns(4)
         with col4:
             estatus_excel = st.selectbox(
@@ -1086,9 +949,9 @@ def _form_agregar_registro(
             )
         with col5:
             st.number_input(
-                "precio USD/kg (de SAE, no editable)",
+                "costo USD/kg (ult. costo SAE / tipo de cambio Banxico, no editable)",
                 min_value=0.0, format="%.4f", value=precio, disabled=True,
-                key=f"{prefix}_precio_{_code_sel or 'none'}_{_cve_clie_sel or 'none'}",
+                key=f"{prefix}_precio_{_code_sel or 'none'}",
             )
         with col6:
             st.text_input(
@@ -1164,12 +1027,12 @@ def _panel_stock_ordenes_sae() -> None:
         st.markdown("**📦 stock y órdenes de compra por llegar (SAE)**")
 
         st.caption("stock de productos")
-        df_stock = obtener_existencias_productos_pv_ctrl()
+        df_stock = obtener_existencias_productos_pv_compras_ctrl()
         if df_stock is None or df_stock.empty:
             st.info("sin datos de existencias en SAE")
         else:
             filtro = st.text_input(
-                "buscar producto (clave o nombre)", key="pv_stock_filtro",
+                "buscar producto (clave o nombre)", key="pc_stock_filtro",
             )
             df_mostrar = df_stock
             if filtro.strip():
@@ -1189,7 +1052,7 @@ def _panel_stock_ordenes_sae() -> None:
             )
 
         st.caption("órdenes de compra por llegar")
-        df_oc = obtener_ordenes_compra_pendientes_pv_ctrl()
+        df_oc = obtener_ordenes_compra_pendientes_pv_compras_ctrl()
         if df_oc is None or df_oc.empty:
             st.info("sin órdenes de compra pendientes de recibir en SAE")
         else:
@@ -1210,7 +1073,7 @@ def _panel_stock_ordenes_sae() -> None:
 # ── panel: tabla pivot ────────────────────────────────────────────────────────
 
 def _panel_pivot(id_carga: int) -> None:
-    df_all = obtener_presupuesto_ventas_ctrl(id_carga=id_carga)
+    df_all = obtener_presupuesto_compras_ctrl(id_carga=id_carga)
     if df_all is None:
         df_all = pd.DataFrame()
 
@@ -1223,7 +1086,7 @@ def _panel_pivot(id_carga: int) -> None:
             "cantidad_kg", "precio", "cve_prod", "estatus_excel",
             "id_carga", "id_presupuesto",
         ])
-        carga_meta = obtener_cargas_presupuesto_ventas_ctrl(id_carga=id_carga, limit=1)
+        carga_meta = obtener_cargas_presupuesto_compras_ctrl(id_carga=id_carga, limit=1)
         if carga_meta is not None and not carga_meta.empty and "anio" in carga_meta.columns:
             anio_default = int(carga_meta.iloc[0]["anio"])
 
@@ -1253,8 +1116,8 @@ def _panel_pivot(id_carga: int) -> None:
 
     col_exp1, col_exp2 = st.columns([1, 3])
     with col_exp1:
-        export_key = f"pv_export_bytes_{id_carga}"
-        if st.button("📊 generar Excel", key=f"pv_export_gen_{id_carga}", use_container_width=True):
+        export_key = f"pc_export_bytes_{id_carga}"
+        if st.button("📊 generar Excel", key=f"pc_export_gen_{id_carga}", use_container_width=True):
             hojas = []
             for label, seccion, region in _TABS_PIVOT:
                 mask = pd.Series(True, index=df_all.index)
@@ -1271,10 +1134,10 @@ def _panel_pivot(id_carga: int) -> None:
             st.download_button(
                 "⬇️ descargar Excel",
                 data=st.session_state[export_key],
-                file_name=f"presupuesto_ventas_{id_carga}_{anio_actual}.xlsx",
+                file_name=f"presupuesto_compras_{id_carga}_{anio_actual}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key=f"pv_export_dl_{id_carga}",
+                key=f"pc_export_dl_{id_carga}",
             )
 
     sub_tabs = st.tabs([t[0] for t in _TABS_PIVOT])
@@ -1288,9 +1151,9 @@ def _panel_pivot(id_carga: int) -> None:
             # vuelve a guardar con lo que el grid reporte, para que un rerun
             # disparado por la edición de OTRA celda nunca le reenvíe al grid un
             # estado viejo y revierta lo que el usuario acaba de escribir.
-            ver_key = f"pv_ver_{seccion}_{region}_{id_carga}"
-            orig_key = f"pv_orig_{seccion}_{region}_{id_carga}"
-            work_key = f"pv_work_{seccion}_{region}_{id_carga}"
+            ver_key = f"pc_ver_{seccion}_{region}_{id_carga}"
+            orig_key = f"pc_orig_{seccion}_{region}_{id_carga}"
+            work_key = f"pc_work_{seccion}_{region}_{id_carga}"
             st.session_state.setdefault(ver_key, 0)
 
             necesita_reload = (
@@ -1320,9 +1183,9 @@ def _panel_pivot(id_carga: int) -> None:
                 pivot_db["_nueva"] = False
 
                 # estatus de autorización por línea (no por mes): si no hay
-                # fila en presupuesto_ventas_lineas para esa combinación
+                # fila en presupuesto_compras_lineas para esa combinación
                 # company/cliente/código/producto, es "captura" implícito
-                lineas_df = obtener_presupuesto_ventas_lineas_ctrl(id_carga)
+                lineas_df = obtener_presupuesto_compras_lineas_ctrl(id_carga)
                 estatus_por_linea: dict[tuple, str] = {}
                 if lineas_df is not None and not lineas_df.empty:
                     for r in lineas_df.to_dict("records"):
@@ -1427,7 +1290,7 @@ def _panel_pivot(id_carga: int) -> None:
             gb.configure_column(
                 "_cve_prod_label",
                 headerName="cve prod",
-                # producto SAE: fijo una vez capturado, igual que precio y línea —
+                # producto SAE: fijo una vez capturado, igual que costo y línea —
                 # se elige al agregar el registro, no se reasigna después
                 editable=False,
                 width=200,
@@ -1439,8 +1302,8 @@ def _panel_pivot(id_carga: int) -> None:
             )
             gb.configure_column(
                 "precio",
-                headerName="precio USD/kg",
-                # precio: viene de SAE al agregar el registro, no editable en la tabla
+                headerName="costo USD/kg",
+                # costo: ult_costo SAE / tipo de cambio Banxico al agregar el registro, no editable en la tabla
                 editable=False,
                 width=110,
                 type=["numericColumn"],
@@ -1485,7 +1348,7 @@ def _panel_pivot(id_carga: int) -> None:
 
             st.caption(
                 "🟢 en SAE  |  🟠 no en SAE  |  🟩 valor positivo  |  🟥 valor negativo "
-                " — cliente, producto, cve prod, código origen y precio quedan fijos desde que se agrega"
+                " — cliente, producto, cve prod, código origen y costo quedan fijos desde que se agrega"
                 " el registro  |  selecciona filas con el checkbox para eliminarlas o para solicitar su"
                 " autorización  |  🔵 captura 🟡 enviada 🟢 autorizada 🔴 rechazada — mientras esté en"
                 " captura o rechazada puedes editar company, estatus y los meses; una vez enviada o"
@@ -1500,7 +1363,7 @@ def _panel_pivot(id_carga: int) -> None:
                 fit_columns_on_grid_load=False,
                 allow_unsafe_jscode=True,
                 height=min(56 + len(work_df) * 35, 680),
-                key=f"pv_pivot_{seccion}_{region}_{id_carga}_{st.session_state[ver_key]}",
+                key=f"pc_pivot_{seccion}_{region}_{id_carga}_{st.session_state[ver_key]}",
             )
             edited = pd.DataFrame(grid_response.get("data", []))
             edited = edited.drop(columns=["total_kg_anio", "total_usd_anio"], errors="ignore")
@@ -1550,7 +1413,7 @@ def _panel_pivot(id_carga: int) -> None:
                     "💾 guardar cambios",
                     type="primary",
                     use_container_width=True,
-                    key=f"pv_save_{seccion}_{region}_{id_carga}",
+                    key=f"pc_save_{seccion}_{region}_{id_carga}",
                 ):
                     # `_guardar_pivot` compara `orig`/`edited` fila por fila
                     # posicionalmente; `pivot` (línea base de BD) no incluye las
@@ -1587,7 +1450,7 @@ def _panel_pivot(id_carga: int) -> None:
                     "🗑️ eliminar seleccionados",
                     use_container_width=True,
                     disabled=not seleccionadas,
-                    key=f"pv_del_{seccion}_{region}_{id_carga}",
+                    key=f"pc_del_{seccion}_{region}_{id_carga}",
                 ):
                     # una línea enviada o autorizada ya no se puede eliminar
                     congeladas = [
@@ -1617,7 +1480,7 @@ def _panel_pivot(id_carga: int) -> None:
                         if fila.get("_nueva"):
                             continue
                         try:
-                            n = eliminar_registro_presupuesto_ventas_ctrl(
+                            n = eliminar_registro_presupuesto_compras_ctrl(
                                 id_carga=id_carga,
                                 seccion=seccion,
                                 region=region,
@@ -1663,7 +1526,7 @@ def _panel_pivot(id_carga: int) -> None:
                     "📤 solicitar autorización",
                     use_container_width=True,
                     disabled=not elegibles,
-                    key=f"pv_aut_{seccion}_{region}_{id_carga}",
+                    key=f"pc_aut_{seccion}_{region}_{id_carga}",
                 ):
                     usuario = st.session_state.get("usuario") or {}
                     usuario_id = int(usuario.get("id") or 0)
@@ -1674,7 +1537,7 @@ def _panel_pivot(id_carga: int) -> None:
                     estatus_destino = "autorizada" if tipo_aut == "sin_autorizacion" else "enviada"
 
                     for fila in elegibles:
-                        _cambiar_estatus_linea_ventas(
+                        _cambiar_estatus_linea_compras(
                             id_carga=id_carga,
                             company=fila.get("company") or None,
                             cliente_excel=fila.get("cliente_excel") or None,
@@ -1689,7 +1552,7 @@ def _panel_pivot(id_carga: int) -> None:
                     if estatus_destino == "enviada":
                         nombre_rol = _rol_autorizador_linea()
                         token = st.session_state.get("microsoft_token")
-                        ok_mail, msg_mail = _enviar_notificacion_autorizador_ventas(
+                        ok_mail, msg_mail = _enviar_notificacion_autorizador_compras(
                             lineas=elegibles, id_carga=id_carga, anio=anio_actual,
                             nombre_rol=nombre_rol, token=token, remitente=usuario_email,
                         )
@@ -1708,7 +1571,7 @@ def _panel_pivot(id_carga: int) -> None:
 # ── panel: gestión de cargas ──────────────────────────────────────────────────
 
 def _panel_gestionar_cargas() -> None:
-    df = obtener_cargas_presupuesto_ventas_ctrl(limit=200, usuario_id=_get_usuario_id())
+    df = obtener_cargas_presupuesto_compras_ctrl(limit=200, usuario_id=_get_usuario_id())
 
     if df is None or df.empty:
         st.info("no hay cargas registradas")
@@ -1727,580 +1590,19 @@ def _panel_gestionar_cargas() -> None:
         f"{r['id_carga']} | {r['nombre_archivo']} | {r['anio']} | {r.get('version', '')}": int(r["id_carga"])
         for r in df.to_dict(orient="records")
     }
-    label = st.selectbox("selecciona la carga a eliminar", options=list(opciones.keys()), key="pv_gc_select")
+    label = st.selectbox("selecciona la carga a eliminar", options=list(opciones.keys()), key="pc_gc_select")
     id_sel = opciones[label]
 
-    confirmar = st.checkbox(f"confirmo que quiero eliminar la carga {id_sel}", key="pv_gc_confirmar")
+    confirmar = st.checkbox(f"confirmo que quiero eliminar la carga {id_sel}", key="pc_gc_confirmar")
 
-    if st.button("🗑️ eliminar carga", type="primary", disabled=not confirmar, key="pv_gc_btn_eliminar"):
+    if st.button("🗑️ eliminar carga", type="primary", disabled=not confirmar, key="pc_gc_btn_eliminar"):
         try:
-            eliminar_carga_completa_presupuesto_ventas_ctrl(id_sel)
+            eliminar_carga_completa_presupuesto_compras_ctrl(id_sel)
             st.success(f"carga {id_sel} eliminada correctamente")
-            if st.session_state.get("pv_id_carga") == id_sel:
-                del st.session_state["pv_id_carga"]
+            if st.session_state.get("pc_id_carga") == id_sel:
+                del st.session_state["pc_id_carga"]
             st.rerun()
         except Exception as e:
             st.error(f"error al eliminar: {e}")
 
 
-# ── panel: ver todos (forecastAdmin / SuperAdmin) ──────────────────────────────
-
-_ENCABEZADOS_VER_TODOS = {
-    "estatus_autorizacion_badge": "Autorización",
-    "tipo": "Tipo",
-    "usuario_nombre": "Usuario",
-    "id_carga": "Carga",
-    "anio": "Año",
-    "seccion": "Sección",
-    "region": "Región",
-    "company": "Company",
-    "cliente_excel": "Cliente",
-    "codigo_origen": "Código origen",
-    "producto_excel": "Producto",
-    "cve_prod": "Cve prod",
-    "precio": "Precio",
-    "total_kg_anio": "Total Kilos Año",
-    "total_usd_anio": "Total USD Año",
-    "nombre_archivo": "Archivo origen",
-    "version": "Versión",
-}
-
-
-def _tabla_generica_a_excel_bytes(nombre_hoja: str, df: pd.DataFrame, encabezados: dict[str, str]) -> bytes:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = nombre_hoja[:31]
-
-    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True)
-    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-    columnas = list(df.columns)
-    ws.append([encabezados.get(c, c) for c in columnas])
-    for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = header_align
-    ws.freeze_panes = "A2"
-
-    for _, fila in df.iterrows():
-        ws.append([None if pd.isna(v) else v for v in fila])
-
-    for idx, col_name in enumerate(columnas, start=1):
-        largo = len(str(encabezados.get(col_name, col_name)))
-        valores = df[col_name].astype(str).tolist()[:200]
-        if valores:
-            largo = max(largo, max(len(v) for v in valores))
-        ws.column_dimensions[get_column_letter(idx)].width = min(largo + 2, 40)
-
-    output = BytesIO()
-    wb.save(output)
-    return output.getvalue()
-
-
-def _panel_ver_todos() -> None:
-    st.caption(
-        "Presupuestos de ventas y compras de todos los usuarios — solo lectura. "
-        "Para editar, entra a la carga correspondiente en las pestañas de arriba."
-    )
-
-    df_cat = obtener_catalogo_productos_pv_ctrl()
-    lineas_disponibles = (
-        sorted(df_cat["linea"].dropna().astype(str).str.strip().unique())
-        if df_cat is not None and not df_cat.empty and "linea" in df_cat.columns
-        else []
-    )
-
-    df_usuarios = obtener_usuarios_presupuesto_ctrl()
-    usuarios_opciones = {"(todos)": None}
-    if df_usuarios is not None and not df_usuarios.empty:
-        for r in df_usuarios.to_dict("records"):
-            nombre = str(r.get("usuario_nombre") or f"usuario {r.get('usuario_id')}").strip()
-            usuarios_opciones[nombre] = int(r["usuario_id"])
-
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    with col1:
-        anio_sel = st.number_input(
-            "año", min_value=2020, max_value=2100,
-            value=int(date.today().year), step=1, key="pvt_anio",
-        )
-        filtrar_anio = st.checkbox("filtrar por año", value=True, key="pvt_filtrar_anio")
-    with col2:
-        usuario_label = st.selectbox("usuario", list(usuarios_opciones.keys()), key="pvt_usuario")
-    with col3:
-        tipo_sel = st.selectbox("tipo", ["(todos)", "venta", "compra"], key="pvt_tipo")
-    with col4:
-        linea_sel = st.selectbox("línea de producto", ["(todas)"] + lineas_disponibles, key="pvt_linea")
-    with col5:
-        df_cat_prod = df_cat
-        if df_cat_prod is not None and not df_cat_prod.empty and linea_sel != "(todas)" and "linea" in df_cat_prod.columns:
-            df_cat_prod = df_cat_prod[df_cat_prod["linea"].astype(str).str.strip() == linea_sel]
-        productos_opciones = {"(todos)": None}
-        if df_cat_prod is not None and not df_cat_prod.empty:
-            for r in df_cat_prod.to_dict("records"):
-                cve = str(r.get("cve_prod") or "").strip()
-                desc = str(r.get("descr") or "").strip()
-                if cve:
-                    productos_opciones[f"{cve} - {desc}" if desc else cve] = cve
-        producto_label = st.selectbox("producto", list(productos_opciones.keys()), key="pvt_producto")
-    with col6:
-        estatus_aut_opciones = ["(todos)"] + list(_ESTATUS_LINEA_BADGE.keys())
-        estatus_aut_sel = st.selectbox(
-            "autorización", estatus_aut_opciones,
-            format_func=lambda k: _ESTATUS_LINEA_BADGE.get(k, k),
-            key="pvt_estatus_aut",
-        )
-
-    df = obtener_presupuesto_ventas_compras_ctrl(
-        anio=int(anio_sel) if filtrar_anio else None,
-        usuario_id=usuarios_opciones[usuario_label],
-        cve_prod=productos_opciones[producto_label],
-        tipo=None if tipo_sel == "(todos)" else tipo_sel,
-        estatus_autorizacion=None if estatus_aut_sel == "(todos)" else estatus_aut_sel,
-    )
-
-    if df is None or df.empty:
-        st.info("sin resultados para los filtros seleccionados")
-        return
-
-    if linea_sel != "(todas)" and df_cat is not None and not df_cat.empty and "cve_prod" in df.columns:
-        cve_de_linea = set(
-            df_cat.loc[df_cat["linea"].astype(str).str.strip() == linea_sel, "cve_prod"]
-            .astype(str).str.strip()
-        )
-        df = df[df["cve_prod"].astype(str).str.strip().isin(cve_de_linea)]
-
-    if df.empty:
-        st.info("sin resultados para los filtros seleccionados")
-        return
-
-    df = df.copy()
-    if "estatus_autorizacion" in df.columns:
-        df["estatus_autorizacion_badge"] = (
-            df["estatus_autorizacion"].map(_ESTATUS_LINEA_BADGE).fillna(_ESTATUS_LINEA_BADGE["captura"])
-        )
-
-    # se arma por año, con los meses como columnas — mismo formato que la
-    # tabla de presupuesto; se agrupa también por id_carga para no mezclar
-    # cifras de cargas/versiones distintas que compartan la misma identidad
-    cols_grupo = [c for c in _ENCABEZADOS_VER_TODOS if c in df.columns and c != "precio"]
-    for c in cols_grupo:
-        df[c] = df[c].fillna("")
-
-    if "precio" in df.columns:
-        df["precio"] = df.groupby(cols_grupo, dropna=False)["precio"].transform("first")
-        cols_extra = ["precio"]
-    else:
-        cols_extra = []
-
-    pivote = _pivotear_meses(df, cols_grupo + cols_extra, col_valor="valor")
-    pivote = _agregar_totales_anio(pivote)
-
-    st.caption(f"{len(pivote):,} línea(s)  |  🔵 captura 🟡 enviada 🟢 autorizada 🔴 rechazada")
-
-    encabezados_pivote = {**_ENCABEZADOS_VER_TODOS, **{m: m.upper() for m in _MESES.values()}}
-    col_order = (
-        cols_grupo
-        + [c for c in ("precio", "total_kg_anio", "total_usd_anio") if c in pivote.columns]
-        + list(_MESES.values())
-    )
-    df_show = pivote[[c for c in col_order if c in pivote.columns]]
-    df_renombrado = df_show.rename(columns=encabezados_pivote)
-
-    estilo = df_renombrado.style
-    if "Autorización" in df_renombrado.columns:
-        estilo = estilo.map(_color_fondo_autorizacion, subset=["Autorización"])
-    meses_upper = [m.upper() for m in _MESES.values() if m.upper() in df_renombrado.columns]
-    if meses_upper:
-        estilo = estilo.map(_color_valor_mes, subset=meses_upper)
-    estilo = _formatear_numeros(estilo, df_renombrado, meses_upper)
-
-    st.dataframe(
-        estilo,
-        use_container_width=True,
-        hide_index=True,
-        height=min(56 + len(df_show) * 35, 680),
-    )
-
-    xlsx_bytes = _tabla_generica_a_excel_bytes("presupuesto ventas y compras", df_show, encabezados_pivote)
-    st.download_button(
-        "⬇️ descargar Excel",
-        data=xlsx_bytes,
-        file_name=f"presupuesto_ventas_compras_{anio_sel if filtrar_anio else 'todos'}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="pvt_dl_excel",
-    )
-
-
-# ── panel: autorizaciones (Jefe de Ventas / Gerente de Ventas / SuperAdmin) ────
-
-def _puede_autorizar_lineas() -> bool:
-    usuario = st.session_state.get("usuario") or {}
-    roles = set(_norm_roles_list(usuario.get("roles")))
-    return bool(roles & {
-        "jefe de ventas", "supervisor de ventas", "gerente de ventas", "gerente ventas", "superadmin",
-    })
-
-
-def _resolver_linea_autorizacion(
-    fila: dict, estatus_nuevo: str, usuario: dict, token, remitente: str,
-    correo_vendedor: str, motivo: Optional[str],
-) -> tuple[bool, str]:
-    """Aplica el nuevo estatus a una línea y notifica al vendedor.
-
-    Devuelve (ok_mail, msg_mail) — el llamador es responsable de mostrar el
-    resumen (útil para autorizar/rechazar en lote sin un st.success por fila).
-    """
-    usuario_id = int(usuario.get("id") or 0)
-    usuario_nombre = str(usuario.get("nombre") or usuario.get("username") or "").strip()
-    usuario_email = str(usuario.get("email") or "").strip()
-    id_carga = int(fila["id_carga"])
-    anio = int(fila.get("anio") or 0)
-    producto_excel = str(fila.get("producto_excel") or "")
-
-    if fila["tipo"] == "venta":
-        linea_id, estatus_anterior = upsert_presupuesto_ventas_linea_ctrl(
-            id_carga=id_carga, company=fila.get("company") or None,
-            cliente_excel=fila.get("cliente_excel") or None,
-            codigo_origen=fila.get("codigo_origen") or None,
-            producto_excel=producto_excel, estatus=estatus_nuevo, usuario_id=usuario_id,
-        )
-        insertar_presupuesto_ventas_linea_estatus_ctrl(
-            linea_id=linea_id, estatus_anterior=estatus_anterior, estatus_nuevo=estatus_nuevo,
-            usuario_id=usuario_id, usuario_nombre=usuario_nombre, usuario_email=usuario_email,
-            comentario=motivo,
-        )
-        ok_mail, msg_mail = _enviar_notificacion_vendedor_ventas(
-            destinatario=correo_vendedor, aprobado=(estatus_nuevo == "autorizada"),
-            id_carga=id_carga, anio=anio, producto_excel=producto_excel,
-            motivo=motivo, token=token, remitente=remitente,
-        )
-    else:
-        linea_id, estatus_anterior = upsert_presupuesto_compras_linea_ctrl(
-            id_carga=id_carga, company=fila.get("company") or None,
-            cliente_excel=fila.get("cliente_excel") or None,
-            codigo_origen=fila.get("codigo_origen") or None,
-            producto_excel=producto_excel, estatus=estatus_nuevo, usuario_id=usuario_id,
-        )
-        insertar_presupuesto_compras_linea_estatus_ctrl(
-            linea_id=linea_id, estatus_anterior=estatus_anterior, estatus_nuevo=estatus_nuevo,
-            usuario_id=usuario_id, usuario_nombre=usuario_nombre, usuario_email=usuario_email,
-            comentario=motivo,
-        )
-        ok_mail, msg_mail = _enviar_notificacion_vendedor_compras(
-            destinatario=correo_vendedor, aprobado=(estatus_nuevo == "autorizada"),
-            id_carga=id_carga, anio=anio, producto_excel=producto_excel,
-            motivo=motivo, token=token, remitente=remitente,
-        )
-
-    return ok_mail, msg_mail
-
-
-def _agregar_meses_pendientes(pendientes: pd.DataFrame) -> pd.DataFrame:
-    """Expande cada línea pendiente con sus valores mensuales, precio y total
-    de kilos del año — una línea puede generar más de una fila si tiene datos
-    en más de un bloque sección/región (p. ej. USD y KG). Mismo formato que
-    la tabla de presupuesto (meses como columnas)."""
-    cols_id = ["company", "cliente_excel", "codigo_origen", "producto_excel"]
-    claves = ["tipo", "id_carga"] + cols_id
-    claves_extendidas = claves + ["seccion", "region"]
-
-    pendientes = pendientes.copy()
-    for col in cols_id:
-        if col in pendientes.columns:
-            pendientes[col] = pendientes[col].fillna("")
-
-    detalles = []
-    for c in pendientes[["tipo", "id_carga"]].drop_duplicates().to_dict("records"):
-        id_carga = int(c["id_carga"])
-        det = (
-            obtener_presupuesto_ventas_ctrl(id_carga=id_carga) if c["tipo"] == "venta"
-            else obtener_presupuesto_compras_ctrl(id_carga=id_carga)
-        )
-        if det is not None and not det.empty:
-            det = det.copy()
-            det["tipo"] = c["tipo"]
-            detalles.append(det)
-
-    if detalles:
-        detalle = pd.concat(detalles, ignore_index=True)
-        # las columnas de agrupación deben quedar limpias de NaN antes de
-        # calcular nada — si no, "" (usado internamente por _pivotear_meses)
-        # no calza con NaN al mezclar por llave y el resultado queda en 0
-        for col in claves_extendidas:
-            if col in detalle.columns:
-                detalle[col] = detalle[col].fillna("")
-
-        cols_extra: list[str] = []
-        if "precio" in detalle.columns:
-            detalle["precio"] = detalle.groupby(claves_extendidas, dropna=False)["precio"].transform("first")
-            cols_extra.append("precio")
-
-        pivote = _pivotear_meses(detalle, claves_extendidas + cols_extra, col_valor="valor")
-        pivote = _agregar_totales_anio(pivote)
-        resultado = pendientes.merge(pivote, on=claves, how="left")
-    else:
-        resultado = pendientes.copy()
-
-    for m in _MESES.values():
-        if m not in resultado.columns:
-            resultado[m] = 0.0
-        resultado[m] = resultado[m].fillna(0.0)
-    for col in ("seccion", "region"):
-        if col not in resultado.columns:
-            resultado[col] = ""
-        resultado[col] = resultado[col].fillna("")
-    for col in ("precio", "total_kg_anio", "total_usd_anio"):
-        if col not in resultado.columns:
-            resultado[col] = 0.0
-        resultado[col] = resultado[col].fillna(0.0)
-
-    return resultado.reset_index(drop=True)
-
-
-def _panel_autorizaciones() -> None:
-    usuario = st.session_state.get("usuario") or {}
-    roles_viewer = set(_norm_roles_list(usuario.get("roles")))
-    es_superadmin = bool(roles_viewer & {"superadmin"})
-    es_gerente = bool(roles_viewer & {"gerente de ventas", "gerente ventas"})
-    es_jefe = bool(roles_viewer & {"jefe de ventas", "supervisor de ventas"})
-
-    if not (es_superadmin or es_gerente or es_jefe):
-        st.info(
-            "esta pestaña es para los roles Jefe de Ventas, Supervisor de Ventas, "
-            "Gerente de Ventas o SuperAdmin."
-        )
-        return
-
-    pendientes_ventas = obtener_presupuesto_ventas_lineas_pendientes_ctrl()
-    if pendientes_ventas is not None and not pendientes_ventas.empty:
-        pendientes_ventas = pendientes_ventas.copy()
-        pendientes_ventas["tipo"] = "venta"
-
-    pendientes_compras = obtener_presupuesto_compras_lineas_pendientes_ctrl()
-    if pendientes_compras is not None and not pendientes_compras.empty:
-        pendientes_compras = pendientes_compras.copy()
-        pendientes_compras["tipo"] = "compra"
-
-    partes = [df for df in (pendientes_ventas, pendientes_compras) if df is not None and not df.empty]
-    if not partes:
-        st.info("no hay líneas pendientes de autorización.")
-        return
-    pendientes = pd.concat(partes, ignore_index=True)
-
-    if not es_superadmin:
-        # re-deriva qué rol debe autorizar cada línea, según los roles del
-        # dueño de la carga (misma cascada que _tipo_autorizacion_linea, pero
-        # aplicada a un tercero — igual que _roles_creador_solicitud en
-        # solicitudes de gastos)
-        roles_por_usuario: dict[int, set[str]] = {}
-        for uid in pendientes["carga_usuario_id"].dropna().unique():
-            roles_por_usuario[int(uid)] = set(_norm_roles_list(obtener_roles_usuario_id_ctrl(int(uid))))
-
-        def _me_corresponde(row) -> bool:
-            owner_roles = roles_por_usuario.get(int(row["carga_usuario_id"]), set())
-            if owner_roles & {"jefe de ventas", "supervisor de ventas"}:
-                return es_gerente
-            return es_jefe or es_gerente
-
-        pendientes = pendientes[pendientes.apply(_me_corresponde, axis=1)]
-
-    if pendientes.empty:
-        st.info("no hay líneas pendientes de autorización para tu rol.")
-        return
-
-    pendientes = pendientes.sort_values("fecha_actualizacion").reset_index(drop=True)
-    pendientes = _agregar_meses_pendientes(pendientes)
-
-    # "usuario" (dueño de la carga) y "presupuesto" (comentarios de la carga)
-    # dan contexto a quien autoriza — van al inicio de la tabla
-    nombre_por_usuario: dict[int, str] = {}
-    for uid in pendientes["carga_usuario_id"].dropna().unique():
-        u = obtener_usuario_por_id_ctrl(int(uid)) or {}
-        nombre_por_usuario[int(uid)] = str(u.get("nombre") or u.get("email") or "").strip()
-    pendientes["usuario"] = pendientes["carga_usuario_id"].apply(
-        lambda uid: nombre_por_usuario.get(int(uid), "") if pd.notna(uid) else ""
-    )
-    pendientes["presupuesto"] = (
-        pendientes["comentarios"].fillna("") if "comentarios" in pendientes.columns else ""
-    )
-
-    cols_mostrar = ["usuario", "presupuesto"] + [c for c in [
-        "tipo", "id_carga", "region", "company", "cliente_excel", "codigo_origen",
-        "producto_excel", "anio", "version", "fecha_actualizacion",
-        "precio", "total_kg_anio", "total_usd_anio", "carga_usuario_id",
-    ] if c in pendientes.columns] + list(_MESES.values())
-
-    st.caption(
-        "marca el checkbox de cada fila (o el de la cabecera para seleccionar todas) para elegir una o "
-        "varias líneas y autorizarlas o rechazarlas en lote — una línea puede aparecer en más de una fila "
-        "si tiene datos en más de un bloque sección/región"
-    )
-
-    df_pendientes_mostrar = pendientes[cols_mostrar].reset_index(drop=True)
-    meses_presentes_aut = [m for m in _MESES.values() if m in df_pendientes_mostrar.columns]
-
-    gb = GridOptionsBuilder.from_dataframe(df_pendientes_mostrar)
-    gb.configure_default_column(editable=False, resizable=True, width=110)
-    gb.configure_selection("multiple", use_checkbox=True, header_checkbox=True)
-    gb.configure_column("usuario", headerName="Usuario", width=140, pinned="left")
-    gb.configure_column("presupuesto", headerName="Presupuesto", width=220, pinned="left")
-    gb.configure_column("carga_usuario_id", hide=True)
-    for col, header, decimales in (
-        ("precio", "Precio", 4),
-        ("total_kg_anio", "Total Kilos Año", 4),
-        ("total_usd_anio", "Total USD Año", 2),
-    ):
-        if col in df_pendientes_mostrar.columns:
-            gb.configure_column(
-                col, headerName=header, type=["numericColumn"], valueFormatter=_value_formatter_js(decimales),
-            )
-    for m in meses_presentes_aut:
-        gb.configure_column(
-            m, headerName=m.upper(), type=["numericColumn"],
-            cellStyle=_CELL_STYLE_VALORES, valueFormatter=_value_formatter_js(2),
-        )
-
-    grid_response = AgGrid(
-        df_pendientes_mostrar,
-        gridOptions=gb.build(),
-        update_on=["selectionChanged"],
-        data_return_mode=DataReturnMode.AS_INPUT,
-        fit_columns_on_grid_load=False,
-        allow_unsafe_jscode=True,
-        height=min(56 + len(df_pendientes_mostrar) * 35, 520),
-        key="pv_aut_tabla",
-    )
-
-    filas_seleccionadas = grid_response.get("selected_rows")
-    if filas_seleccionadas is None:
-        filas_seleccionadas = []
-    elif isinstance(filas_seleccionadas, pd.DataFrame):
-        filas_seleccionadas = filas_seleccionadas.to_dict("records")
-
-    if not filas_seleccionadas:
-        st.info("selecciona al menos una línea de la tabla para autorizar o rechazar.")
-        return
-
-    # una misma línea puede aparecer en varias filas (una por sección/región);
-    # se deduplica por identidad para no procesarla ni notificar por correo más de una vez
-    claves_unicas = {
-        (f.get("tipo"), f.get("id_carga"), f.get("company"), f.get("cliente_excel"),
-         f.get("codigo_origen"), f.get("producto_excel"))
-        for f in filas_seleccionadas
-    }
-    n_lineas = len(claves_unicas)
-
-    st.caption(f"{n_lineas} línea(s) seleccionada(s)")
-
-    token = st.session_state.get("microsoft_token")
-    remitente = str(usuario.get("email") or "").strip()
-
-    def _procesar_lote(estatus_nuevo: str, motivo: Optional[str]) -> None:
-        vistas: set = set()
-        unicas: list[dict] = []
-        for fila in filas_seleccionadas:
-            clave = (
-                fila.get("tipo"), fila.get("id_carga"), fila.get("company"),
-                fila.get("cliente_excel"), fila.get("codigo_origen"), fila.get("producto_excel"),
-            )
-            if clave in vistas:
-                continue
-            vistas.add(clave)
-            unicas.append(fila)
-
-        fallos_mail: list[str] = []
-        for fila in unicas:
-            dueño = obtener_usuario_por_id_ctrl(int(fila.get("carga_usuario_id") or 0)) or {}
-            correo_vendedor = str(dueño.get("email") or "").strip()
-            ok_mail, msg_mail = _resolver_linea_autorizacion(
-                fila, estatus_nuevo, usuario, token, remitente, correo_vendedor, motivo,
-            )
-            if not ok_mail:
-                fallos_mail.append(f"{fila.get('producto_excel', '')} ({msg_mail})")
-
-        st.success(f"{len(unicas)} línea(s) — {estatus_nuevo}")
-        if fallos_mail:
-            st.warning("no se pudo notificar por correo a: " + "; ".join(fallos_mail))
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button(
-            f"✅ autorizar {n_lineas} línea(s)",
-            type="primary", use_container_width=True, key="pv_aut_btn_ok",
-        ):
-            _procesar_lote("autorizada", None)
-            st.session_state["pv_aut_rechazando"] = False
-            st.rerun()
-    with col2:
-        st.session_state.setdefault("pv_aut_rechazando", False)
-        if not st.session_state["pv_aut_rechazando"]:
-            if st.button(
-                f"❌ rechazar {n_lineas} línea(s)",
-                use_container_width=True, key="pv_aut_btn_rechazar",
-            ):
-                st.session_state["pv_aut_rechazando"] = True
-                st.rerun()
-
-    if st.session_state.get("pv_aut_rechazando"):
-        motivo = st.text_area("motivo del rechazo (se aplica a todas las líneas seleccionadas)", key="pv_aut_motivo")
-        if st.button("confirmar rechazo", key="pv_aut_btn_confirmar_rechazo"):
-            _procesar_lote("rechazada", motivo.strip() or None)
-            st.session_state["pv_aut_rechazando"] = False
-            st.rerun()
-
-
-# ── entry point ───────────────────────────────────────────────────────────────
-
-def mostrar_modulo_presupuesto_ventas() -> None:
-    st.subheader("presupuesto de ventas y compras")
-
-    labels = ["📂 cargar Excel", "📊 tabla presupuesto", "🗑️ gestionar cargas"]
-    ver_todos = _puede_ver_todos_presupuesto()
-    puede_autorizar = _puede_autorizar_lineas()
-    if ver_todos:
-        labels.append("👁️ ver todos")
-    if puede_autorizar:
-        labels.append("✅ autorizaciones")
-
-    tabs = st.tabs(labels)
-    tab_carga, tab_tabla, tab_cargas = tabs[:3]
-    tabs_extra = tabs[3:]
-
-    with tab_carga:
-        sub_ventas, sub_compras = st.tabs(["Ventas", "Compras"])
-        with sub_ventas:
-            with st.container(border=True):
-                _panel_carga()
-        with sub_compras:
-            with st.container(border=True):
-                _panel_carga_compras()
-
-    with tab_tabla:
-        sub_ventas, sub_compras = st.tabs(["Ventas", "Compras"])
-        with sub_ventas:
-            _panel_crear_manual()
-            id_carga = _selector_carga()
-            if id_carga is not None:
-                _panel_pivot(id_carga)
-        with sub_compras:
-            _panel_crear_manual_compras()
-            id_carga_compras = _selector_carga_compras()
-            if id_carga_compras is not None:
-                _panel_pivot_compras(id_carga_compras)
-
-    with tab_cargas:
-        sub_ventas, sub_compras = st.tabs(["Ventas", "Compras"])
-        with sub_ventas:
-            _panel_gestionar_cargas()
-        with sub_compras:
-            _panel_gestionar_cargas_compras()
-
-    if ver_todos:
-        with tabs_extra[0]:
-            _panel_ver_todos()
-        tabs_extra = tabs_extra[1:]
-
-    if puede_autorizar:
-        with tabs_extra[0]:
-            _panel_autorizaciones()

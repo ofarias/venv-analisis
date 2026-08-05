@@ -29,18 +29,28 @@ def _df_from_cursor(cur, default_columns: list[str]) -> pd.DataFrame:
 
 
 
-def obtener_catalogo_productos_pv_model(limit: int = 10000) -> pd.DataFrame:
+def obtener_catalogo_productos_pv_model(limit: int = 10000, cve_precio: int = 1) -> pd.DataFrame:
+    """cve_precio=1 (Precio público) — lista usada como precio de referencia para
+    autocompletar precio y línea al capturar presupuesto (el usuario no las edita).
+    codigo_origen viene de inve_clib01.camplib10 (campo libre 10), usado para
+    autocompletar "código origen" al capturar (tampoco se edita a mano)."""
     con = _conn_sae_from_secrets(st.secrets)
     try:
         cur = con.cursor()
         cur.execute(
-            "select first ? i.cve_art as cve_prod, i.descr "
+            "select first ? "
+            "i.cve_art as cve_prod, i.descr, i.lin_prod as cve_linea, "
+            "l.desc_lin as linea, coalesce(p.precio, 0) as precio, "
+            "ic.camplib10 as codigo_origen "
             "from inve01 i "
+            "left join clin01 l on l.cve_lin = i.lin_prod "
+            "left join precio_x_prod01 p on p.cve_art = i.cve_art and p.cve_precio = ? "
+            "left join inve_clib01 ic on ic.cve_prod = i.cve_art "
             "where coalesce(i.status, 'A') <> 'B' "
             "order by i.cve_art",
-            (int(limit),),
+            (int(limit), int(cve_precio)),
         )
-        return _df_from_cursor(cur, ["cve_prod", "descr"])
+        return _df_from_cursor(cur, ["cve_prod", "descr", "cve_linea", "linea", "precio", "codigo_origen"])
     finally:
         try:
             con.close()
@@ -363,6 +373,81 @@ def obtener_existencias_productos_sae_model(
                 "status",
             ],
         )
+
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+def obtener_ordenes_compra_pendientes_sae_model(limit: int = 2000) -> pd.DataFrame:
+    """Órdenes de compra (COMPO01) aún no recibidas: no canceladas y sin documento
+    de recepción enlazado (DOC_SIG nulo) — es decir, lo que todavía está "por llegar"."""
+    con = _conn_sae_from_secrets(st.secrets)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "select first ? "
+            "c.cve_doc, c.serie, c.folio, c.fecha_doc, c.fecha_rec, "
+            "c.cve_clpv as cve_prov, pr.nombre as proveedor, "
+            "p.cve_art, i.descr as producto, i.lin_prod as cve_linea, l.desc_lin as linea, "
+            "p.cant as cantidad, p.uni_venta as unidad, p.prec as precio "
+            "from compo01 c "
+            "join par_compo01 p on p.cve_doc = c.cve_doc "
+            "left join prov01 pr on pr.clave = c.cve_clpv "
+            "left join inve01 i on i.cve_art = p.cve_art "
+            "left join clin01 l on l.cve_lin = i.lin_prod "
+            "where c.status <> 'C' and c.doc_sig is null "
+            "order by c.fecha_doc asc",
+            (int(limit),),
+        )
+        return _df_from_cursor(
+            cur,
+            [
+                "cve_doc", "serie", "folio", "fecha_doc", "fecha_rec",
+                "cve_prov", "proveedor", "cve_art", "producto", "cve_linea", "linea",
+                "cantidad", "unidad", "precio",
+            ],
+        )
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+def obtener_ultimo_precio_venta_sae_model(
+    cve_art: str,
+    cve_clie: Optional[str] = None,
+) -> Optional[float]:
+    """Último precio de venta (facturas) de un artículo, más reciente primero,
+    convertido a USD/kg (p.prec viene en pesos, se divide entre p.tip_cam).
+    Si se indica cve_clie, cruza además con ese cliente."""
+    con = _conn_sae_from_secrets(st.secrets)
+    try:
+        cur = con.cursor()
+
+        sql = (
+            "select first 1 p.prec / nullif(p.tip_cam, 0) as precio "
+            "from factf01 f "
+            "join par_factf01 p on p.cve_doc = f.cve_doc "
+            "where p.cve_art = ? "
+            "  and coalesce(f.status, '') <> 'C'"
+        )
+        params: list = [str(cve_art).strip()]
+
+        if cve_clie:
+            sql += " and f.cve_clpv = ?"
+            params.append(str(cve_clie).strip())
+
+        sql += " order by f.fecha_doc desc, f.cve_doc desc"
+
+        cur.execute(sql, tuple(params))
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return None
+        return float(row[0])
 
     finally:
         try:

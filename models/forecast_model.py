@@ -37,17 +37,25 @@ def insertar_forecast_version_model(
             pass
 
 
-def obtener_forecast_versiones_model(usuario_id: int, anio: Optional[int] = None) -> pd.DataFrame:
+def obtener_forecast_versiones_model(
+    usuario_id: int,
+    anio: Optional[int] = None,
+    ver_todas: bool = False,
+) -> pd.DataFrame:
     conn = obtener_conexion()
     try:
         cur = conn.cursor(dictionary=True)
         sql = """
-            SELECT v.*, c.nombre_archivo, c.version as version_pv
+            SELECT v.*, c.nombre_archivo, c.version as version_pv, u.nombre as propietario
             FROM forecast_versiones v
             LEFT JOIN presupuesto_ventas_cargas c ON c.id_carga = v.id_carga_pv
-            WHERE v.usuario_id = %s
+            LEFT JOIN usuarios u ON u.id = v.usuario_id
+            WHERE 1 = 1
         """
-        params: list = [int(usuario_id)]
+        params: list = []
+        if not ver_todas:
+            sql += " AND v.usuario_id = %s"
+            params.append(int(usuario_id))
         if anio:
             sql += " AND v.anio = %s"
             params.append(int(anio))
@@ -58,7 +66,7 @@ def obtener_forecast_versiones_model(usuario_id: int, anio: Optional[int] = None
             return pd.DataFrame(columns=[
                 "id_version", "anio", "nombre", "descripcion", "estatus",
                 "id_carga_pv", "metodo_default", "usuario_id",
-                "nombre_archivo", "version_pv", "created_at", "updated_at",
+                "nombre_archivo", "version_pv", "propietario", "created_at", "updated_at",
             ])
         return pd.DataFrame(rows)
     finally:

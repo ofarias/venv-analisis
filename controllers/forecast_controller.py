@@ -20,6 +20,9 @@ from models.presupuesto_ventas_model import (
     obtener_presupuesto_ventas_model,
     obtener_resumen_presupuesto_ventas_model,
 )
+from models.presupuesto_compras_model import (
+    obtener_presupuesto_compras_model,
+)
 from models.presupuesto_finanzas_model import (
     obtener_presupuesto_finanzas_resumen_por_anio_model,
 )
@@ -60,8 +63,10 @@ def crear_forecast_version_ctrl(
     )
 
 
-def obtener_forecast_versiones_ctrl(usuario_id: int, anio: Optional[int] = None) -> pd.DataFrame:
-    return obtener_forecast_versiones_model(usuario_id=usuario_id, anio=anio)
+def obtener_forecast_versiones_ctrl(
+    usuario_id: int, anio: Optional[int] = None, ver_todas: bool = False
+) -> pd.DataFrame:
+    return obtener_forecast_versiones_model(usuario_id=usuario_id, anio=anio, ver_todas=ver_todas)
 
 
 def cambiar_estatus_version_ctrl(id_version: int, estatus: str) -> bool:
@@ -148,11 +153,15 @@ def obtener_presupuesto_resumen_ctrl(
     id_carga_pv: Optional[int],
     seccion: str,
     region: Optional[str],
+    solo_autorizados: bool = False,
 ) -> pd.DataFrame:
-    """Presupuesto de ventas agregado por cve_prod × mes de UNA carga (usado al generar propuesta)."""
+    """Presupuesto de ventas agregado por cve_prod × mes de UNA carga (usado al generar propuesta).
+    solo_autorizados: si True, solo toma líneas con estatus de autorización
+    "autorizada" de esa carga — usado por el método "Presupuesto Ventas — <carga>"
+    (pv_carga:<id_carga>), donde el usuario elige a mano una carga puntual."""
     if not id_carga_pv:
         return pd.DataFrame(columns=_COLS_PRESUPUESTO_VACIO)
-    df_raw = obtener_presupuesto_ventas_model(id_carga=id_carga_pv)
+    df_raw = obtener_presupuesto_ventas_model(id_carga=id_carga_pv, solo_autorizados=solo_autorizados)
     return _resumir_presupuesto(df_raw, seccion, region)
 
 
@@ -160,12 +169,41 @@ def obtener_presupuesto_resumen_por_anio_ctrl(
     anio: int,
     seccion: str,
     region: Optional[str],
+    usuario_id: Optional[int] = None,
+    solo_autorizados: bool = False,
 ) -> pd.DataFrame:
     """
     Presupuesto de ventas agregado por cve_prod × mes de TODAS las cargas activas del año
     (no depende de una carga en particular) — usado en el comparativo Real vs Forecast.
+
+    usuario_id: si se indica, solo considera las cargas de ese usuario — cada
+    forecast debe alimentarse únicamente del presupuesto de su propio dueño,
+    nunca del de otros usuarios.
+    solo_autorizados: si True, solo incluye líneas con estatus de
+    autorización "autorizada" (excluye captura/enviada/rechazada).
     """
-    df_raw = obtener_presupuesto_ventas_model(anio=anio)
+    df_raw = obtener_presupuesto_ventas_model(
+        anio=anio, usuario_id=usuario_id, solo_autorizados=solo_autorizados,
+    )
+    return _resumir_presupuesto(df_raw, seccion, region)
+
+
+def obtener_presupuesto_compras_resumen_por_anio_ctrl(
+    anio: int,
+    seccion: str,
+    region: Optional[str],
+    usuario_id: Optional[int] = None,
+    solo_autorizados: bool = False,
+) -> pd.DataFrame:
+    """
+    Presupuesto de compras agregado por cve_prod × mes de TODAS las cargas
+    activas del año — mismo criterio que obtener_presupuesto_resumen_por_anio_ctrl
+    pero sobre presupuesto_compras. Usado para el método automático "Presupuesto
+    Compras" en Construcción del Forecast y la serie homónima en Real vs Forecast.
+    """
+    df_raw = obtener_presupuesto_compras_model(
+        anio=anio, usuario_id=usuario_id, solo_autorizados=solo_autorizados,
+    )
     return _resumir_presupuesto(df_raw, seccion, region)
 
 
@@ -196,15 +234,43 @@ def generar_propuesta_ctrl(
     region: Optional[str],
     metodo: str,
     usuario_id: int,
+    usuario_datos_id: Optional[int] = None,
 ) -> dict:
-    """Genera propuesta automática y la persiste en forecast_detalle."""
+    """Genera propuesta automática y la persiste en forecast_detalle.
+
+    usuario_id: quién ejecuta la acción (queda en forecast_detalle.usuario_id).
+    usuario_datos_id: dueño de la versión de forecast — de quién son las
+    cargas de presupuesto que puede elegir el método "pv_carga:<id_carga>"
+    (normalmente el mismo usuario_id, salvo que un forecastAdmin esté
+    generando la propuesta de la versión de otro usuario).
+    """
     # 1. presupuesto de referencia (agrupado por cve_prod × mes)
-    if metodo == "pv_anio":
-        # "Presupuesto Ventas": agrupado por cve_prod × mes de TODAS las cargas
-        # activas del año, sin depender de la carga ligada a la versión de forecast
-        df_pv = obtener_presupuesto_resumen_por_anio_ctrl(anio, seccion, region)
+    if metodo == "pc_anio":
+        # "Presupuesto Compras": agrupado por cve_prod × mes de TODAS las
+        # cargas activas del año del dueño de la versión
+        df_pv = obtener_presupuesto_compras_resumen_por_anio_ctrl(anio, seccion, region, usuario_id=usuario_datos_id)
+    elif isinstance(metodo, str) and metodo.startswith("pv_carga:"):
+        # "Presupuesto Ventas — <carga>": el usuario elige a mano UNA carga
+        # puntual (identificada por su comentario/industria en la UI) — solo
+        # se toman las líneas ya autorizadas de esa carga
+        try:
+            id_carga_metodo = int(metodo.split(":", 1)[1])
+        except (ValueError, IndexError):
+            id_carga_metodo = None
+        df_pv = obtener_presupuesto_resumen_ctrl(id_carga_metodo, seccion, region, solo_autorizados=True)
     else:
         df_pv = obtener_presupuesto_resumen_ctrl(id_carga_pv, seccion, region)
+
+    # forecast_detalle.metodo es un ENUM que no admite las claves dinámicas
+    # "pv_carga:<id>" ni "pc_anio" — se persisten como "presupuesto" (el
+    # presupuesto de referencia ya quedó resuelto arriba con los datos de
+    # esa carga puntual o del año); si no se sanea, el INSERT truena con
+    # "Data truncated for column 'metodo'"
+    metodo_guardado = (
+        "presupuesto"
+        if metodo == "pc_anio" or (isinstance(metodo, str) and metodo.startswith("pv_carga:"))
+        else metodo
+    )
 
     # 2. ventas históricas SAE (2 años atrás)
     df_ventas_raw = _ventas_historicas_sae(anio)
@@ -233,7 +299,7 @@ def generar_propuesta_ctrl(
             mes=int(row["mes"]),
             forecast=float(row.get("forecast") or 0),
             justificacion=None,
-            metodo=str(row.get("metodo") or metodo),
+            metodo=metodo_guardado,
             usuario_id=usuario_id,
             venta_real_mes_ant=float(row.get("venta_real_mes_ant") or 0),
             venta_real_prom_3m=float(row.get("venta_real_prom_3m") or 0),
