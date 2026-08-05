@@ -1,60 +1,67 @@
 
 import streamlit as st
 import pandas as pd
-from pathlib import Path
+from database.conexion import obtener_conexion
 from logs.logger import registrar_log
-from constants import MODULOS_ADMIN, RUTA_LOG_USUARIOS
-from settings import DB_CONFIG, NOMBRE_SISTEMA
 
+
+def _obtener_usuarios_distintos() -> list[str]:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT usuario FROM login_activity ORDER BY usuario")
+        return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _obtener_registros(usuario_filtro: str | None, fecha_filtro) -> pd.DataFrame:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        sql = "SELECT usuario, accion, detalle, creado_en FROM login_activity WHERE 1 = 1"
+        params: list = []
+        if usuario_filtro and usuario_filtro != "Todos":
+            sql += " AND usuario = %s"
+            params.append(usuario_filtro)
+        if fecha_filtro:
+            sql += " AND DATE(creado_en) = %s"
+            params.append(fecha_filtro)
+        sql += " ORDER BY creado_en DESC"
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+    finally:
+        conn.close()
+
+    if not rows:
+        return pd.DataFrame(columns=["Fecha", "Usuario", "Acción", "Detalle"])
+
+    df = pd.DataFrame(rows)
+    df["creado_en"] = df["creado_en"].astype(str)
+    return df.rename(columns={
+        "creado_en": "Fecha", "usuario": "Usuario", "accion": "Acción", "detalle": "Detalle",
+    })
 
 
 def mostrar_historial():
-    usuario = st.session_state.get("usuario", {}).get("username", "desconocido")
     registrar_log("admin", "Acceso a módulo", "📄 Historial de actividad")
     st.title("📄 Historial de Actividad de Usuarios")
-
-    log_path = Path("logs/log_usuarios.txt")
-    if not log_path.exists():
-        st.info("Aún no hay registros en el historial.")
-        return
-
-    with open(log_path, "r") as f:
-        lines = f.readlines()
-
-    registros = []
-    for linea in lines:
-        if "->" in linea and ":" in linea:
-            try:
-                fecha, resto = linea.split("] ")
-                fecha = fecha.strip("[")
-                usuario_accion, modulo = resto.split(":")
-                usuario, accion = usuario_accion.split("->")
-                registros.append({
-                    "Fecha": fecha,
-                    "Usuario": usuario.strip(),
-                    "Acción": accion.strip(),
-                    "Detalle": modulo.strip()
-                })
-            except Exception:
-                continue
-
-    df_logs = pd.DataFrame(registros)
 
     # Filtros
     st.subheader("🔍 Filtros")
     col1, col2 = st.columns(2)
-    usuarios = df_logs["Usuario"].unique().tolist()
+    usuarios = _obtener_usuarios_distintos()
     usuario_filtro = col1.selectbox("Usuario", ["Todos"] + usuarios)
     fecha_filtro = col2.date_input("Fecha (opcional)", value=None)
 
-    if usuario_filtro != "Todos":
-        df_logs = df_logs[df_logs["Usuario"] == usuario_filtro]
-
-    if fecha_filtro:
-        df_logs = df_logs[df_logs["Fecha"].str.startswith(str(fecha_filtro))]
+    df_logs = _obtener_registros(usuario_filtro, fecha_filtro)
 
     st.subheader("📋 Resultados")
-    st.dataframe(df_logs)
+    if df_logs.empty:
+        st.info("Aún no hay registros en el historial.")
+        return
+
+    st.dataframe(df_logs, use_container_width=True, hide_index=True)
 
     # Descargar como Excel
     excel_path = "logs/historial_actividad.xlsx"

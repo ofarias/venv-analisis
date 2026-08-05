@@ -18,7 +18,8 @@ __pycache__/
 *.pyd
 
 # logs / temporales
-logs/
+logs/*
+!logs/logger.py
 *.log
 *.tmp
 
