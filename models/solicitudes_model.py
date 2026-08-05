@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import fdb
+import re
 import streamlit as st
 from dataclasses import dataclass
 from datetime import date, time
@@ -14,6 +15,22 @@ from models.ada_model import (
     obtener_xml_por_uuid as obtener_xml_por_uuid_ada,
     obtener_xmls_por_uuids as obtener_xmls_por_uuids_ada,
 )
+
+_UUID_NO_HEX_RE = re.compile(r"[^0-9A-F]")
+
+
+def _uuid_solo_hex(x) -> str:
+    """Deja solo los 32 caracteres hex del uuid (sin guiones, espacios ni
+    otros símbolos). DATOSCFD a veces guarda el UUID con o sin guiones, y el
+    usuario puede pegarlo con espacios u otros caracteres — buscar por la
+    versión "pelada" evita que la búsqueda dependa del formato exacto."""
+    s = ("" if x is None else str(x)).strip().upper()
+    return _UUID_NO_HEX_RE.sub("", s)
+
+
+# comparación SQL que ignora guiones/espacios en la columna UUID almacenada,
+# para que coincida con el parámetro ya normalizado por _uuid_solo_hex()
+_UUID_COL_NORMALIZADA = "replace(replace(upper(trim({col})), '-', ''), ' ', '')"
 
 @dataclass
 class SolicitudCabecera:
@@ -414,14 +431,17 @@ def _next_renglon(cur, solicitud_id: int) -> int:
 
 
 def get_datoscfd_by_uuid(uuid: str, secrets=None) -> dict | None:
-    uuid_norm = ("" if uuid is None else str(uuid)).strip().upper()
+    uuid_norm = _uuid_solo_hex(uuid)
     if not uuid_norm:
         return None
 
     conn = obtener_conexion()
     try:
         cur = conn.cursor(dictionary=True)
-        cur.execute("select * from DATOSCFD where upper(UUID) = %s limit 1", (uuid_norm,))
+        cur.execute(
+            f"select * from DATOSCFD where {_UUID_COL_NORMALIZADA.format(col='UUID')} = %s limit 1",
+            (uuid_norm,),
+        )
         row = cur.fetchone()
         if row:
             return row
@@ -679,7 +699,7 @@ def upsert_detalle_rows(
 
 
 def uuid_ya_usado(uuid: str, exclude_solicitud_id: int | None = None) -> dict | None:
-    uuid_norm = ("" if uuid is None else str(uuid)).strip().upper()
+    uuid_norm = _uuid_solo_hex(uuid)
     if not uuid_norm:
         return None
 
@@ -687,7 +707,7 @@ def uuid_ya_usado(uuid: str, exclude_solicitud_id: int | None = None) -> dict | 
     try:
         cur = conn.cursor(dictionary=True)
 
-        sql = """
+        sql = f"""
             select
               d.id as detalle_id,
               d.solicitud_id,
@@ -697,7 +717,7 @@ def uuid_ya_usado(uuid: str, exclude_solicitud_id: int | None = None) -> dict | 
               d.fecha_creacion
             from solicitudes_detalle d
             join solicitudes s on s.id = d.solicitud_id
-            where upper(trim(d.uuid)) = %s
+            where {_UUID_COL_NORMALIZADA.format(col='d.uuid')} = %s
         """
         params = [uuid_norm]
 
@@ -1434,7 +1454,7 @@ def get_comprobantes_by_detalle_ids(detalle_ids: list[int]) -> dict[int, dict]:
 
 
 def get_xml_by_uuid(uuid: str) -> tuple[bytes | None, str | None]:
-    uuid_norm = ("" if uuid is None else str(uuid)).strip().upper()
+    uuid_norm = _uuid_solo_hex(uuid)
     if not uuid_norm:
         return None, None
 
@@ -1442,11 +1462,7 @@ def get_xml_by_uuid(uuid: str) -> tuple[bytes | None, str | None]:
 
 
 def get_xmls_by_uuids(uuids: list[str]) -> dict[str, tuple[bytes, str | None]]:
-    uuids_norm = [
-        str(x).strip().upper()
-        for x in (uuids or [])
-        if str(x).strip()
-    ]
+    uuids_norm = sorted({_uuid_solo_hex(x) for x in (uuids or [])} - {""})
     if not uuids_norm:
         return {}
 
@@ -1532,11 +1548,7 @@ def get_comprobantes_by_solicitud(solicitud_id: int):
 
 
 def get_datoscfd_by_uuids(uuids: list[str]) -> list[dict]:
-    uuids_norm = sorted({
-        ("" if x is None else str(x)).strip().upper()
-        for x in (uuids or [])
-        if str(x).strip()
-    })
+    uuids_norm = sorted({_uuid_solo_hex(x) for x in (uuids or [])} - {""})
 
     if not uuids_norm:
         return []
@@ -1549,7 +1561,7 @@ def get_datoscfd_by_uuids(uuids: list[str]) -> list[dict]:
         sql = f"""
             select *
             from DATOSCFD
-            where upper(trim(UUID)) in ({placeholders})
+            where {_UUID_COL_NORMALIZADA.format(col='UUID')} in ({placeholders})
         """
         cur.execute(sql, tuple(uuids_norm))
         rows = cur.fetchall() or []

@@ -1,8 +1,24 @@
 # models/ada_model.py
 import fdb
 import pandas as pd
+import re
 from typing import Optional, Tuple, Dict, Any, List
 from datetime import date
+
+_UUID_NO_HEX_RE = re.compile(r"[^0-9A-F]")
+
+
+def _uuid_solo_hex(x) -> str:
+    """Deja solo los 32 caracteres hex del uuid (sin guiones, espacios ni
+    otros símbolos), igual que en models/solicitudes_model.py — DATOSCFD a
+    veces guarda el UUID con o sin guiones."""
+    s = ("" if x is None else str(x)).strip().upper()
+    return _UUID_NO_HEX_RE.sub("", s)
+
+
+# comparación en Firebird que ignora guiones/espacios en la columna UUID
+_UUID_COL_NORMALIZADA = "replace(replace(upper({col}), '-', ''), ' ', '')"
+
 
 def _conn_from_secrets(secrets) -> fdb.Connection:
     cfg = secrets["FIREBIRD_BIO_ADA"]
@@ -298,11 +314,11 @@ def obtener_conceptos_filtrados(secrets, proveedor: str | None = None, meses: li
             pass
 
 def obtener_datoscfd_por_uuid(secrets, uuid: str) -> dict | None:
-    uuid = ("" if uuid is None else str(uuid)).strip().upper()
+    uuid = _uuid_solo_hex(uuid)
     if not uuid:
         return None
 
-    sql = "SELECT * FROM DATOSCFD WHERE UPPER(UUID) = ? ROWS 1"
+    sql = f"SELECT * FROM DATOSCFD WHERE {_UUID_COL_NORMALIZADA.format(col='UUID')} = ? ROWS 1"
     con = _conn_from_secrets(secrets)
     try:
         cur = con.cursor()
@@ -319,18 +335,18 @@ def obtener_datoscfd_por_uuid(secrets, uuid: str) -> dict | None:
             pass
         
 def obtener_xml_por_uuid(secrets, uuid: str) -> tuple[bytes | None, str | None]:
-    uuid = ("" if uuid is None else str(uuid)).strip().upper()
+    uuid = _uuid_solo_hex(uuid)
     if not uuid:
         return None, None
 
-    sql = """
+    sql = f"""
         SELECT FIRST 1
             d.XML,
             d.ARCHIVO as NOMBREARCHIVO
         FROM DATOSCFD c
         JOIN DOCTOSDIG d
             ON c.ID_DOCTODIG = d.ID_DOCTODIG
-        WHERE UPPER(c.UUID) = ?
+        WHERE {_UUID_COL_NORMALIZADA.format(col='c.UUID')} = ?
     """
 
     con = _conn_from_secrets(secrets)
@@ -360,11 +376,7 @@ def obtener_xml_por_uuid(secrets, uuid: str) -> tuple[bytes | None, str | None]:
 
 
 def obtener_xmls_por_uuids(secrets, uuids: list[str]) -> dict[str, tuple[bytes, str | None]]:
-    uuids_norm = [
-        str(x).strip().upper()
-        for x in (uuids or [])
-        if str(x).strip()
-    ]
+    uuids_norm = sorted({_uuid_solo_hex(x) for x in (uuids or [])} - {""})
     if not uuids_norm:
         return {}
 
@@ -378,7 +390,7 @@ def obtener_xmls_por_uuids(secrets, uuids: list[str]) -> dict[str, tuple[bytes, 
         FROM DATOSCFD c
         JOIN DOCTOSDIG d
             ON c.ID_DOCTODIG = d.ID_DOCTODIG
-        WHERE UPPER(c.UUID) IN ({placeholders})
+        WHERE {_UUID_COL_NORMALIZADA.format(col='c.UUID')} IN ({placeholders})
     """
 
     con = _conn_from_secrets(secrets)
@@ -390,7 +402,7 @@ def obtener_xmls_por_uuids(secrets, uuids: list[str]) -> dict[str, tuple[bytes, 
         out: dict[str, tuple[bytes, str | None]] = {}
 
         for row in rows:
-            uuid = (row[0] or "").strip().upper()
+            uuid = _uuid_solo_hex(row[0])
             archivo = row[1]
             nombre = row[2] if len(row) > 2 else None
 

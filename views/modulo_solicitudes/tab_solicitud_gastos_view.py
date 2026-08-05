@@ -22,9 +22,9 @@ from controllers.sepomex_controller import get_sepomex_ciudades_catalogo_ctrl
 from controllers.solicitudes_controller import (
     actualizar_cabecera_ctrl,
     buscar_clientes_sae_ctrl,
-    cambiar_estatus_ctrl,
+    cambiar_estatus_ctrl as _cambiar_estatus_ctrl_base,
     crear_solicitud_ctrl,
-    eliminar_solicitud_ctrl,
+    eliminar_solicitud_ctrl as _eliminar_solicitud_ctrl_base,
     get_conceptos_gasto_ctrl,
     get_datoscfd_by_uuid_ctrl,
     get_datoscfd_by_uuids_ctrl,
@@ -48,8 +48,51 @@ from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo
 
 
-MODO_PRUEBA_CORREOS = False 
+MODO_PRUEBA_CORREOS = False
 VALIDAR_FECHA = False
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _get_conceptos_gasto_cached(activo: int = 1):
+    return get_conceptos_gasto_ctrl(activo=activo)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _get_formas_pago_usuario_cached(id_usuario: int):
+    return get_formas_pago_usuario_ctrl(id_usuario)
+
+
+@st.cache_data(show_spinner=False, ttl=30)
+def _listar_solicitudes_cached(
+    folio_like: str = "",
+    estatus: str = "",
+    anio: Optional[int] = None,
+    empleado_id: Optional[int] = None,
+    limit: int = 200,
+):
+    return listar_solicitudes_ctrl(
+        folio_like=folio_like,
+        estatus=estatus,
+        anio=anio,
+        empleado_id=empleado_id,
+        limit=limit,
+    )
+
+
+def _invalidar_cache_solicitudes():
+    _listar_solicitudes_cached.clear()
+
+
+def cambiar_estatus_ctrl(*args, **kwargs):
+    resultado = _cambiar_estatus_ctrl_base(*args, **kwargs)
+    _invalidar_cache_solicitudes()
+    return resultado
+
+
+def eliminar_solicitud_ctrl(*args, **kwargs):
+    resultado = _eliminar_solicitud_ctrl_base(*args, **kwargs)
+    _invalidar_cache_solicitudes()
+    return resultado
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -458,6 +501,18 @@ def _norm_uuid(x) -> str:
     return ("" if x is None else str(x)).strip().upper()
 
 
+_UUID_NO_HEX_RE = re.compile(r"[^0-9A-F]")
+
+
+def _uuid_clave(x) -> str:
+    """Normaliza un uuid a solo sus 32 caracteres hex (sin guiones, espacios
+    ni otros símbolos) para usarlo como llave de búsqueda/caché — DATOSCFD a
+    veces lo guarda con o sin guiones, y así la búsqueda no depende de cómo
+    el usuario lo haya escrito. La celda en pantalla NUNCA se toca con esto:
+    _norm_uuid sigue siendo lo que se muestra/guarda tal como se capturó."""
+    return _UUID_NO_HEX_RE.sub("", _norm_uuid(x))
+
+
 def _to_float(x) -> float:
     try:
         if x is None or str(x).strip() == "":
@@ -647,6 +702,7 @@ def _monto_para_correo_cierre(r: dict) -> float:
     pu = _to_float(r.get("precio_unitario"))
     return round(cant * pu, 2)
 
+@st.cache_data(show_spinner=False, ttl=300)
 def _get_prepago_map():
     from database.conexion import obtener_conexion
 
@@ -988,6 +1044,7 @@ def _rol_autorizador_solicitud(solicitud: dict) -> str:
     return ""
 
 
+@st.cache_data(show_spinner=False, ttl=300)
 def _get_dispersion_map_local():
     from database.conexion import obtener_conexion
     cn = obtener_conexion()
@@ -1960,7 +2017,9 @@ def mostrar_tab_solicitudes_gastos():
                 usuario_id=int(usuario["id"]),
             )
 
-            cat = get_conceptos_gasto_ctrl(activo=1) or []
+            _invalidar_cache_solicitudes()
+
+            cat = _get_conceptos_gasto_cached(activo=1) or []
 
             def _ord_key(r: dict) -> int:
                 v = r.get("orden", None)
@@ -2032,6 +2091,7 @@ def mostrar_tab_solicitudes_gastos():
                     objetivo=objetivo.strip() or None,
                     usuario_id=int(usuario["id"]),
                 )
+                _invalidar_cache_solicitudes()
                 st.success("cabecera actualizada")
                 st.rerun()
 
@@ -2228,7 +2288,7 @@ def mostrar_tab_solicitudes_gastos():
         puede_ver_todas = usuario.get("rol") == "Admin" or _tiene_rol(usuario.get("roles"), "admin", "superadmin")
         empleado_id_filtro = None if puede_ver_todas else int(usuario["id"])
 
-        rows = listar_solicitudes_ctrl(
+        rows = _listar_solicitudes_cached(
             folio_like=folio_like,
             estatus=estatus,
             anio=int(anio) if anio else None,
@@ -2479,7 +2539,7 @@ def mostrar_tab_solicitudes_gastos():
 
     st.session_state.setdefault("sg_det_df", df_edit.copy())
 
-    cat_conceptos = get_conceptos_gasto_ctrl(activo=1) or []
+    cat_conceptos = _get_conceptos_gasto_cached(activo=1) or []
     conceptos_opts = [
         str(r.get("concepto", "")).strip()
         for r in cat_conceptos
@@ -2494,7 +2554,7 @@ def mostrar_tab_solicitudes_gastos():
     )
     conceptos_opts_final = conceptos_opts + [v for v in valores_actuales if v not in set(conceptos_opts)]
 
-    formas = get_formas_pago_usuario_ctrl(int(empleado_id))
+    formas = _get_formas_pago_usuario_cached(int(empleado_id))
     id_to_label = {
         int(x["id"]): str(x.get("etiqueta") or "").strip()
         for x in (formas or [])
@@ -2771,17 +2831,21 @@ def mostrar_tab_solicitudes_gastos():
     st.session_state.setdefault("sg_uuid_cache", {})
     st.session_state.setdefault("sg_uuid_prev", {})
 
+    # la búsqueda/caché/duplicados usan _uuid_clave (solo los 32 hex, sin
+    # guiones/espacios) porque DATOSCFD a veces lo guarda con o sin guiones y
+    # el usuario puede pegarlo con espacios; la celda en pantalla (uuid_now)
+    # nunca se toca, siempre queda tal como se capturó
     uuids_validos = sorted({
-        _norm_uuid(r.get("uuid"))
+        _uuid_clave(r.get("uuid"))
         for _, r in edited.iterrows()
-        if bool(UUID_RE.fullmatch(_norm_uuid(r.get("uuid"))))
+        if len(_uuid_clave(r.get("uuid"))) == 32
     })
 
     uuid_map = {}
     if uuids_validos:
         rows_cfd = get_datoscfd_by_uuids_ctrl(uuids_validos) or []
         for row in rows_cfd:
-            uuid_row = _norm_uuid(row.get("UUID") or row.get("uuid"))
+            uuid_row = _uuid_clave(row.get("UUID") or row.get("uuid"))
             if uuid_row:
                 uuid_map[uuid_row] = row
 
@@ -2789,13 +2853,14 @@ def mostrar_tab_solicitudes_gastos():
 
     for i, r in edited.iterrows():
         uuid_now = _norm_uuid(r.get("uuid"))
+        uuid_key = _uuid_clave(uuid_now)
         uuid_prev = st.session_state["sg_uuid_prev"].get(i, "")
 
         if not uuid_now:
             st.session_state["sg_uuid_prev"][i] = ""
             continue
 
-        uuid_ok = bool(UUID_RE.fullmatch(uuid_now))
+        uuid_ok = len(uuid_key) == 32
         if not uuid_ok:
             continue
 
@@ -2803,20 +2868,20 @@ def mostrar_tab_solicitudes_gastos():
             str(r.get("proveedor") or "").strip() == ""
         )
 
-        if uuid_now != uuid_prev or falta_datos:
+        if uuid_key != uuid_prev or falta_datos:
 
-            if uuid_now in st.session_state["sg_uuid_cache"]:
-                cfd = st.session_state["sg_uuid_cache"][uuid_now]
+            if uuid_key in st.session_state["sg_uuid_cache"]:
+                cfd = st.session_state["sg_uuid_cache"][uuid_key]
             else:
                 # primero intenta resolver desde el batch de MySQL
-                cfd = uuid_map.get(uuid_now)
+                cfd = uuid_map.get(uuid_key)
 
                 # si no vino en MySQL, usa fallback individual (ADA / lógica actual)
                 if cfd is None:
-                    cfd = get_datoscfd_by_uuid_ctrl(uuid_now)
+                    cfd = get_datoscfd_by_uuid_ctrl(uuid_key)
 
                 # guarda en caché aunque sea None, para no repetir consulta
-                st.session_state["sg_uuid_cache"][uuid_now] = cfd
+                st.session_state["sg_uuid_cache"][uuid_key] = cfd
 
             if not cfd:
                 st.warning(f"uuid no encontrado en datoscfd: {uuid_now}")
@@ -2902,7 +2967,7 @@ def mostrar_tab_solicitudes_gastos():
 
                 changed = True
 
-            usado = uuid_ya_usado_ctrl(uuid_now, exclude_solicitud_id=int(selected_id))
+            usado = uuid_ya_usado_ctrl(uuid_key, exclude_solicitud_id=int(selected_id))
             if usado:
                 st.warning(
                     "este uuid ya fue usado en otra solicitud: "
@@ -2912,7 +2977,7 @@ def mostrar_tab_solicitudes_gastos():
                     f"empleado {usado.get('empleado_nombre', '')}"
                 )
 
-            st.session_state["sg_uuid_prev"][i] = uuid_now
+            st.session_state["sg_uuid_prev"][i] = uuid_key
 
     if changed:
         st.session_state["sg_det_df"] = edited.drop(
