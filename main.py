@@ -230,6 +230,7 @@ else:
         menu_opciones["Solicitudes"] = "solicitudes"
         menu_opciones["🧑🏻‍💻 Navegar"] = "navegar"
         menu_opciones["📉 Forecast"] = "forecast"
+        menu_opciones["Presupuestos Ventas"] = "presupuestos_ventas"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
 
     if "Forecast" in roles:
