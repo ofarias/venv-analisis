@@ -129,7 +129,7 @@ def _es_fila_header(row_values: list[Any]) -> bool:
 def _mapear_header(header_values: list[Any]) -> dict:
     # Las columnas son fijas en todas las secciones del Excel:
     # col0=STATUS  col1=COMPANY  col2=CANAL/PAIS  col3=CON-xxxx  col4=Clave-B (opt)
-    # col5=PRODUCTO  col6=PRECIO  col7-18=Meses Ene-Dic
+    # col5=PRODUCTO  col6=PRECIO  col7=PRECIO VENTA  col8-19=Meses Ene-Dic
     # Solo los meses se detectan por etiqueta porque son los únicos que varían.
     meses = []
     for idx, val in enumerate(header_values):
@@ -145,6 +145,7 @@ def _mapear_header(header_values: list[Any]) -> dict:
         "cve_prod":      4,
         "producto":      5,
         "precio":        6,
+        "precio_venta":  7,
         "meses":         meses,
     }
 
@@ -263,6 +264,7 @@ def normalizar_presupuesto_excel_dinamico(
             codigo = _txt(_obtener(rv, cols.get("codigo_origen")))
             cve_prod = _txt(_obtener(rv, cols.get("cve_prod")))
             precio = _float(_obtener(rv, cols.get("precio")))
+            precio_venta = _float(_obtener(rv, cols.get("precio_venta")))
 
             for m in meses:
                 valor = _float(_obtener(rv, m["idx"]))
@@ -290,6 +292,7 @@ def normalizar_presupuesto_excel_dinamico(
                     "linea_excel": None,
                     "producto_excel": producto,
                     "precio": precio,
+                    "precio_venta": precio_venta,
                     "anio": int(anio),
                     "mes": int(m["mes"]),
                     "cantidad_kg": cantidad_kg,
@@ -317,7 +320,7 @@ def normalizar_presupuesto_excel_dinamico(
     agg: dict = {}
     for c in ("fila_excel", "estatus_excel", "canal", "cve_prod",
               "vendedor_excel", "unidad_negocio_excel", "linea_excel",
-              "comentario", "precio"):
+              "comentario", "precio", "precio_venta"):
         if c in df.columns:
             agg[c] = "first"
     for c in ("valor", "cantidad_kg", "importe"):

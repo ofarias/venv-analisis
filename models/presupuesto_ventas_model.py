@@ -708,6 +708,7 @@ def obtener_presupuesto_ventas_model(
                 producto_excel,
                 cantidad_kg,
                 precio,
+                precio_venta,
                 importe,
                 valor,
                 canal,
@@ -800,6 +801,7 @@ def obtener_presupuesto_ventas_model(
                 "producto_excel",
                 "cantidad_kg",
                 "precio",
+                "precio_venta",
                 "importe",
                 "valor",
                 "canal",
@@ -931,9 +933,9 @@ def insertar_presupuesto_ventas_desde_df_model(
             insert into presupuesto_ventas (
                 id_carga, seccion, region, estatus_excel,
                 company, cliente_excel, codigo_origen, cve_prod, producto_excel,
-                precio, anio, mes, valor, cantidad_kg, importe,
+                precio, precio_venta, anio, mes, valor, cantidad_kg, importe,
                 canal, comentario, estatus, usuario_id
-            ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+            ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
         """
         total = 0
         for _, row in df.iterrows():
@@ -948,6 +950,7 @@ def insertar_presupuesto_ventas_desde_df_model(
                 str(row.get("cve_prod") or "").strip() or None,
                 str(row.get("producto_excel") or "").strip() or None,
                 float(row.get("precio") or 0),
+                float(row.get("precio_venta") or 0),
                 int(row.get("anio") or 0),
                 int(row.get("mes") or 0),
                 float(row.get("valor") or 0),
@@ -1130,7 +1133,7 @@ def guardar_presupuesto_ventas_batch_model(
     """Aplica inserts/updates/cve_prod_updates/identidad_updates en una sola conexión/transacción.
 
     inserts: dicts con las mismas llaves que insertar_presupuesto_ventas_unitario_model.
-    updates: dicts con id_presupuesto + cualquiera de valor/precio/cantidad_kg/importe/estatus_excel.
+    updates: dicts con id_presupuesto + cualquiera de valor/precio/precio_venta/cantidad_kg/importe/estatus_excel.
     cve_prod_updates: dicts con id_carga/producto_excel/cliente_excel/codigo_origen/company/cve_prod/cve_linea.
     identidad_updates: dicts con id_carga + company/cliente_excel/codigo_origen/producto_excel (nuevos)
         y *_orig (los valores actuales en BD, usados para localizar las filas a renombrar).
@@ -1150,9 +1153,9 @@ def guardar_presupuesto_ventas_batch_model(
                 insert into presupuesto_ventas (
                     id_carga, seccion, region, estatus_excel,
                     company, cliente_excel, codigo_origen, cve_prod, cve_linea, producto_excel,
-                    precio, anio, mes, valor, cantidad_kg, importe,
+                    precio, precio_venta, anio, mes, valor, cantidad_kg, importe,
                     estatus, usuario_id
-                ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+                ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
             """
             rows = [
                 (
@@ -1167,6 +1170,7 @@ def guardar_presupuesto_ventas_batch_model(
                     str(r.get("cve_linea")).strip() if r.get("cve_linea") else None,
                     str(r.get("producto_excel") or "").strip(),
                     float(r.get("precio") or 0),
+                    float(r.get("precio_venta") or 0),
                     int(r["anio"]),
                     int(r["mes"]),
                     float(r.get("valor") or 0),
@@ -1182,7 +1186,7 @@ def guardar_presupuesto_ventas_batch_model(
         for u in updates:
             sets: list[str] = []
             params: list = []
-            for campo in ("valor", "precio", "cantidad_kg", "importe"):
+            for campo in ("valor", "precio", "precio_venta", "cantidad_kg", "importe"):
                 if u.get(campo) is not None:
                     sets.append(f"{campo} = %s")
                     params.append(float(u[campo]))

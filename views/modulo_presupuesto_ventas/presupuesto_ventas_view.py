@@ -382,7 +382,7 @@ def _construir_pivot(
 
     if df.empty:
         pivot_vacio = pd.DataFrame(
-            columns=cols_id + ["_status", "_cve_prod_label", "estatus_excel", "precio"]
+            columns=cols_id + ["_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"]
         )
         return pivot_vacio, {}, {}
 
@@ -399,7 +399,7 @@ def _construir_pivot(
 
     # row_meta: datos constantes por fila para insertar nuevos meses
     meta_cols = ["id_carga", "seccion", "region", "anio",
-                 "cve_prod", "estatus_excel", "precio"] + cols_id
+                 "cve_prod", "estatus_excel", "precio", "precio_venta"] + cols_id
     meta_cols = [c for c in meta_cols if c in df.columns]
     row_meta: dict = {}
     for _, row in df.iterrows():
@@ -408,7 +408,7 @@ def _construir_pivot(
             row_meta[key] = {c: row.get(c) for c in meta_cols}
 
     meta_map = df.groupby(cols_id, dropna=False)[
-        [c for c in ["precio", "cve_prod", "estatus_excel"] if c in df.columns]
+        [c for c in ["precio", "precio_venta", "cve_prod", "estatus_excel"] if c in df.columns]
     ].first().reset_index()
 
     pivot = df.pivot_table(
@@ -434,7 +434,7 @@ def _construir_pivot(
     pivot["_status"] = pivot["cve_prod"].apply(_status) if "cve_prod" in pivot.columns else "🟠"
     pivot["_cve_prod_label"] = pivot["cve_prod"].apply(_label) if "cve_prod" in pivot.columns else ""
 
-    col_order = cols_id + ["_status", "_cve_prod_label", "estatus_excel", "precio"] + meses_presentes
+    col_order = cols_id + ["_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"] + meses_presentes
     pivot = pivot[[c for c in col_order if c in pivot.columns]]
     return pivot, mapping, row_meta
 
@@ -513,6 +513,7 @@ _ENCABEZADOS_EXPORT = {
     "_status": "En catálogo SAE",
     "estatus_excel": "Estatus",
     "precio": "Precio USD/Kg",
+    "precio_venta": "Precio Venta",
 }
 
 
@@ -537,7 +538,7 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
 
         cols_id = [c for c in _COLS_ID if c in df_export.columns]
         meses = [m for m in _MESES.values() if m in df_export.columns]
-        col_order = cols_id + ["_cve_prod_label", "_status", "estatus_excel", "precio"] + meses
+        col_order = cols_id + ["_cve_prod_label", "_status", "estatus_excel", "precio", "precio_venta"] + meses
         df_export = df_export[[c for c in col_order if c in df_export.columns]]
 
         columnas = list(df_export.columns)
@@ -551,6 +552,7 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
         fmt_mes = "#,##0.0000" if seccion == "KG" else "#,##0.00"
         meses_idx = {m: columnas.index(m) + 1 for m in meses}
         precio_idx = columnas.index("precio") + 1 if "precio" in columnas else None
+        precio_venta_idx = columnas.index("precio_venta") + 1 if "precio_venta" in columnas else None
 
         for _, fila in df_export.iterrows():
             # openpyxl no acepta NaN/pd.NA como valor de celda ("Cannot
@@ -562,6 +564,8 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
                 row[idx - 1].number_format = fmt_mes
             if precio_idx:
                 row[precio_idx - 1].number_format = "#,##0.0000"
+            if precio_venta_idx:
+                row[precio_venta_idx - 1].number_format = "#,##0.0000"
 
         for idx, col_name in enumerate(columnas, start=1):
             largo = len(str(_ENCABEZADOS_EXPORT.get(col_name, col_name)))
@@ -583,7 +587,8 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
 #   - fila ancla de región: debe contener MEXICO o CAM+CARIBE.
 #   - fila de encabezado: columnas FIJAS por posición — col0 estatus,
 #     col1 company, col2 cliente, col3 código origen, col4 cve_prod,
-#     col5 producto, col6 precio, col7+ meses (detectados por nombre, ES/EN).
+#     col5 producto, col6 precio, col7 precio venta, col8+ meses
+#     (detectados por nombre, ES/EN).
 #   - los datos terminan en la primera fila con "producto" vacío.
 #   - estatus válidos: BUDGETED, BUDGETEED, NOT IN BGT (o vacío).
 # Se evita a propósito cualquier texto "CLAVE SAE" / "CODIGO UNIVERSAL" para
@@ -591,29 +596,17 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
 
 _LAYOUT_HEADERS = [
     "ESTATUS", "COMPANY", "CLIENTE", "CODIGO ORIGEN", "CVE PROD",
-    "PRODUCTO", "PRECIO USD/KG",
+    "PRODUCTO", "PRECIO USD/KG", "PRECIO VENTA",
     "ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
     "JUL", "AGO", "SEP", "OCT", "NOV", "DIC",
 ]
 
 _LAYOUT_BLOQUES = [
     ("2026 BGT Calculated TURNOVER in VOLUME KG", "MEXICO", [
-        ["Budgeted", "NZMX", "Cliente Ejemplo 1", "CON-0001", "B0001", "PRODUCTO EJEMPLO 1", 10.5,
+        ["Budgeted", "NZMX", "Cliente Ejemplo 1", "CON-0001", "B0001", "PRODUCTO EJEMPLO 1", 10.5, 12.0,
          100, 100, 100, 120, 120, 120, 110, 110, 110, 100, 100, 100],
-        ["Budgeted", "NZMX", "Cliente Ejemplo 2", "CON-0002", "B0002", "PRODUCTO EJEMPLO 2", 8.25,
+        ["Budgeted", "NZMX", "Cliente Ejemplo 2", "CON-0002", "B0002", "PRODUCTO EJEMPLO 2", 8.25, 9.5,
          50, 50, 60, 60, 70, 70, 70, 60, 60, 50, 50, 50],
-    ]),
-    ("2026 BGT Calculated TURNOVER in USD", "MEXICO", [
-        ["Budgeted", "NZMX", "Cliente Ejemplo 1", "CON-0001", "B0001", "PRODUCTO EJEMPLO 1", 10.5,
-         1050, 1050, 1050, 1260, 1260, 1260, 1155, 1155, 1155, 1050, 1050, 1050],
-    ]),
-    ("2026 BGT Calculated TURNOVER in VOLUME KG", "CAM & CARIBE", [
-        ["Not in BGT", "NZNA", "Cliente CAM Ejemplo", None, "B0003", "PRODUCTO EJEMPLO 3", 9.95,
-         200, 200, 0, 200, 200, 0, 200, 200, 0, 200, 200, 0],
-    ]),
-    ("2026 BGT Calculated TURNOVER in USD", "CAM & CARIBE", [
-        ["Not in BGT", "NZNA", "Cliente CAM Ejemplo", None, "B0003", "PRODUCTO EJEMPLO 3", 9.95,
-         1990, 1990, 0, 1990, 1990, 0, 1990, 1990, 0, 1990, 1990, 0],
     ]),
 ]
 
@@ -621,21 +614,22 @@ _LAYOUT_INSTRUCCIONES = [
     "PLANTILLA DE CARGA — PRESUPUESTO DE VENTAS",
     "",
     "Reglas para que la carga se procese correctamente:",
-    "1. No borres ni renombres las filas que dicen \"TURNOVER in VOLUME KG\" / \"TURNOVER in USD\" "
-    "ni las que dicen \"MEXICO\" / \"CAM & CARIBE\" — son las que el sistema usa para saber en qué "
-    "sección/región va cada bloque de datos.",
-    "2. No borres la fila de encabezados (ESTATUS, COMPANY, CLIENTE, ...) de cada bloque.",
+    "1. No borres ni renombres las filas que dicen \"TURNOVER in VOLUME KG\" ni la que dice "
+    "\"MEXICO\" — son las que el sistema usa para saber en qué sección/región va el bloque de datos "
+    "(por ahora la app solo captura KG México).",
+    "2. No borres la fila de encabezados (ESTATUS, COMPANY, CLIENTE, ...) del bloque.",
     "3. Las columnas están en un orden fijo: ESTATUS, COMPANY, CLIENTE, CODIGO ORIGEN, CVE PROD, "
-    "PRODUCTO, PRECIO USD/KG y luego los 12 meses — no insertes ni borres columnas en medio.",
-    "4. ESTATUS solo acepta: Budgeted, Budgeteed o Not in BGT (o dejarlo vacío).",
-    "5. CVE PROD es la clave del producto en SAE (código B-xxxx). Si coincide con el catálogo, "
+    "PRODUCTO, PRECIO USD/KG, PRECIO VENTA y luego los 12 meses — no insertes ni borres columnas en medio.",
+    "4. PRECIO VENTA es opcional (déjalo en 0 o vacío si no aplica) — es el precio de venta que "
+    "captura el usuario, distinto de PRECIO USD/KG (que es el precio de referencia de SAE).",
+    "5. ESTATUS solo acepta: Budgeted, Budgeteed o Not in BGT (o dejarlo vacío).",
+    "6. CVE PROD es la clave del producto en SAE (código B-xxxx). Si coincide con el catálogo, "
     "en la app aparecerá marcado en verde 🟢; si no, en naranja 🟠 (puedes corregirlo después "
     "desde la app con el buscador de producto SAE).",
-    "6. En los bloques \"TURNOVER in VOLUME KG\" las cifras de los meses son KILOGRAMOS.",
-    "7. En los bloques \"TURNOVER in USD\" las cifras de los meses son DÓLARES.",
-    "8. Una fila en blanco marca el final de cada bloque de datos — no dejes filas en blanco "
-    "en medio de un bloque con datos.",
-    "9. Borra las filas de ejemplo (PRODUCTO EJEMPLO 1/2/3) antes de cargar tu información real; "
+    "7. Las cifras de los meses son KILOGRAMOS.",
+    "8. Una fila en blanco marca el final del bloque de datos — no dejes filas en blanco "
+    "en medio del bloque.",
+    "9. Borra las filas de ejemplo (PRODUCTO EJEMPLO 1/2) antes de cargar tu información real; "
     "se incluyen solo para mostrar el formato esperado.",
 ]
 
@@ -789,10 +783,14 @@ def _guardar_pivot(
                     "cve_prod": cve_edit_cod,
                 })
 
-        # ── cambios en precio / valores mensuales ───────────────────────────
+        # ── cambios en precio / precio venta / valores mensuales ────────────
         precio_orig = 0.0 if es_nueva else float(orig.iloc[i].get("precio") or 0)
         precio_edit = float(edited.iloc[i].get("precio") or 0)
         precio_cambio = es_nueva or abs(precio_edit - precio_orig) > 1e-6
+
+        precio_venta_orig = 0.0 if es_nueva else float(orig.iloc[i].get("precio_venta") or 0)
+        precio_venta_edit = float(edited.iloc[i].get("precio_venta") or 0)
+        precio_venta_cambio = es_nueva or abs(precio_venta_edit - precio_venta_orig) > 1e-6
 
         for mes_num in range(1, 13):
             mes_name = _MESES[mes_num]
@@ -807,10 +805,16 @@ def _guardar_pivot(
                 # fila nueva: no crea registros para meses que quedaron en cero
                 continue
 
-            if not es_nueva and not val_cambio and not precio_cambio and not estatus_cambio:
+            id_pv = None if es_nueva else mapping.get((row_key, mes_num))
+
+            # un cambio de precio_venta actualiza los meses que ya existen en BD,
+            # pero no crea registros nuevos en cero para meses sin capturar aún
+            if not es_nueva and not val_cambio and not precio_cambio and not estatus_cambio \
+                    and not (precio_venta_cambio and id_pv):
                 continue
 
             precio_final = precio_edit if precio_cambio else precio_orig
+            precio_venta_final = precio_venta_edit if precio_venta_cambio else precio_venta_orig
             valor_final = val_edit if val_cambio else val_orig
 
             if seccion == "KG":
@@ -820,13 +824,12 @@ def _guardar_pivot(
                 cantidad_kg = 0.0
                 importe = valor_final
 
-            id_pv = None if es_nueva else mapping.get((row_key, mes_num))
-
             if id_pv:
                 updates.append({
                     "id_presupuesto": id_pv,
                     "valor": valor_final,
                     "precio": precio_final,
+                    "precio_venta": precio_venta_final,
                     "cantidad_kg": cantidad_kg,
                     "importe": importe,
                     "estatus_excel": estatus_edit if estatus_cambio else None,
@@ -846,6 +849,7 @@ def _guardar_pivot(
                     "cve_linea": meta.get("cve_linea") or None,
                     "estatus_excel": meta.get("estatus_excel") or None,
                     "precio": precio_final,
+                    "precio_venta": precio_venta_final,
                     "valor": valor_final,
                     "cantidad_kg": cantidad_kg,
                     "importe": importe,
@@ -935,15 +939,66 @@ def _panel_crear_manual() -> None:
 
 # ── panel: carga de Excel ─────────────────────────────────────────────────────
 
+def _generar_excel_productos_sae_bytes(df: pd.DataFrame) -> bytes:
+    """Excel con clave, nombre y existencia al día de los productos activos en
+    SAE — usado como referencia rápida al capturar el presupuesto de ventas."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "productos_sae"
+
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+
+    encabezados = ["Clave", "Nombre", "Existencia"]
+    ws.append(encabezados)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+    ws.freeze_panes = "A2"
+
+    if df is not None and not df.empty:
+        for _, fila in df.iterrows():
+            ws.append([
+                fila.get("cve_art"),
+                fila.get("descr"),
+                float(fila.get("existencia") or 0),
+            ])
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            row[2].number_format = "#,##0.00"
+
+    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["B"].width = 50
+    ws.column_dimensions["C"].width = 14
+
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
 def _panel_carga() -> None:
-    st.download_button(
-        "⬇️ descargar layout de carga",
-        data=_generar_layout_presupuesto_bytes(),
-        file_name="layout_presupuesto_ventas.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="pv_btn_layout",
-        help="plantilla en blanco con el formato que espera la carga (incluye hoja de instrucciones)",
-    )
+    col_layout, col_productos = st.columns(2)
+    with col_layout:
+        st.download_button(
+            "⬇️ descargar layout de carga",
+            data=_generar_layout_presupuesto_bytes(),
+            file_name="layout_presupuesto_ventas.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="pv_btn_layout",
+            use_container_width=True,
+            help="plantilla en blanco con el formato que espera la carga (incluye hoja de instrucciones)",
+        )
+    with col_productos:
+        df_productos_sae = obtener_existencias_productos_pv_ctrl()
+        st.download_button(
+            "⬇️ descargar productos SAE (clave, nombre, existencia)",
+            data=_generar_excel_productos_sae_bytes(df_productos_sae),
+            file_name="productos_sae_existencia.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="pv_btn_productos_sae",
+            use_container_width=True,
+            help="catálogo de productos activos en SAE con su existencia al día (clave, nombre, existencia)",
+        )
 
     archivo = st.file_uploader(
         "sube el archivo de presupuesto ventas",
@@ -1079,7 +1134,7 @@ def _form_agregar_registro(
         if _code_sel and precio == 0:
             precio = obtener_ultimo_precio_venta_ctrl(cve_art=_code_sel, cve_clie=_cve_clie_sel)
 
-        col4, col5, col6, col7 = st.columns(4)
+        col4, col5, col6, col7, col8 = st.columns(5)
         with col4:
             estatus_excel = st.selectbox(
                 "estatus (opcional)", ["", "Budgeted", "Not in BGT", "Prospecto"], key=f"{prefix}_estatus",
@@ -1099,6 +1154,12 @@ def _form_agregar_registro(
             st.text_input(
                 "código origen (de SAE, no editable)", value=codigo_origen, disabled=True,
                 key=f"{prefix}_origen_{_code_sel or 'none'}",
+            )
+        with col8:
+            precio_venta = st.number_input(
+                "precio venta (opcional, lo capturas tú)",
+                min_value=0.0, format="%.4f", value=0.0,
+                key=f"{prefix}_precio_venta",
             )
 
         # se arma en bloques de hasta 6 columnas por fila para mantener el
@@ -1141,6 +1202,7 @@ def _form_agregar_registro(
                 "_cve_prod_label": code_to_label.get(code, "") if code else "",
                 "estatus_excel": estatus_excel,
                 "precio": float(precio),
+                "precio_venta": float(precio_venta),
                 "_nueva": True,
                 "_estatus_linea": "captura",
                 "_estatus_linea_badge": _ESTATUS_LINEA_BADGE["captura"],
@@ -1220,14 +1282,14 @@ def _panel_pivot(id_carga: int) -> None:
         # se arma una estructura vacía con las columnas base para permitir captura manual
         df_all = pd.DataFrame(columns=_COLS_ID + [
             "mes", "anio", "seccion", "region", "valor", "importe",
-            "cantidad_kg", "precio", "cve_prod", "estatus_excel",
+            "cantidad_kg", "precio", "precio_venta", "cve_prod", "estatus_excel",
             "id_carga", "id_presupuesto",
         ])
         carga_meta = obtener_cargas_presupuesto_ventas_ctrl(id_carga=id_carga, limit=1)
         if carga_meta is not None and not carga_meta.empty and "anio" in carga_meta.columns:
             anio_default = int(carga_meta.iloc[0]["anio"])
 
-    for col in ("valor", "importe", "cantidad_kg", "precio"):
+    for col in ("valor", "importe", "cantidad_kg", "precio", "precio_venta"):
         if col in df_all.columns:
             df_all[col] = pd.to_numeric(df_all[col], errors="coerce").fillna(0.0)
         else:
@@ -1314,7 +1376,7 @@ def _panel_pivot(id_carga: int) -> None:
                         pivot_db[m] = 0.0
 
                 col_order = (
-                    cols_id_reload + ["_status", "_cve_prod_label", "estatus_excel", "precio"] + meses_todos
+                    cols_id_reload + ["_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"] + meses_todos
                 )
                 pivot_db = pivot_db[[c for c in col_order if c in pivot_db.columns]]
                 pivot_db["_nueva"] = False
@@ -1444,6 +1506,16 @@ def _panel_pivot(id_carga: int) -> None:
                 editable=False,
                 width=110,
                 type=["numericColumn"],
+                valueFormatter=_value_formatter_js(4),
+            )
+            gb.configure_column(
+                "precio_venta",
+                headerName="Precio Venta",
+                # precio_venta: lo captura el usuario a mano en la tabla
+                editable=editable_no_congelada,
+                width=120,
+                type=["numericColumn"],
+                cellEditor="agNumberCellEditor",
                 valueFormatter=_value_formatter_js(4),
             )
             for m in meses_presentes:

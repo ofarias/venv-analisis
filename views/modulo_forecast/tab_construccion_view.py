@@ -122,15 +122,36 @@ def _puede_editar_sin_restriccion() -> bool:
     return _tiene_rol(usuario.get("roles"), "admin", "superadmin", "forecastadmin")
 
 
-def _mes_editable(anio: int, mes: int) -> bool:
-    """Regla de los 3 meses: el vendedor solo puede mover el forecast de
-    meses posteriores a los 3 meses siguientes al actual — si estamos en
-    julio, agosto/septiembre/octubre quedan bloqueados y noviembre en
-    adelante (incluido cualquier año futuro) queda editable."""
+def _mes_editable_compra(anio: int, mes: int) -> bool:
+    """Regla de los 3 meses (solo forecast de Compra / Demand Plan): solo se
+    puede mover el forecast de meses posteriores a los 3 meses siguientes al
+    actual — si estamos en julio, agosto/septiembre/octubre quedan
+    bloqueados y noviembre en adelante (incluido cualquier año futuro) queda
+    editable."""
     hoy = date.today()
     idx_hoy = hoy.year * 12 + hoy.month
     idx_celda = int(anio) * 12 + int(mes)
     return idx_celda >= idx_hoy + 4
+
+
+def _mes_editable_venta(anio: int, mes: int) -> bool:
+    """Regla de Venta (Forecast): se ven los 12 meses, pero solo es editable
+    desde el mes actual hasta diciembre del año en curso — los meses ya
+    transcurridos del año actual quedan bloqueados; un año completo futuro
+    es editable sin restricción."""
+    hoy = date.today()
+    if int(anio) > hoy.year:
+        return True
+    if int(anio) < hoy.year:
+        return False
+    return int(mes) >= hoy.month
+
+
+def _mes_editable(tipo: str, anio: int, mes: int) -> bool:
+    """Despacha a la regla de meses editables según el tipo de forecast."""
+    if tipo == "compra":
+        return _mes_editable_compra(anio, mes)
+    return _mes_editable_venta(anio, mes)
 
 
 def _pivot_forecast(df: pd.DataFrame, meses: list[int], precio_map: dict | None = None) -> pd.DataFrame:
@@ -186,18 +207,6 @@ def mostrar_tab_construccion(
         st.warning("selecciona al menos un mes")
         return
 
-    # regla de los 3 meses: solo se puede mover el forecast de meses más
-    # allá de los 3 siguientes al actual (Admin/SuperAdmin/forecastAdmin sin
-    # restricción) — se ven todos los meses seleccionados, pero los
-    # bloqueados quedan de solo lectura en la tabla y no se tocan al generar
-    # propuesta ni al agregar un producto manualmente
-    meses_editables = [m for m in meses_sel if es_admin or _mes_editable(anio, m)]
-    if not es_admin and len(meses_editables) < len(meses_sel):
-        st.caption(
-            "🔒 el mes actual y los 3 siguientes están bloqueados — solo se puede mover "
-            "el forecast a partir del 4º mes en adelante"
-        )
-
     st.divider()
 
     try:
@@ -222,7 +231,6 @@ def mostrar_tab_construccion(
                 usuario_id=usuario_id,
                 es_admin=es_admin,
                 meses_sel=meses_sel,
-                meses_editables=meses_editables,
                 precio_map=precio_map,
             )
 
@@ -237,9 +245,30 @@ def _mostrar_construccion_tipo(
     usuario_id: int,
     es_admin: bool,
     meses_sel: list[int],
-    meses_editables: list[int],
     precio_map: dict,
 ) -> None:
+    # regla de meses editables — distinta para Venta y Compra
+    # (Admin/SuperAdmin/forecastAdmin sin restricción en ambas): se ven
+    # todos los meses seleccionados, pero los bloqueados quedan de solo
+    # lectura en la tabla y no se tocan al generar propuesta ni al agregar
+    # un producto manualmente.
+    # - Compra: regla de los 3 meses (mes actual + 3 siguientes bloqueados).
+    # - Venta: se puede mover el forecast desde el mes actual hasta
+    #   diciembre del año en curso (los meses ya transcurridos del año
+    #   quedan bloqueados).
+    meses_editables = [m for m in meses_sel if es_admin or _mes_editable(tipo, anio, m)]
+    if not es_admin and len(meses_editables) < len(meses_sel):
+        if tipo == "compra":
+            st.caption(
+                "🔒 el mes actual y los 3 siguientes están bloqueados — solo se puede mover "
+                "el forecast a partir del 4º mes en adelante"
+            )
+        else:
+            st.caption(
+                "🔒 los meses ya transcurridos del año están bloqueados — solo se puede mover "
+                "el forecast desde el mes actual hasta diciembre"
+            )
+
     # botón generar propuesta automática
     metodos_opciones = _metodos_opciones(usuario_datos_id, tipo)
     # "presupuesto" (guardado en metodo_default) no es una clave de este
@@ -266,7 +295,10 @@ def _mostrar_construccion_tipo(
         st.write("")
         if st.button("⚡ generar propuesta", use_container_width=True, key=f"fc_btn_generar_{tipo}"):
             if not meses_editables:
-                st.warning("los meses seleccionados están dentro de la ventana bloqueada (mes actual + 3 siguientes)")
+                if tipo == "compra":
+                    st.warning("los meses seleccionados están dentro de la ventana bloqueada (mes actual + 3 siguientes)")
+                else:
+                    st.warning("los meses seleccionados ya pasaron — solo se puede mover el forecast desde el mes actual hasta diciembre")
             else:
                 with st.spinner("calculando propuesta…"):
                     for _, seccion, region in _TABS_SEC:
@@ -347,7 +379,7 @@ def _mostrar_construccion_tipo(
                 mn = _MESES[m]
                 if mn not in pivot_orig.columns:
                     continue
-                editable_mes = es_admin or _mes_editable(anio, m)
+                editable_mes = es_admin or _mes_editable(tipo, anio, m)
                 gb.configure_column(
                     mn,
                     headerName=mn.upper() if editable_mes else f"🔒 {mn.upper()}",
@@ -359,7 +391,10 @@ def _mostrar_construccion_tipo(
                     valueFormatter=_value_formatter_js(decimales),
                 )
 
-            st.caption("🟩 valor positivo  |  🟥 valor negativo  |  🔒 mes bloqueado (regla de los 3 meses)")
+            regla_caption = (
+                "regla de los 3 meses" if tipo == "compra" else "solo mes actual → diciembre"
+            )
+            st.caption(f"🟩 valor positivo  |  🟥 valor negativo  |  🔒 mes bloqueado ({regla_caption})")
 
             grid_response = AgGrid(
                 pivot_orig,
@@ -414,7 +449,7 @@ def _guardar_cambios_pivot(
             # defensa adicional: la columna ya viene bloqueada en la UI
             # (editable=False), esto solo evita persistir un cambio si de
             # todas formas llegara uno para un mes bloqueado
-            if not es_admin and not _mes_editable(anio, mes):
+            if not es_admin and not _mes_editable(tipo, anio, mes):
                 continue
             mn = _MESES[mes]
             if mn not in orig.columns or i >= len(edited):

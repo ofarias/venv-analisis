@@ -186,6 +186,7 @@ else:
         menu_opciones["👥 Administración de usuarios"] = "admin_usuarios"
         menu_opciones["📤 Exportar Permisos"] = "exp_permisos"
         menu_opciones["📄 Historial de actividad"] = "historial"
+        menu_opciones["📊 Uso de la app"] = "uso_app"
         menu_opciones["🎭 Administración de roles"] = "roles"
         menu_opciones["⚙️ Administración de Archivos"] = "config"
         menu_opciones["🐇 Carga Multiple"] = "carga_multiple"
@@ -285,6 +286,9 @@ else:
         elif modulo == "historial":
             from views.modulos_admin.historial_actividad import mostrar_historial
             mostrar_historial()
+        elif modulo == "uso_app":
+            from views.modulos_admin.dashboard_uso_app import mostrar_dashboard_uso_app
+            mostrar_dashboard_uso_app()
         elif modulo == "roles":
             from views.modulos_admin.admin_roles import mostrar_admin_roles
             mostrar_admin_roles()
