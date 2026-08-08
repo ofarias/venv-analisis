@@ -52,6 +52,26 @@ def mostrar_dashboard_uso_app():
         st.info("No hay actividad registrada en el rango seleccionado.")
         return
 
+    with st.container(border=True):
+        f1, f2 = st.columns(2)
+        usuarios_opciones = sorted(df["usuario"].dropna().astype(str).unique().tolist())
+        modulos_opciones = sorted(
+            df.loc[df["accion"] == "Acceso a módulo", "detalle"].dropna().astype(str).unique().tolist()
+        )
+        with f1:
+            usuarios_sel = st.multiselect("Usuario", usuarios_opciones, default=[], key="uso_app_usuarios")
+        with f2:
+            modulos_sel = st.multiselect("Módulo", modulos_opciones, default=[], key="uso_app_modulos")
+
+    if usuarios_sel:
+        df = df[df["usuario"].isin(usuarios_sel)]
+    if modulos_sel:
+        df = df[(df["accion"] == "Acceso a módulo") & (df["detalle"].isin(modulos_sel))]
+
+    if df.empty:
+        st.info("No hay actividad para los filtros seleccionados.")
+        return
+
     usuarios_activos = df["usuario"].nunique()
     total_eventos = len(df)
     accesos_modulo = df[df["accion"] == "Acceso a módulo"]
