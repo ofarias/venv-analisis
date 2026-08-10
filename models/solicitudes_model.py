@@ -52,27 +52,37 @@ class SolicitudCabecera:
 
 def get_usuarios_activos() -> List[Dict[str, Any]]:
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        select id, username, nombre, email, rol, estatus
-        from usuarios
-        where estatus = 'Activo'
-        order by nombre
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            select id, username, nombre, email, rol, estatus
+            from usuarios
+            where estatus = 'Activo'
+            order by nombre
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _fetchone_scalar(sql: str, params: Tuple[Any, ...]) -> Any:
     conn = obtener_conexion()
-    cur = conn.cursor()
-    cur.execute(sql, params)
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return None if row is None else row[0]
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        cur.close()
+        return None if row is None else row[0]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def obtener_siguiente_consecutivo(anio: int) -> int:
@@ -103,35 +113,40 @@ def insertar_solicitud_cabecera(
     creado_por: int,
 ) -> int:
     conn = obtener_conexion()
-    cur = conn.cursor()
-    cur.execute("""
-        insert into solicitudes
-        (anio, consecutivo, folio,
-         empleado_id, empleado_nombre,
-         clientes, ciudades,
-         fecha_inicio, fecha_fin, hora_salida, hora_regreso,
-         objetivo, estatus,
-         creado_por)
-        values
-        (%s, %s, %s,
-         %s, %s,
-         %s, %s,
-         %s, %s, %s, %s,
-         %s, 'captura',
-         %s)
-    """, (
-        anio, consecutivo, folio,
-        empleado_id, empleado_nombre,
-        clientes, ciudades,
-        fecha_inicio, fecha_fin, hora_salida, hora_regreso,
-        objetivo,
-        creado_por
-    ))
-    solicitud_id = cur.lastrowid
-    conn.commit()
-    cur.close()
-    conn.close()
-    return int(solicitud_id)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            insert into solicitudes
+            (anio, consecutivo, folio,
+             empleado_id, empleado_nombre,
+             clientes, ciudades,
+             fecha_inicio, fecha_fin, hora_salida, hora_regreso,
+             objetivo, estatus,
+             creado_por)
+            values
+            (%s, %s, %s,
+             %s, %s,
+             %s, %s,
+             %s, %s, %s, %s,
+             %s, 'captura',
+             %s)
+        """, (
+            anio, consecutivo, folio,
+            empleado_id, empleado_nombre,
+            clientes, ciudades,
+            fecha_inicio, fecha_fin, hora_salida, hora_regreso,
+            objetivo,
+            creado_por
+        ))
+        solicitud_id = cur.lastrowid
+        conn.commit()
+        cur.close()
+        return int(solicitud_id)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def actualizar_solicitud_cabecera(
@@ -149,36 +164,41 @@ def actualizar_solicitud_cabecera(
     actualizado_por: int,
 ) -> None:
     conn = obtener_conexion()
-    cur = conn.cursor()
-    cur.execute("""
-        update solicitudes
-        set empleado_id = %s,
-            empleado_nombre = %s,
-            clientes = %s,
-            ciudades = %s,
-            fecha_inicio = %s,
-            fecha_fin = %s,
-            hora_salida = %s,
-            hora_regreso = %s,
-            objetivo = %s,
-            actualizado_por = %s
-        where id = %s
-    """, (
-        empleado_id,
-        empleado_nombre,
-        clientes,
-        ciudades,
-        fecha_inicio,
-        fecha_fin,
-        hora_salida,
-        hora_regreso,
-        objetivo,
-        actualizado_por,
-        solicitud_id
-    ))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            update solicitudes
+            set empleado_id = %s,
+                empleado_nombre = %s,
+                clientes = %s,
+                ciudades = %s,
+                fecha_inicio = %s,
+                fecha_fin = %s,
+                hora_salida = %s,
+                hora_regreso = %s,
+                objetivo = %s,
+                actualizado_por = %s
+            where id = %s
+        """, (
+            empleado_id,
+            empleado_nombre,
+            clientes,
+            ciudades,
+            fecha_inicio,
+            fecha_fin,
+            hora_salida,
+            hora_regreso,
+            objetivo,
+            actualizado_por,
+            solicitud_id
+        ))
+        conn.commit()
+        cur.close()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def actualizar_estatus_solicitud(
@@ -188,39 +208,49 @@ def actualizar_estatus_solicitud(
     actualizado_por: int,
 ) -> None:
     conn = obtener_conexion()
-    cur = conn.cursor()
-    cur.execute("""
-        update solicitudes
-        set estatus = %s,
-            actualizado_por = %s
-        where id = %s
-    """, (estatus, actualizado_por, solicitud_id))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            update solicitudes
+            set estatus = %s,
+                actualizado_por = %s
+            where id = %s
+        """, (estatus, actualizado_por, solicitud_id))
+        conn.commit()
+        cur.close()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def get_estatus_actual_solicitud(solicitud_id: int) -> Optional[str]:
     conn = obtener_conexion()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    cur.execute(
-        """
-        select estatus
-        from solicitudes
-        where id = %s
-        """,
-        (solicitud_id,),
-    )
+        cur.execute(
+            """
+            select estatus
+            from solicitudes
+            where id = %s
+            """,
+            (solicitud_id,),
+        )
 
-    row = cur.fetchone()
+        row = cur.fetchone()
 
-    cur.close()
-    conn.close()
+        cur.close()
 
-    if not row:
-        return None
+        if not row:
+            return None
 
-    return str(row[0] or "").strip()
+        return str(row[0] or "").strip()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def get_solicitudes_df(
     *,
@@ -231,65 +261,76 @@ def get_solicitudes_df(
     limit: int = 200
 ) -> List[Dict[str, Any]]:
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
+    try:
+        cur = conn.cursor(dictionary=True)
 
-    where = ["1=1"]
-    params: List[Any] = []
+        where = ["1=1"]
+        params: List[Any] = []
 
-    if folio_like.strip():
-        where.append("folio like %s")
-        params.append(f"%{folio_like.strip()}%")
+        if folio_like.strip():
+            where.append("folio like %s")
+            params.append(f"%{folio_like.strip()}%")
 
-    if estatus.strip():
-        where.append("estatus = %s")
-        params.append(estatus.strip())
+        if estatus.strip():
+            where.append("estatus = %s")
+            params.append(estatus.strip())
 
-    if anio is not None:
-        where.append("anio = %s")
-        params.append(int(anio))
+        if anio is not None:
+            where.append("anio = %s")
+            params.append(int(anio))
 
-    if empleado_id is not None:
-        where.append("empleado_id = %s")
-        params.append(int(empleado_id))
+        if empleado_id is not None:
+            where.append("empleado_id = %s")
+            params.append(int(empleado_id))
 
-    sql = f"""
-        select
-          id, folio, anio, consecutivo,
-          empleado_nombre, clientes, ciudades,
-          fecha_inicio, fecha_fin, hora_salida, hora_regreso,
-          estatus, fecha_creacion
-        from solicitudes
-        where {' and '.join(where)}
-        order by id desc
-        limit {int(limit)}
-    """
+        sql = f"""
+            select
+              id, folio, anio, consecutivo,
+              empleado_nombre, clientes, ciudades,
+              fecha_inicio, fecha_fin, hora_salida, hora_regreso,
+              estatus, fecha_creacion
+            from solicitudes
+            where {' and '.join(where)}
+            order by id desc
+            limit {int(limit)}
+        """
 
-    cur.execute(sql, tuple(params))
-    rows = cur.fetchall()
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
 
-    cur.close()
-    conn.close()
-    return rows
+        cur.close()
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def get_solicitud_by_id(solicitud_id: int) -> Optional[Dict[str, Any]]:
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        select *
-        from solicitudes
-        where id = %s
-    """, (solicitud_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            select *
+            from solicitudes
+            where id = %s
+        """, (solicitud_id,))
+        row = cur.fetchone()
+        cur.close()
+        return row
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(
-        """
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
         select
           d.id, d.solicitud_id, d.renglon,
           d.fecha_gasto,
@@ -365,45 +406,59 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
         """,
         (solicitud_id,),
     )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def delete_detalle_ids(solicitud_id: int, detalle_ids: List[int]) -> None:
     if not detalle_ids:
         return
     conn = obtener_conexion()
-    cur = conn.cursor()
-    placeholders = ",".join(["%s"] * len(detalle_ids))
-    params: List[Any] = [solicitud_id] + detalle_ids
-    cur.execute(f"""
-        delete from solicitudes_detalle
-        where solicitud_id = %s
-          and id in ({placeholders})
-    """, tuple(params))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join(["%s"] * len(detalle_ids))
+        params: List[Any] = [solicitud_id] + detalle_ids
+        cur.execute(f"""
+            delete from solicitudes_detalle
+            where solicitud_id = %s
+              and id in ({placeholders})
+        """, tuple(params))
+        conn.commit()
+        cur.close()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def get_conceptos_gasto_rows(activo: int = 1):
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(
-        """
-        select id, concepto, cuenta, prepago, dispersion, fiscales, comprobante
-        from solicitud_concepto_gasto
-        where (%s is null) or (activo = %s)
-        order by concepto
-        """,
-        (activo, activo),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    
-    return rows
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select id, concepto, cuenta, prepago, dispersion, fiscales, comprobante
+            from solicitud_concepto_gasto
+            where (%s is null) or (activo = %s)
+            order by concepto
+            """,
+            (activo, activo),
+        )
+        rows = cur.fetchall()
+        cur.close()
+
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _is_nan(v) -> bool:
@@ -738,30 +793,35 @@ def uuid_ya_usado(uuid: str, exclude_solicitud_id: int | None = None) -> dict | 
 
 def get_conceptos_catalogo_rows(incluir_inactivos: bool = False):
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
+    try:
+        cur = conn.cursor(dictionary=True)
 
-    if incluir_inactivos:
-        cur.execute(
-            """
-            select id, concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo, created_at, updated_at
-            from solicitud_concepto_gasto
-            order by id
-            """
-        )
-    else:
-        cur.execute(
-            """
-            select id, concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo, created_at, updated_at
-            from solicitud_concepto_gasto
-            where activo = 1
-            order by id
-            """
-        )
+        if incluir_inactivos:
+            cur.execute(
+                """
+                select id, concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo, created_at, updated_at
+                from solicitud_concepto_gasto
+                order by id
+                """
+            )
+        else:
+            cur.execute(
+                """
+                select id, concepto, cuenta, fiscales, prepago, dispersion, comprobante, activo, created_at, updated_at
+                from solicitud_concepto_gasto
+                where activo = 1
+                order by id
+                """
+            )
 
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def upsert_concepto_catalogo_rows(rows: list[dict], usuario_id: int):
@@ -856,42 +916,47 @@ def desactivar_conceptos_catalogo(ids: list[int], usuario_id: int):
 
 def get_formas_pago_usuario_rows(id_usuario: int) -> list[dict]:
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(
-        """
-        select
-          id,
-          id_usuario,
-          tipo,
-          entidad_bancaria,
-          moneda,
-          cuenta_contable,
-          ultimos4,
-          numero_tarjeta_enmascarado,
-          vigencia_inicio,
-          vigencia_fin,
-          activo,
-          concat(
-            lower(tipo),
-            case when entidad_bancaria is not null and trim(entidad_bancaria) <> '' then concat(' | ', lower(entidad_bancaria)) else '' end,
-            ' | ', lower(moneda),
-            case
-              when numero_tarjeta_enmascarado is not null and trim(numero_tarjeta_enmascarado) <> '' then concat(' | ', numero_tarjeta_enmascarado)
-              when ultimos4 is not null and trim(ultimos4) <> '' then concat(' | **** ', ultimos4)
-              else ''
-            end
-          ) as etiqueta
-        from usuarios_forma_pago
-        where id_usuario = %s
-          and activo = 1
-        order by tipo, entidad_bancaria, moneda, id desc
-        """,
-        (int(id_usuario),),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select
+              id,
+              id_usuario,
+              tipo,
+              entidad_bancaria,
+              moneda,
+              cuenta_contable,
+              ultimos4,
+              numero_tarjeta_enmascarado,
+              vigencia_inicio,
+              vigencia_fin,
+              activo,
+              concat(
+                lower(tipo),
+                case when entidad_bancaria is not null and trim(entidad_bancaria) <> '' then concat(' | ', lower(entidad_bancaria)) else '' end,
+                ' | ', lower(moneda),
+                case
+                  when numero_tarjeta_enmascarado is not null and trim(numero_tarjeta_enmascarado) <> '' then concat(' | ', numero_tarjeta_enmascarado)
+                  when ultimos4 is not null and trim(ultimos4) <> '' then concat(' | **** ', ultimos4)
+                  else ''
+                end
+              ) as etiqueta
+            from usuarios_forma_pago
+            where id_usuario = %s
+              and activo = 1
+            order by tipo, entidad_bancaria, moneda, id desc
+            """,
+            (int(id_usuario),),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _mask_tarjeta(num: str) -> tuple[str | None, str | None]:
@@ -1106,40 +1171,50 @@ def set_dispersion_flag(solicitud_id: int, flag: str, value: bool, user_id: int)
 
 def get_unidades_negocio_rows() -> list[dict]:
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(
-        """
-        select id, nombre
-        from Unidades_Negocio
-        where coalesce(estatus, 1) = 1
-        order by nombre
-        """
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select id, nombre
+            from Unidades_Negocio
+            where coalesce(estatus, 1) = 1
+            order by nombre
+            """
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def get_detalle_unidades_rows(solicitud_detalle_id: int) -> list[dict]:
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(
-        """
-        select
-            id,
-            solicitud_detalle_id,
-            id_unidad,
-            porcentaje
-        from solicitudes_detalle_un
-        where solicitud_detalle_id = %s
-        order by id
-        """,
-        (int(solicitud_detalle_id),),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select
+                id,
+                solicitud_detalle_id,
+                id_unidad,
+                porcentaje
+            from solicitudes_detalle_un
+            where solicitud_detalle_id = %s
+            order by id
+            """,
+            (int(solicitud_detalle_id),),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def guardar_detalle_unidades_rows(
     solicitud_detalle_id: int,
@@ -1356,50 +1431,60 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
 
 def get_detalle_contabilidad_view(solicitud_id: int):
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
+    try:
+        cur = conn.cursor(dictionary=True)
 
-    cur.execute(
-        """
-        select *
-        from vw_solicitudes_revision_contabilidad
-        where solicitud_id = %s
-        order by fecha
-        """,
-        (int(solicitud_id),),
-    )
+        cur.execute(
+            """
+            select *
+            from vw_solicitudes_revision_contabilidad
+            where solicitud_id = %s
+            order by fecha
+            """,
+            (int(solicitud_id),),
+        )
 
-    rows = cur.fetchall()
+        rows = cur.fetchall()
 
-    cur.close()
-    conn.close()
+        cur.close()
 
-    return rows
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 
 def get_pdf_by_uuid(uuid: str):
     conn = obtener_conexion()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    cur.execute(
-        """
-        select ARCHIVO, NOMBRE_ARCHIVO
-        from DATOSCFD_PDF
-        where upper(trim(UUID)) = upper(trim(%s))
-        limit 1
-        """,
-        (uuid,),
-    )
+        cur.execute(
+            """
+            select ARCHIVO, NOMBRE_ARCHIVO
+            from DATOSCFD_PDF
+            where upper(trim(UUID)) = upper(trim(%s))
+            limit 1
+            """,
+            (uuid,),
+        )
 
-    row = cur.fetchone()
+        row = cur.fetchone()
 
-    cur.close()
-    conn.close()
+        cur.close()
 
-    if not row:
-        return None, None
+        if not row:
+            return None, None
 
-    return row[0], row[1]
+        return row[0], row[1]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def get_comprobantes_by_detalle_ids(detalle_ids: list[int]) -> dict[int, dict]:
     if not detalle_ids:
@@ -1500,51 +1585,64 @@ def get_detalle_poliza_solicitud(solicitud_id: int) -> list[dict]:
 
 def get_comprobante_by_detalle_id(solicitud_detalle_id: int):
     conn = obtener_conexion()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    cur.execute(
-        """
-        select ID_PDF, ARCHIVO, NOMBRE_ARCHIVO
-        from DATOSCFD_PDF
-        where id_comprobante_detalle = %s
-        order by ID_PDF desc
-        limit 1
-        """,
-        (int(solicitud_detalle_id),),
-    )
+        cur.execute(
+            """
+            select ID_PDF, ARCHIVO, NOMBRE_ARCHIVO
+            from DATOSCFD_PDF
+            where id_comprobante_detalle = %s
+            order by ID_PDF desc
+            limit 1
+            """,
+            (int(solicitud_detalle_id),),
+        )
 
-    row = cur.fetchone()
+        row = cur.fetchone()
 
-    cur.close()
-    conn.close()
+        cur.close()
 
-    if not row:
-        return None
+        if not row:
+            return None
 
-    return {
-        "id_pdf": row[0],
-        "archivo": row[1],
-        "nombre_archivo": row[2],
-    }
+        return {
+            "id_pdf": row[0],
+            "archivo": row[1],
+            "nombre_archivo": row[2],
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def get_comprobantes_by_solicitud(solicitud_id: int):
     conn = obtener_conexion()
-    cur = conn.cursor(dictionary=True)
+    try:
+        cur = conn.cursor(dictionary=True)
 
-    cur.execute("""
-        SELECT
-            id_comprobante_detalle,
-            ARCHIVO,
-            NOMBRE_ARCHIVO
-        FROM DATOSCFD_PDF
-        WHERE id_comprobante_detalle IN (
-            SELECT id FROM solicitudes_detalle 
-            WHERE solicitud_id = %s
-        )
-    """, (solicitud_id,))
+        cur.execute("""
+            SELECT
+                id_comprobante_detalle,
+                ARCHIVO,
+                NOMBRE_ARCHIVO
+            FROM DATOSCFD_PDF
+            WHERE id_comprobante_detalle IN (
+                SELECT id FROM solicitudes_detalle
+                WHERE solicitud_id = %s
+            )
+        """, (solicitud_id,))
 
-    return cur.fetchall()
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def get_datoscfd_by_uuids(uuids: list[str]) -> list[dict]:
@@ -1681,54 +1779,59 @@ def insertar_solicitud_estatus(
 ) -> int:
 
     conn = obtener_conexion()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    cur.execute(
-        """
-        insert into solicitudes_estatus (
-            solicitud_id,
-            estatus_anterior,
-            estatus_nuevo,
-            tipo,
-            metodo,
-            usuario_id,
-            usuario_nombre,
-            usuario_email,
-            comentario
+        cur.execute(
+            """
+            insert into solicitudes_estatus (
+                solicitud_id,
+                estatus_anterior,
+                estatus_nuevo,
+                tipo,
+                metodo,
+                usuario_id,
+                usuario_nombre,
+                usuario_email,
+                comentario
+            )
+            values (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
+            )
+            """,
+            (
+                solicitud_id,
+                estatus_anterior,
+                estatus_nuevo,
+                tipo,
+                metodo,
+                usuario_id,
+                usuario_nombre,
+                usuario_email,
+                comentario,
+            ),
         )
-        values (
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s
-        )
-        """,
-        (
-            solicitud_id,
-            estatus_anterior,
-            estatus_nuevo,
-            tipo,
-            metodo,
-            usuario_id,
-            usuario_nombre,
-            usuario_email,
-            comentario,
-        ),
-    )
 
-    nuevo_id = cur.lastrowid
+        nuevo_id = cur.lastrowid
 
-    conn.commit()
+        conn.commit()
 
-    cur.close()
-    conn.close()
+        cur.close()
 
-    return int(nuevo_id)
+        return int(nuevo_id)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     
 def listar_solicitud_estatus(solicitud_id: int) -> list[dict]:
     cn = obtener_conexion()
