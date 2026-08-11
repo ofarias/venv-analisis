@@ -68,25 +68,31 @@ def obtener_usuarios():
     conn.close()
     return usuarios
 
-def obtener_documentos_por_usuario(username, tipo=None, fecha_ini=None, fecha_fin=None, titulo=None):
+def obtener_documentos_por_usuario(username, roles_usuario=None, tipo=None, fecha_ini=None, fecha_fin=None, documento_id=None):
+    """Documentos visibles para el usuario: por permiso explícito (permisos_documento)
+    O por rol (tipos_documento.nombre in roles_usuario), igual que en el módulo Navegar."""
     conn = obtener_conexion()
     cursor = conn.cursor(dictionary=True)
-    
-    query = """SELECT 
-                    d.id AS docID, d.*, p.*, t.nombre AS tipo,
+
+    roles_usuario = roles_usuario or []
+    roles_placeholders = ",".join(["%s"] * len(roles_usuario)) if roles_usuario else "NULL"
+
+    query = f"""SELECT
+                    d.id AS docID, d.*, t.nombre AS tipo,
+                    p.puede_editar, p.puede_eliminar,
                     v.archivo, v.extension
                 FROM documentos d
-                JOIN permisos_documento p ON p.documento_id = d.id
                 JOIN tipos_documento t ON t.id = d.tipo_id
-                LEFT JOIN versiones_documento v 
-                    ON v.documento_id = d.id 
+                LEFT JOIN permisos_documento p ON p.documento_id = d.id AND p.username = %s
+                LEFT JOIN versiones_documento v
+                    ON v.documento_id = d.id
                     AND v.version = (
                         SELECT MAX(v2.version)
                         FROM versiones_documento v2
                         WHERE v2.documento_id = d.id
                     )
-                WHERE p.username = %s"""
-    params = [username]
+                WHERE (p.username IS NOT NULL OR t.nombre IN ({roles_placeholders}))"""
+    params = [username, *roles_usuario]
 
     if tipo:
         query += " AND d.tipo_id = %s"
@@ -97,9 +103,9 @@ def obtener_documentos_por_usuario(username, tipo=None, fecha_ini=None, fecha_fi
     if fecha_fin:
         query += " AND d.fecha_creacion <= %s"
         params.append(fecha_fin)
-    if titulo:
-        query += " AND d.titulo LIKE %s"
-        params.append(f"%{titulo}%")
+    if documento_id:
+        query += " AND d.id = %s"
+        params.append(documento_id)
 
     cursor.execute(query, params)
 
@@ -115,6 +121,31 @@ def obtener_documentos_por_usuario(username, tipo=None, fecha_ini=None, fecha_fi
         doc["permisos"] = permisos
 
     return docs
+
+
+def obtener_documentos_accesibles_resumen(username, roles_usuario=None):
+    """Lista liviana (id, título, nombre_archivo) de los documentos que el usuario
+    puede ver (por permiso explícito o por rol), para poblar el selector de búsqueda."""
+    conn = obtener_conexion()
+    cursor = conn.cursor(dictionary=True)
+    roles_usuario = roles_usuario or []
+    roles_placeholders = ",".join(["%s"] * len(roles_usuario)) if roles_usuario else "NULL"
+    cursor.execute(f"""
+        SELECT d.id, d.titulo, vd.nombre_archivo
+        FROM documentos d
+        JOIN tipos_documento t ON t.id = d.tipo_id
+        LEFT JOIN permisos_documento p ON p.documento_id = d.id AND p.username = %s
+        LEFT JOIN versiones_documento vd
+            ON vd.documento_id = d.id
+            AND vd.version = (
+                SELECT MAX(v2.version) FROM versiones_documento v2 WHERE v2.documento_id = d.id
+            )
+        WHERE (p.username IS NOT NULL OR t.nombre IN ({roles_placeholders}))
+        ORDER BY d.titulo
+    """, (username, *roles_usuario))
+    filas = cursor.fetchall()
+    conn.close()
+    return filas
 
 
 def actualizar_documento(documento_id, nuevo_titulo, nueva_descripcion, nuevo_tipo_id):
