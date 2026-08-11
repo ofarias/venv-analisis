@@ -147,14 +147,19 @@ def mostrar_documentos():
             ## st.markdown(f"**Carpeta:** {doc['tipo']}")
             st.markdown(f"**Fecha:** {doc['fecha_creacion']} | **Creado por:** {doc['creado_por']}")
 
-            if "Ver" in doc["permisos"] and doc.get("archivo"):
-                st.download_button(
-                    "⬇️ Descargar",
-                    data=doc["archivo"],
-                    file_name= (f"{doc['titulo']}.{doc['extension']}"),
-                    mime="application/octet-stream",
-                    key=f"download_aggrid_{doc['id']}"
-                )
+            if "Ver" in doc["permisos"]:
+                # El archivo se lee bajo demanda aquí, solo para el documento
+                # seleccionado — el listado ya no trae el BLOB de todos los
+                # documentos (mismo fix de performance aplicado en Navegar).
+                archivo_actual = obtener_archivo_actual(doc_id)
+                if archivo_actual and archivo_actual.get("archivo"):
+                    st.download_button(
+                        "⬇️ Descargar",
+                        data=archivo_actual["archivo"],
+                        file_name= (f"{doc['titulo']}.{doc['extension']}"),
+                        mime="application/octet-stream",
+                        key=f"download_aggrid_{doc['id']}"
+                    )
 
             if not puede_editar:
                 st.info("🔒 No tienes permiso de edición sobre este documento — solo puedes verlo y descargarlo.")

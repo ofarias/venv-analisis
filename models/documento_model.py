@@ -80,7 +80,7 @@ def obtener_documentos_por_usuario(username, roles_usuario=None, tipo=None, fech
     query = f"""SELECT
                     d.id AS docID, d.*, t.nombre AS tipo,
                     p.puede_editar, p.puede_eliminar,
-                    v.archivo, v.extension
+                    v.extension
                 FROM documentos d
                 JOIN tipos_documento t ON t.id = d.tipo_id
                 LEFT JOIN permisos_documento p ON p.documento_id = d.id AND p.username = %s
@@ -121,6 +121,23 @@ def obtener_documentos_por_usuario(username, roles_usuario=None, tipo=None, fech
         doc["permisos"] = permisos
 
     return docs
+
+
+def obtener_archivo_actual(documento_id):
+    """Trae el archivo (bytes) de la última versión de un documento, bajo demanda
+    (solo se llama para el documento que el usuario tiene seleccionado)."""
+    conn = obtener_conexion()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT archivo, nombre_archivo, extension
+        FROM versiones_documento
+        WHERE documento_id = %s
+        ORDER BY version DESC
+        LIMIT 1
+    """, (documento_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
 
 
 def obtener_documentos_accesibles_resumen(username, roles_usuario=None):

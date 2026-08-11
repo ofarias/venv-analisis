@@ -36,6 +36,14 @@ def obtener_usuarios_tipo(tipo_id):
     conn.close()
     return [r[0] for r in rows]
 
+def existe_rol(nombre):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM roles WHERE nombre = %s", (nombre,))
+    existe = cursor.fetchone()[0] > 0
+    conn.close()
+    return existe
+
 def obtener_todos_usuarios():
     conn = obtener_conexion()
     cursor = conn.cursor()
@@ -108,6 +116,12 @@ def crear_tipo(nombre, padre_id=None, imagen_nombre=None, descripcion_nueva=None
         conn = obtener_conexion()
         cursor = conn.cursor()
         cursor.execute("INSERT INTO tipos_documento (nombre, padre_id, imagen, descripcion) VALUES (%s, %s, %s, %s)", (nombre, padre_id, imagen_nombre, descripcion_nueva))
+        # El acceso por rol compara tipo.nombre == rol.nombre en toda la app:
+        # sin esto, el tipo recién creado quedaba sin nadie con acceso hasta
+        # que alguien creara el rol manualmente en Administración de roles.
+        cursor.execute("SELECT COUNT(*) FROM roles WHERE nombre = %s", (nombre,))
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO roles (nombre) VALUES (%s)", (nombre,))
         conn.commit()
         return True
     except Exception as e:
@@ -144,7 +158,17 @@ def eliminar_tipo(id):
         if usados > 0:
             st.error(f"⛔ No se puede eliminar el tipo porque está asociado a {usados} documento(s).")
             return False
+        cursor.execute("SELECT nombre FROM tipos_documento WHERE id = %s", (id,))
+        row = cursor.fetchone()
+        nombre_tipo = row[0] if row else None
         cursor.execute("DELETE FROM tipos_documento WHERE id = %s", (id,))
+        # Solo borramos el rol huérfano si ningún OTRO tipo sigue usando ese
+        # nombre — hay 7 nombres duplicados en la base (hasta 12 veces), y
+        # borrar el rol rompería el acceso de los tipos hermanos que quedan.
+        if nombre_tipo:
+            cursor.execute("SELECT COUNT(*) FROM tipos_documento WHERE nombre = %s AND id != %s", (nombre_tipo, id))
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("DELETE FROM roles WHERE nombre = %s", (nombre_tipo,))
         conn.commit()
         return True
     except Exception as e:
@@ -171,7 +195,7 @@ def construir_jerarquia(tipos):
     return resultado
 
 def mostrar_admin_tipos():
-    st.subheader("🗂️ Tipos y subtipos de documento Test")
+    st.subheader("🗂️ Tipos y subtipos de documento")
 
     tab_crear, tab_admin = st.tabs(["🆕 Crear tipo", "🛠️ Administrar tipos"])
 
@@ -239,10 +263,14 @@ def mostrar_admin_tipos():
                 with col1:
                     nuevo_nombre = st.text_input(f"Nombre tipo #{tipo['id']}", tipo['nombre'], key=f"nombre_{tipo['id']}")
                 with col2:
+                    # Excluye el tipo mismo y todos sus descendientes: elegir uno
+                    # de ellos como nuevo padre crearía un ciclo infinito en la
+                    # jerarquía (rompe get_logical_type_path, Navegar, etc.).
+                    descendientes = set(obtener_ids_hijos(tipo['id'], tipos))
                     opciones_padre = {
                         rutas[tid]: tid
                         for tid in rutas
-                        if tid != tipo['id']
+                        if tid != tipo['id'] and tid not in descendientes
                     }
                     opciones_padre["(Sin padre – tipo raíz)"] = None
                     padre_actual = tipo.get("padre_id")
@@ -261,13 +289,23 @@ def mostrar_admin_tipos():
                 col_guardar, col_eliminar = st.columns([1, 1])
                 with col_guardar:
                     if st.button("Guardar", key=f"guardar_{tipo['id']}"):
-                        if nueva_imagen:
-                            with open(f"static/tipos/{nueva_imagen.name}", "wb") as f:
-                                f.write(nueva_imagen.read())
-                        if actualizar_tipo(tipo['id'], nuevo_nombre, nuevo_padre_id, nombre_nueva_imagen, nueva_descripcion):
-                            registrar_log(st.session_state["usuario"]["username"], "Editar tipo documento", nuevo_nombre)
-                            st.success("✅ Actualizado")
-                            st.rerun()
+                        # El acceso por rol compara tipo.nombre == rol.nombre en toda
+                        # la app: renombrar sin un rol que coincida deja el acceso de
+                        # los usuarios actuales apuntando a un nombre que ya no existe.
+                        if nuevo_nombre != tipo['nombre'] and not existe_rol(nuevo_nombre):
+                            st.error(
+                                f"⛔ No existe un rol llamado '{nuevo_nombre}'. Créalo primero en "
+                                "Administración de roles — si renombras ahora, los usuarios que "
+                                "tienen acceso por rol a este tipo lo perderán."
+                            )
+                        else:
+                            if nueva_imagen:
+                                with open(f"static/tipos/{nueva_imagen.name}", "wb") as f:
+                                    f.write(nueva_imagen.read())
+                            if actualizar_tipo(tipo['id'], nuevo_nombre, nuevo_padre_id, nombre_nueva_imagen, nueva_descripcion):
+                                registrar_log(st.session_state["usuario"]["username"], "Editar tipo documento", nuevo_nombre)
+                                st.success("✅ Actualizado")
+                                st.rerun()
                 with col_eliminar:
                     if st.button("🗑️", key=f"eliminar_{tipo['id']}"):
                         if eliminar_tipo(tipo['id']):
@@ -338,8 +376,6 @@ def mostrar_admin_tipos():
                         tipos_dict_by_id = {t["id"]: t for t in tipos}
 
                         def obtener_id_rol_por_nombre(nombre_tipo):
-                            st.write(nombre_tipo)
-                            
                             conn = obtener_conexion()
                             cursor = conn.cursor()
                             cursor.execute("SELECT id FROM roles WHERE nombre = %s", (nombre_tipo,))
@@ -388,48 +424,102 @@ def mostrar_admin_tipos():
                         conn = obtener_conexion()
                         cursor = conn.cursor()
 
-                        # permisos sobre tipos (usuarios_roles)
+                        usuarios_afectados = list(agregados | eliminados)
+
+                        # permisos sobre tipos (usuarios_roles) — batched: antes hacía
+                        # 2 queries por tipo x usuario; para jerarquías con decenas de
+                        # subtipos esto podía ser cientos de round-trips por clic.
+                        rutas_por_rol = {}
                         for tipo_id_heredar in tipos_a_heredar:
                             nombre_tipo = tipos_dict_by_id.get(tipo_id_heredar, {}).get("nombre")
                             id_rol = obtener_id_rol_por_nombre(nombre_tipo)
                             if not id_rol:
                                 continue
                             ruta_completa = get_logical_type_path(tipo_id_heredar)
+                            rutas_por_rol.setdefault(id_rol, []).append(ruta_completa)
 
+                        ids_roles = list(rutas_por_rol.keys())
+                        roles_existentes = set()
+                        if ids_roles and usuarios_afectados:
+                            ph_roles = ",".join(["%s"] * len(ids_roles))
+                            ph_users = ",".join(["%s"] * len(usuarios_afectados))
+                            cursor.execute(
+                                f"SELECT id_rol, username FROM usuarios_roles "
+                                f"WHERE id_rol IN ({ph_roles}) AND username IN ({ph_users})",
+                                (*ids_roles, *usuarios_afectados)
+                            )
+                            roles_existentes = {(r[0], r[1]) for r in cursor.fetchall()}
+
+                        filas_roles_insertar, filas_roles_borrar = [], []
+                        for id_rol, rutas in rutas_por_rol.items():
                             for usuario in agregados:
-                                cursor.execute("SELECT COUNT(*) FROM usuarios_roles WHERE username = %s AND id_rol = %s", (usuario, id_rol))
-                                if cursor.fetchone()[0] == 0:
-                                    cursor.execute("INSERT INTO usuarios_roles (username, id_rol) VALUES (%s, %s)", (usuario, id_rol))
-                                    resumen_cambios[usuario]["carpetas"].append(ruta_completa)
-
+                                if (id_rol, usuario) not in roles_existentes:
+                                    filas_roles_insertar.append((usuario, id_rol))
+                                    resumen_cambios[usuario]["carpetas"].extend(rutas)
                             for usuario in eliminados:
-                                cursor.execute("SELECT COUNT(*) FROM usuarios_roles WHERE username = %s AND id_rol = %s", (usuario, id_rol))
-                                if cursor.fetchone()[0] > 0:
-                                    cursor.execute("DELETE FROM usuarios_roles WHERE username = %s AND id_rol = %s", (usuario, id_rol))
-                                    resumen_eliminados[usuario]["carpetas"].append(ruta_completa)
+                                if (id_rol, usuario) in roles_existentes:
+                                    filas_roles_borrar.append((usuario, id_rol))
+                                    resumen_eliminados[usuario]["carpetas"].extend(rutas)
 
-                        # permisos sobre documentos
-                        for doc_id in documentos_a_heredar:
-                            cursor.execute("SELECT nombre_archivo FROM versiones_documento WHERE documento_id = %s ORDER BY version DESC LIMIT 1", (doc_id,))
-                            row = cursor.fetchone()
-                            archivo_nombre = row[0] if row else None
+                        if filas_roles_insertar:
+                            cursor.executemany("INSERT INTO usuarios_roles (username, id_rol) VALUES (%s, %s)", filas_roles_insertar)
+                        if filas_roles_borrar:
+                            cursor.executemany("DELETE FROM usuarios_roles WHERE username = %s AND id_rol = %s", filas_roles_borrar)
 
+                        # permisos sobre documentos (permisos_documento) — mismo batching:
+                        # para tipos con cientos de documentos esto podía ser miles de
+                        # round-trips por clic (ya vimos hasta 385 documentos en un tipo).
+                        ids_docs = list(documentos_a_heredar)
+                        archivo_nombres = {}
+                        if ids_docs:
+                            ph_docs = ",".join(["%s"] * len(ids_docs))
+                            cursor.execute(f"""
+                                SELECT vd.documento_id, vd.nombre_archivo
+                                FROM versiones_documento vd
+                                JOIN (
+                                    SELECT documento_id, MAX(version) AS ultima_version
+                                    FROM versiones_documento
+                                    WHERE documento_id IN ({ph_docs})
+                                    GROUP BY documento_id
+                                ) ult ON ult.documento_id = vd.documento_id AND ult.ultima_version = vd.version
+                            """, ids_docs)
+                            archivo_nombres = {r[0]: r[1] for r in cursor.fetchall()}
+
+                        permisos_existentes = set()
+                        if ids_docs and usuarios_afectados:
+                            ph_docs = ",".join(["%s"] * len(ids_docs))
+                            ph_users = ",".join(["%s"] * len(usuarios_afectados))
+                            cursor.execute(
+                                f"SELECT documento_id, username FROM permisos_documento "
+                                f"WHERE documento_id IN ({ph_docs}) AND username IN ({ph_users})",
+                                (*ids_docs, *usuarios_afectados)
+                            )
+                            permisos_existentes = {(r[0], r[1]) for r in cursor.fetchall()}
+
+                        filas_docs_insertar, filas_docs_borrar = [], []
+                        for doc_id in ids_docs:
+                            archivo_nombre = archivo_nombres.get(doc_id)
                             for usuario in agregados:
-                                cursor.execute("SELECT COUNT(*) FROM permisos_documento WHERE documento_id = %s AND username = %s", (doc_id, usuario))
-                                if cursor.fetchone()[0] == 0:
-                                    cursor.execute("""
-                                        INSERT INTO permisos_documento (documento_id, username, puede_editar, puede_eliminar) 
-                                        VALUES (%s, %s, 1, 1)
-                                    """, (doc_id, usuario))
+                                if (doc_id, usuario) not in permisos_existentes:
+                                    filas_docs_insertar.append((doc_id, usuario))
                                     if archivo_nombre:
                                         resumen_cambios[usuario]["documentos"].append(archivo_nombre)
-
                             for usuario in eliminados:
-                                cursor.execute("SELECT COUNT(*) FROM permisos_documento WHERE documento_id = %s AND username = %s", (doc_id, usuario))
-                                if cursor.fetchone()[0] > 0:
-                                    cursor.execute("DELETE FROM permisos_documento WHERE documento_id = %s AND username = %s", (doc_id, usuario))
+                                if (doc_id, usuario) in permisos_existentes:
+                                    filas_docs_borrar.append((doc_id, usuario))
                                     if archivo_nombre:
                                         resumen_eliminados[usuario]["documentos"].append(archivo_nombre)
+
+                        if filas_docs_insertar:
+                            cursor.executemany(
+                                "INSERT INTO permisos_documento (documento_id, username, puede_editar, puede_eliminar) VALUES (%s, %s, 1, 1)",
+                                filas_docs_insertar
+                            )
+                        if filas_docs_borrar:
+                            cursor.executemany(
+                                "DELETE FROM permisos_documento WHERE documento_id = %s AND username = %s",
+                                filas_docs_borrar
+                            )
 
                         conn.commit()
                         conn.close()

@@ -175,7 +175,6 @@ else:
         menu_opciones[" Ventas"] = "ventas"
         
         menu_opciones["⚙️ Configuración del sistema"] = "config"
-        menu_opciones["📂 Ver documentos test"] = "ver_docs_test"
         menu_opciones["🗂️ Admin Tipos Test"] = "tipos_documento_test"
         menu_opciones[" Test"] = "test"
         menu_opciones["Test Navegacion"] = "test_navegacion"
@@ -198,7 +197,6 @@ else:
         menu_opciones["🧑🏻‍💻 Navegar"] = "navegar"
         menu_opciones["📂 Ver documentos"] = "ver_docs"
         menu_opciones["📤 Subir documento"] = "subir_doc"
-        menu_opciones["🕓 Historial de versiones"] = "historial_versiones"
         menu_opciones["🗂️ Tipos de documento"] = "tipos_documento"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
         menu_opciones["🐇 Carga Multiple"] = "carga_multiple"
@@ -299,15 +297,9 @@ else:
         elif modulo == "ver_docs":
             from views.modulos_documentos.ver_documentos import mostrar_documentos
             mostrar_documentos()
-        elif modulo == "ver_docs_test":
-            from views.modulos_documentos.ver_documentos_test import mostrar_documentos
-            mostrar_documentos()
         elif modulo == "subir_doc":
             from views.modulos_documentos.subir_documento import mostrar_formulario_subida
             mostrar_formulario_subida()
-        #elif modulo == "historial_versiones":
-            #from views.modulos_documentos.historial_versiones import mostrar_historial_versiones
-            #mostrar_historial_versiones()
         elif modulo == "tipos_documento":
             from views.modulos_documentos.admin_tipos import mostrar_admin_tipos
             mostrar_admin_tipos()
