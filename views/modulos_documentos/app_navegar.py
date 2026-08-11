@@ -1,64 +1,78 @@
 import streamlit as st
 import os
 from database.conexion import obtener_conexion
-from PIL import Image
+from settings import BASE_DIR
 import base64
-import pandas as pd
-import streamlit.components.v1 as components
-import textwrap
-import urllib.parse
-from urllib.parse import quote
+import html
+
+DOCS_POR_PAGINA = 25
+
+
+def _ruta_desde_tipo(cursor, tipo_id):
+    """Sube por la jerarquía de tipos_documento y arma la ruta 'padre/.../nombre'."""
+    segments = []
+    while tipo_id:
+        cursor.execute(
+            "SELECT nombre, padre_id FROM tipos_documento WHERE id = %s",
+            (tipo_id,)
+        )
+        tr = cursor.fetchone()
+        if not tr:
+            break
+        segments.insert(0, tr["nombre"])
+        tipo_id = tr["padre_id"]
+    return "/".join(segments)
+
 
 def obtener_ruta(documento_id):
     conn = obtener_conexion()
     cursor = conn.cursor(dictionary=True)
-    # 1) Obtenemos el tipo_id del documento
     cursor.execute("SELECT tipo_id FROM documentos WHERE id = %s", (documento_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
         return ""
-    tipo_id = row["tipo_id"]
-
-    # 2) Subimos por la jerarquía de tipos_documento
-    segments = []
-    while tipo_id:
-        cursor.execute(
-            "SELECT nombre, padre_id FROM tipos_documento WHERE id = %s",
-            (tipo_id,)
-        )
-        tr = cursor.fetchone()
-        if not tr:
-            break
-        segments.insert(0, tr["nombre"])
-        tipo_id = tr["padre_id"]
-
+    ruta = _ruta_desde_tipo(cursor, row["tipo_id"])
     conn.close()
-    return "/".join(segments)
+    return ruta
 
 
 def ruta_directorio(tipo_id):
     conn = obtener_conexion()
     cursor = conn.cursor(dictionary=True)
-    segments = []
-    while tipo_id:
-        cursor.execute(
-            "SELECT nombre, padre_id FROM tipos_documento WHERE id = %s",
-            (tipo_id,)
-        )
-        tr = cursor.fetchone()
-        if not tr:
-            break
-        segments.insert(0, tr["nombre"])
-        tipo_id = tr["padre_id"]
-
+    ruta = _ruta_desde_tipo(cursor, tipo_id)
     conn.close()
-    return "/".join(segments)
+    return ruta
 
-def buscar_documentos(query):
-    sql = """
+def buscar_documentos(query, pagina=1, por_pagina=DOCS_POR_PAGINA):
+    # Escapamos los comodines de LIKE (%, _) y el backslash, para que una
+    # búsqueda literal como "50%" no se interprete como wildcard.
+    query_escapada = query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    like = f"%{query_escapada}%"
+
+    conn = obtener_conexion()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT COUNT(*) AS total
+        FROM documentos d
+        JOIN (
+            SELECT documento_id, MAX(version) AS ultima_version
+            FROM versiones_documento
+            GROUP BY documento_id
+        ) ult ON d.id = ult.documento_id
+        JOIN versiones_documento vd
+          ON d.id = vd.documento_id AND vd.version = ult.ultima_version
+        WHERE d.titulo LIKE %s OR vd.nombre_archivo LIKE %s
+    """, (like, like))
+    total = cursor.fetchone()["total"]
+    total_paginas = max(1, -(-total // por_pagina))
+    pagina = min(max(pagina, 1), total_paginas)
+    offset = (pagina - 1) * por_pagina
+
+    cursor.execute("""
         SELECT d.id, d.titulo, d.descripcion, d.creado_por, d.fecha_creacion, d.estatus,
-               vd.nombre_archivo, vd.tamaño, vd.extension, vd.fecha_subida, vd.archivo,
+               vd.nombre_archivo, vd.tamaño, vd.extension, vd.fecha_subida,
                vd.version AS version_actual, vd.comentario, vd.subido_por, vd.extension as tipo, td.nombre as tipo_nombre
         FROM documentos d
         JOIN tipos_documento td on td.id = d.tipo_id
@@ -67,31 +81,64 @@ def buscar_documentos(query):
             FROM versiones_documento
             GROUP BY documento_id
         ) ult ON d.id = ult.documento_id
-        JOIN versiones_documento vd 
+        JOIN versiones_documento vd
           ON d.id = vd.documento_id AND vd.version = ult.ultima_version
         WHERE d.titulo LIKE %s OR vd.nombre_archivo LIKE %s
         ORDER BY d.fecha_creacion DESC
-    """
-    like = f"%%{query}%%"
-    conn = obtener_conexion()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(sql, (like, like))
+        LIMIT %s OFFSET %s
+    """, (like, like, por_pagina, offset))
     docs = cursor.fetchall()
     conn.close()
-    return docs
+    return docs, total
 
 
 def obtener_permisos_documento(documento_id):
     conn = obtener_conexion()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT * 
-        FROM permisos_documento 
+        SELECT *
+        FROM permisos_documento
         WHERE documento_id = %s
     """, (documento_id,))
     perms = cursor.fetchall()
     conn.close()
     return perms
+
+
+def obtener_permisos_documentos(documento_ids):
+    """Trae los permisos de varios documentos en una sola query, agrupados por documento_id."""
+    if not documento_ids:
+        return {}
+    conn = obtener_conexion()
+    cursor = conn.cursor(dictionary=True)
+    placeholders = ",".join(["%s"] * len(documento_ids))
+    cursor.execute(
+        f"SELECT * FROM permisos_documento WHERE documento_id IN ({placeholders})",
+        tuple(documento_ids)
+    )
+    perms = cursor.fetchall()
+    conn.close()
+    permisos_por_doc = {}
+    for p in perms:
+        permisos_por_doc.setdefault(p["documento_id"], []).append(p)
+    return permisos_por_doc
+
+
+def obtener_archivo_documento(documento_id):
+    """Trae el archivo (bytes) de la última versión de un documento, bajo demanda
+    (solo se llama para documentos autorizados que el usuario está viendo)."""
+    conn = obtener_conexion()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT archivo, nombre_archivo, extension
+        FROM versiones_documento
+        WHERE documento_id = %s
+        ORDER BY version DESC
+        LIMIT 1
+    """, (documento_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
 
 
 def format_size(size_in_bytes):
@@ -110,144 +157,105 @@ def img_to_datauri(path, width=16):
         b64 = base64.b64encode(f.read()).decode()
     return f'data:image/png;base64,{b64}'
 # Mapa de iconos
+ICONS_DIR = os.path.join(BASE_DIR, "Media", "icons")
 ICON_MAP = {
-    'xlsx': img_to_datauri('/home/ofarias/venv-analisis/Media/icons/xlsx.png'),
-    'xls':  img_to_datauri('/home/ofarias/venv-analisis/Media/icons/xlsx.png'),
-    'pdf':  img_to_datauri('/home/ofarias/venv-analisis/Media/icons/pdf.png'),
-    'txt':  img_to_datauri('/home/ofarias/venv-analisis/Media/icons/txt.png'),
-    'docx': img_to_datauri('/home/ofarias/venv-analisis/Media/icons/word.png'),
-    'doc':  img_to_datauri('/home/ofarias/venv-analisis/Media/icons/word.png'),
-    'pptx': img_to_datauri('/home/ofarias/venv-analisis/Media/icons/pptx.png'),
-    'ppt':  img_to_datauri('/home/ofarias/venv-analisis/Media/icons/pptx.png'),
-    'png':  img_to_datauri('/home/ofarias/venv-analisis/Media/icons/png.png'),
-    'jpg':  img_to_datauri('/home/ofarias/venv-analisis/Media/icons/jpg.png'),
-    'jpeg': img_to_datauri('/home/ofarias/venv-analisis/Media/icons/jpeg.png'),
+    'xlsx': img_to_datauri(os.path.join(ICONS_DIR, 'xlsx.png')),
+    'xls':  img_to_datauri(os.path.join(ICONS_DIR, 'xlsx.png')),
+    'pdf':  img_to_datauri(os.path.join(ICONS_DIR, 'pdf.png')),
+    'txt':  img_to_datauri(os.path.join(ICONS_DIR, 'txt.png')),
+    'docx': img_to_datauri(os.path.join(ICONS_DIR, 'word.png')),
+    'doc':  img_to_datauri(os.path.join(ICONS_DIR, 'word.png')),
+    'pptx': img_to_datauri(os.path.join(ICONS_DIR, 'pptx.png')),
+    'ppt':  img_to_datauri(os.path.join(ICONS_DIR, 'pptx.png')),
+    'png':  img_to_datauri(os.path.join(ICONS_DIR, 'png.png')),
+    'jpg':  img_to_datauri(os.path.join(ICONS_DIR, 'jpg.png')),
+    'jpeg': img_to_datauri(os.path.join(ICONS_DIR, 'jpeg.png')),
 }
 DEFAULT_ICON_HTML = '📄'
 
-def render_document_table(documentos, roles_usuario):
-    
-    tipo_id = st.session_state.get("tipo_id", "")
-    # construye filas
-    filas = ""
+def render_document_table(documentos, roles_usuario, key_prefix="doc"):
+    permisos_por_doc = obtener_permisos_documentos([doc['id'] for doc in documentos])
+
+    encabezados = ["Nombre", "Modificado", "Modificado por", "Tamaño", "Versión", "Descargar", "Permisos"]
+    anchos = [3, 1.2, 1.4, 1, 0.8, 1, 0.8]
+
+    header_cols = st.columns(anchos)
+    for col, titulo in zip(header_cols, encabezados):
+        col.markdown(f"**{titulo}**")
+
     for doc in documentos:
-        usuarios_doc = obtener_permisos_documento(doc['id'])
-        #st.write(usuarios_doc)
-        #st.write(st.session_state.get("username"))
-        #st.stop()
+        usuarios_doc = permisos_por_doc.get(doc['id'], [])
         usuarios_con_permiso = [u["username"] for u in usuarios_doc]
         ext = doc['extension'].lower()
         icon_data = ICON_MAP.get(ext)
-        if icon_data:
-            icon_html = f'<img src="{icon_data}" width="40" style="vertical-align:middle; margin-right:12px;">'
-        else:
-            icon_html = DEFAULT_ICON_HTML + "&nbsp;"
-
-        ##### inicia codigo para la descarga
         nombre = doc['nombre_archivo']
-        fecha = doc['fecha_subida']
-        datos = doc['archivo']                   # bytes del blob
-        ext   = doc['extension'].lower()
+        nombre_html = html.escape(nombre)
+        fecha = (doc['fecha_subida'].strftime("%Y-%m-%d")
+                 if hasattr(doc['fecha_subida'], 'strftime')
+                 else doc['fecha_subida'])
+        mod_por = doc['subido_por']
         tamanio = format_size(doc['tamaño'])
         version = doc['version_actual']
-        #usuarios = doc['username']
-        
-        # 1) codificamos el archivo a Base64
-        b64_file = base64.b64encode(datos).decode()
-        # 2) calculamos el mime
-        mime = {
-            'pdf': 'application/pdf',
-            'png': 'image/png',
-            'jpg': 'image/jpeg',
-            'jpeg':'image/jpeg'
-        }.get(ext, 'application/octet-stream')
-        # 3) preparamos la URL data:…
-        data_uri = f"data:{mime};base64,{b64_file}"
-
-        # 4) creamos un enlace <a>
-        #    descarga siempre; para PDF/imágenes también preview en nueva pestaña
-        #download_attr = f'download="{urllib.parse.quote(nombre)}"'
-        download_attr = f'download="{(nombre)}"'
-        target_attr   = 'target="_blank"' if mime.startswith('image/') or mime=='application/pdf' else ''
         ruta = obtener_ruta(doc['id'])
         autorizado = (
-                    doc['tipo_nombre'] in roles_usuario or 
+                    doc['tipo_nombre'] in roles_usuario or
                     st.session_state.get("username") in usuarios_con_permiso
                     )
 
-        if autorizado:
-            link_html = (
-                f'<a title="{ruta}" href="{data_uri}" {download_attr} {target_attr} '
-                f'style="text-decoration:none; color:inherit;">'
-                f'{icon_html}{nombre}'
-                f'</a>'
-            )
-        else:
-            link_html = (
-            f'<span title="No tienes permiso para descargar Ruta:{ruta}" '
-            f'style="color:gray;">🔒 {icon_html}{nombre}</span>'
-        )
+        cols = st.columns(anchos)
+        with cols[0]:
+            if icon_data:
+                st.markdown(
+                    f'<img src="{icon_data}" width="24" style="vertical-align:middle; margin-right:8px;">{nombre_html}',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(f"{DEFAULT_ICON_HTML} {nombre_html}", unsafe_allow_html=True)
+        cols[1].write(fecha)
+        cols[2].write(mod_por)
+        cols[3].write(tamanio)
+        cols[4].write(version)
 
-        fecha = (doc['fecha_subida'].strftime("%Y-%m-%d")
-                 if hasattr(doc['fecha_subida'],'strftime')
-                 else doc['fecha_subida'])
-        mod_por = doc['subido_por']
+        with cols[5]:
+            if autorizado:
+                # El archivo solo se lee de la base de datos aquí, para el
+                # documento autorizado que se está pintando — ya no se trae
+                # el BLOB completo de todos los documentos al listar la carpeta.
+                archivo_row = obtener_archivo_documento(doc['id'])
+                if archivo_row:
+                    mime = {
+                        'pdf': 'application/pdf',
+                        'png': 'image/png',
+                        'jpg': 'image/jpeg',
+                        'jpeg': 'image/jpeg'
+                    }.get(ext, 'application/octet-stream')
+                    st.download_button(
+                        "⬇️", data=archivo_row['archivo'], file_name=nombre, mime=mime,
+                        key=f"{key_prefix}_dl_{doc['id']}"
+                    )
+            else:
+                st.markdown(
+                    f'<span title="No tienes permiso para descargar. Ruta: {html.escape(ruta)}">🔒</span>',
+                    unsafe_allow_html=True
+                )
 
-        #perms_link = f'<a href="?tipo_id={st.session_state["tipo_id"]}&file_id={doc["id"]}">🔑</a>'
-        perms_link = f'<a href="?tipo_id={tipo_id}&file_id={doc["id"]}">🔑</a>'
-        filas += f"""
-    <tr>
-    <td>{link_html}</td>
-    <td>{fecha}</td>
-    <td>{mod_por}</td>
-    <td>{tamanio}</td>
-    <td>{version}</td>
-    </tr>
-    """
-        
-        #### Finaliza el codigo para descarga
+        with cols[6]:
+            if st.button("🔑", key=f"{key_prefix}_perm_{doc['id']}"):
+                st.session_state["ver_permisos_doc"] = doc['id']
 
-# HTML + CSS de la tabla
-    tabla_html = textwrap.dedent(f"""
-    <style>
-      .tbl-custom {{ width:100%; border-collapse:collapse; }}
-      .tbl-custom th, .tbl-custom td {{
-        padding:8px; text-align:left; border-bottom:1px solid #ddd;
-      }}
-      .tbl-custom th {{ background-color:#f2f2f2; }}
-      .tbl-custom tr:hover {{ background-color:#fafafa; }}
-    </style>
-    <table class="tbl-custom">
-      <thead>
-        <tr>
-          <th>Nombre</th>
-          <th>Modificado</th>
-          <th>Modificado por</th>
-          <th>Tamaño</th>
-          <th>Version</th>
-        </tr>
-      </thead>
-      <tbody>
-    {filas}
-      </tbody>
-    </table>
-    """)  # <= ¡todos los tags dentro de estas comillas!
-
-    st.markdown(tabla_html, unsafe_allow_html=True)
-    # 2) Si hay file_id en la URL, muestro el expander
-    params = st.query_params
-    if "file_id" in params:
-        try:
-            fid = int(params["file_id"][0])
-            permisos = obtener_permisos_documento(fid)
-            with st.expander("🔑 Permisos de este documento", expanded=True):
-                if permisos:
-                    for p in permisos:
-                        st.write(f"- Rol: **{p['rol']}**, Usuario: **{p['usuario']}**")
-                else:
-                    st.write("_No hay permisos registrados._")
-        except:
-            pass
+    perm_doc_id = st.session_state.get("ver_permisos_doc")
+    if perm_doc_id and any(doc['id'] == perm_doc_id for doc in documentos):
+        permisos = obtener_permisos_documento(perm_doc_id)
+        with st.expander("🔑 Permisos de este documento", expanded=True):
+            if permisos:
+                for p in permisos:
+                    st.write(
+                        f"- Usuario: **{p['username']}** — "
+                        f"Editar: {'Sí' if p.get('puede_editar') else 'No'}, "
+                        f"Eliminar: {'Sí' if p.get('puede_eliminar') else 'No'}"
+                    )
+            else:
+                st.write("_No hay permisos registrados._")
 
 def obtener_tipos_documento():
     conn = obtener_conexion()
@@ -257,17 +265,24 @@ def obtener_tipos_documento():
     conn.close()
     return tipos
 
-def obtener_documentos_por_tipo(tipo_id):
+def obtener_documentos_por_tipo(tipo_id, pagina=1, por_pagina=DOCS_POR_PAGINA):
     conn = obtener_conexion()
     cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("SELECT COUNT(*) AS total FROM documentos WHERE tipo_id = %s", (tipo_id,))
+    total = cursor.fetchone()["total"]
+    total_paginas = max(1, -(-total // por_pagina))
+    pagina = min(max(pagina, 1), total_paginas)
+    offset = (pagina - 1) * por_pagina
+
     cursor.execute("""
-        SELECT 
-            d.id, d.titulo, d.descripcion,  
+        SELECT
+            d.id, d.titulo, d.descripcion,
             d.creado_por, d.fecha_creacion, d.estatus,
             vd.nombre_archivo, vd.tamaño, vd.extension,
-            vd.fecha_subida, vd.archivo,
+            vd.fecha_subida,
             vd.version AS version_actual, vd.comentario,
-            vd.subido_por, vd.extension as tipo, t.nombre AS tipo_nombre 
+            vd.subido_por, vd.extension as tipo, t.nombre AS tipo_nombre
         FROM documentos d
         JOIN tipos_documento t ON d.tipo_id = t.id
         JOIN (
@@ -275,15 +290,38 @@ def obtener_documentos_por_tipo(tipo_id):
             FROM versiones_documento
             GROUP BY documento_id
         ) ult ON d.id = ult.documento_id
-        JOIN versiones_documento vd 
-          ON d.id = vd.documento_id 
+        JOIN versiones_documento vd
+          ON d.id = vd.documento_id
          AND vd.version = ult.ultima_version
         WHERE d.tipo_id = %s
         ORDER BY d.fecha_creacion DESC
-    """, (tipo_id,))
+        LIMIT %s OFFSET %s
+    """, (tipo_id, por_pagina, offset))
     documentos = cursor.fetchall()
     conn.close()
-    return documentos
+    return documentos, total
+
+
+def mostrar_controles_paginacion(key, total, por_pagina):
+    total_paginas = max(1, -(-total // por_pagina))
+    pagina = min(max(st.session_state.get(key, 1), 1), total_paginas)
+    st.session_state[key] = pagina
+
+    col_prev, col_info, col_next = st.columns([1, 2, 1])
+    with col_prev:
+        if st.button("⬅️ Anterior", key=f"{key}_prev", disabled=(pagina <= 1)):
+            st.session_state[key] = pagina - 1
+            st.rerun()
+    with col_info:
+        st.markdown(
+            f"<div style='text-align:center'>Página {pagina} de {total_paginas} · {total} documentos</div>",
+            unsafe_allow_html=True
+        )
+    with col_next:
+        if st.button("Siguiente ➡️", key=f"{key}_next", disabled=(pagina >= total_paginas)):
+            st.session_state[key] = pagina + 1
+            st.rerun()
+
 
 def mostrar_breadcrumb(tipo_id, tipos):
     ruta = []
@@ -315,9 +353,12 @@ def mostrar_subtipos_y_documentos(tipo_id_actual, tipos, roles_usuario):
                 st.session_state["tipo_id"] = s["id"]
                 st.rerun()
 
-    #### Inicio de cambios 
+    #### Inicio de cambios
 
-    documentos = obtener_documentos_por_tipo(tipo_id_actual)
+    pagina_key = f"pagina_folder_{tipo_id_actual}"
+    documentos, total = obtener_documentos_por_tipo(
+        tipo_id_actual, pagina=st.session_state.get(pagina_key, 1)
+    )
     if documentos:
 
         ruta_dir = ruta_directorio(tipo_id_actual)
@@ -326,7 +367,8 @@ def mostrar_subtipos_y_documentos(tipo_id_actual, tipos, roles_usuario):
         f"<h3>📄 Documentos en :<br> <span style='color:blue'>{ruta_dir}</span></h3>",
         unsafe_allow_html=True
 )
-        render_document_table(documentos, roles_usuario)
+        render_document_table(documentos, roles_usuario, key_prefix="folder")
+        mostrar_controles_paginacion(pagina_key, total, DOCS_POR_PAGINA)
 
     else:
         st.info("No hay documentos para este tipo.")
@@ -337,10 +379,12 @@ def mostrar_menu_documentos():
     # ——— Buscador de documentos ———
     search = st.text_input("🔍 Buscar documentos", "")
     if search:
-        resultados = buscar_documentos(search)
-        st.subheader(f"Resultados de búsqueda para «{search}»")
+        pagina_key = f"pagina_search_{search}"
+        resultados, total = buscar_documentos(search, pagina=st.session_state.get(pagina_key, 1))
+        st.subheader(f"Resultados de búsqueda para «{search}» ({total})")
         if resultados:
-            render_document_table(resultados, roles_usuario)
+            render_document_table(resultados, roles_usuario, key_prefix="search")
+            mostrar_controles_paginacion(pagina_key, total, DOCS_POR_PAGINA)
         else:
             st.info("No se encontraron documentos que coincidan.")
         #return  # salimos para no mostrar el listado de tipos
@@ -357,7 +401,7 @@ def mostrar_menu_documentos():
     params = st.query_params
     if "tipo_id" in params:
         try:
-            st.session_state["tipo_id"] = int(params["tipo_id"][0])
+            st.session_state["tipo_id"] = int(params["tipo_id"])
         except:
             pass
 
