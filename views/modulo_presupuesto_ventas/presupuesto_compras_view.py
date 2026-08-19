@@ -226,20 +226,20 @@ def _obtener_hojas(archivo) -> list[str]:
         return []
 
 
-def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, list]:
+def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, dict, list]:
     """Returns (sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio,
-    code_to_linea, code_to_origen, options_list).
+    code_to_linea, code_to_origen, code_to_unidad, options_list).
 
     code_to_precio es en realidad el costo (ult_costo de SAE / tipo de cambio
     FIX oficial de Banxico del día), no el precio público — se usa ese nombre
     de variable por continuidad con el resto del módulo. code_to_linea
-    (cve_linea, "cve — desc") y code_to_origen (inve_clib01.camplib10) se usan
-    para autocompletar esos campos al agregar un registro nuevo — el usuario
-    no los captura a mano.
+    (cve_linea, "cve — desc"), code_to_origen (inve_clib01.camplib10) y
+    code_to_unidad (inve01.uni_med) se usan para autocompletar esos campos
+    al agregar un registro nuevo — el usuario no los captura a mano.
     """
     df = obtener_catalogo_productos_pv_compras_ctrl()
     if df is None or df.empty:
-        return set(), {}, {"": None}, {}, {}, {}, {}, [""]
+        return set(), {}, {"": None}, {}, {}, {}, {}, {}, [""]
 
     df_existencias = obtener_existencias_productos_pv_compras_ctrl()
     code_to_ult_costo: dict = {}
@@ -262,6 +262,7 @@ def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, list]:
     code_to_precio: dict = {}
     code_to_linea: dict = {}
     code_to_origen: dict = {}
+    code_to_unidad: dict = {}
     items: list = []
 
     for r in records:
@@ -280,12 +281,16 @@ def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, list]:
         desc_linea = str(r.get("linea") or "").strip()
         code_to_linea[code] = (cve_linea, f"{cve_linea} — {desc_linea}" if desc_linea else cve_linea)
         code_to_origen[code] = str(r.get("codigo_origen") or "").strip()
+        code_to_unidad[code] = str(r.get("unidad") or "").strip().lower()
         items.append(((desc or code).lower(), label))
 
     # opciones ordenadas alfabéticamente por nombre de producto
     items.sort(key=lambda t: t[0])
     options = [""] + [lbl for _, lbl in items]
-    return sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio, code_to_linea, code_to_origen, options
+    return (
+        sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio,
+        code_to_linea, code_to_origen, code_to_unidad, options,
+    )
 
 
 def _catalogo_clientes_sae() -> tuple[set, list]:
@@ -386,7 +391,7 @@ _ENCABEZADOS_EXPORT = {
     "_cve_prod_label": "Cve prod / SAE",
     "_status": "En catálogo SAE",
     "estatus_excel": "Estatus",
-    "precio": "Costo USD/Kg",
+    "precio": "Costo USD/unidad",
 }
 
 
@@ -887,6 +892,7 @@ def _form_agregar_registro(
     code_to_precio: dict,
     code_to_linea: dict,
     code_to_origen: dict,
+    code_to_unidad: dict,
     sae_set: set,
     clientes_set: set,
     clientes_opciones: list[str],
@@ -941,6 +947,7 @@ def _form_agregar_registro(
         precio = float(code_to_precio.get(_code_sel, 0.0)) if _code_sel else 0.0
         linea_desc = code_to_linea.get(_code_sel, ("", ""))[1] if _code_sel else ""
         codigo_origen = code_to_origen.get(_code_sel, "") if _code_sel else ""
+        unidad_sel = (code_to_unidad.get(_code_sel, "") if _code_sel else "") or "unidad"
 
         col4, col5, col6, col7 = st.columns(4)
         with col4:
@@ -949,7 +956,7 @@ def _form_agregar_registro(
             )
         with col5:
             st.number_input(
-                "costo USD/kg (ult. costo SAE / tipo de cambio Banxico, no editable)",
+                f"costo USD/{unidad_sel} (ult. costo SAE / tipo de cambio Banxico, no editable)",
                 min_value=0.0, format="%.4f", value=precio, disabled=True,
                 key=f"{prefix}_precio_{_code_sel or 'none'}",
             )
@@ -1102,7 +1109,7 @@ def _panel_pivot(id_carga: int) -> None:
     df_all["mes"] = pd.to_numeric(df_all["mes"], errors="coerce").fillna(0).astype(int)
 
     # catálogo SAE (cacheado 1 hora)
-    sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio, code_to_linea, code_to_origen, sae_opciones = _catalogo_sae()
+    sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio, code_to_linea, code_to_origen, code_to_unidad, sae_opciones = _catalogo_sae()
     clientes_set, clientes_opciones = _catalogo_clientes_sae()
 
     if "anio" in df_all.columns and not df_all.empty:
@@ -1241,6 +1248,7 @@ def _panel_pivot(id_carga: int) -> None:
                 code_to_precio=code_to_precio,
                 code_to_linea=code_to_linea,
                 code_to_origen=code_to_origen,
+                code_to_unidad=code_to_unidad,
                 sae_set=sae_set,
                 clientes_set=clientes_set,
                 clientes_opciones=clientes_opciones,
@@ -1302,7 +1310,7 @@ def _panel_pivot(id_carga: int) -> None:
             )
             gb.configure_column(
                 "precio",
-                headerName="costo USD/kg",
+                headerName="costo USD/unidad",
                 # costo: ult_costo SAE / tipo de cambio Banxico al agregar el registro, no editable en la tabla
                 editable=False,
                 width=110,

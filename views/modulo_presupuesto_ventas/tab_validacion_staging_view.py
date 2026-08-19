@@ -627,7 +627,7 @@ def _panel_tabla_pivot(id_carga: int) -> None:
             col_config: dict = {}
             for c in cols_id:
                 col_config[c] = st.column_config.TextColumn(c.replace("_excel", "").replace("_", " "), disabled=True)
-            col_config["precio"] = st.column_config.NumberColumn("precio USD/kg", format="%.4f")
+            col_config["precio"] = st.column_config.NumberColumn("precio USD/unidad", format="%.4f")
             for m in meses_presentes:
                 col_config[m] = st.column_config.NumberColumn(m.upper(), format=fmt_valor)
 

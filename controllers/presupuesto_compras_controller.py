@@ -274,7 +274,7 @@ def obtener_catalogo_productos_pv_compras_ctrl() -> pd.DataFrame:
     try:
         return obtener_catalogo_productos_pv_model()
     except Exception:
-        return pd.DataFrame(columns=["cve_prod", "descr", "cve_linea", "linea", "precio", "codigo_origen"])
+        return pd.DataFrame(columns=["cve_prod", "descr", "cve_linea", "linea", "precio", "codigo_origen", "unidad"])
 
 
 @st.cache_data(ttl=3600, show_spinner="cargando catálogo de clientes SAE…")

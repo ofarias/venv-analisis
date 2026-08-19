@@ -166,19 +166,14 @@ def _color_valor_mes(valor) -> str:
 def _formatear_numeros(estilo, df_mostrado: pd.DataFrame, meses_cols: list[str]):
     """Aplica formato de miles/decimales a "Precio" y "Total USD Año" (con $
     y 2 decimales), "Total Kilos Año" (miles y 2 decimales) y a los meses
-    (miles y decimales — 4 en filas de sección KG, 2 en el resto, igual que
-    en la tabla de presupuesto)."""
+    (miles y 3 decimales, igual que en la tabla de presupuesto)."""
     for col in ("Precio", "Total USD Año"):
         if col in df_mostrado.columns:
             estilo = estilo.format("${:,.2f}", subset=[col])
     if "Total Kilos Año" in df_mostrado.columns:
         estilo = estilo.format("{:,.2f}", subset=["Total Kilos Año"])
-    if meses_cols and "Sección" in df_mostrado.columns:
-        mask_kg = df_mostrado["Sección"].astype(str) == "KG"
-        estilo = estilo.format("{:,.4f}", subset=(mask_kg, meses_cols))
-        estilo = estilo.format("{:,.2f}", subset=(~mask_kg, meses_cols))
-    elif meses_cols:
-        estilo = estilo.format("{:,.2f}", subset=meses_cols)
+    if meses_cols:
+        estilo = estilo.format("{:,.3f}", subset=meses_cols)
     return estilo
 
 
@@ -304,17 +299,18 @@ def _obtener_hojas(archivo) -> list[str]:
         return []
 
 
-def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, list]:
+def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, dict, list]:
     """Returns (sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio,
-    code_to_linea, code_to_origen, options_list).
+    code_to_linea, code_to_origen, code_to_unidad, options_list).
 
-    code_to_precio (precio público en SAE), code_to_linea (cve_linea, "cve — desc")
-    y code_to_origen (inve_clib01.camplib10) se usan para autocompletar esos
-    campos al agregar un registro nuevo — el usuario no los captura a mano.
+    code_to_precio (precio público en SAE), code_to_linea (cve_linea, "cve — desc"),
+    code_to_origen (inve_clib01.camplib10) y code_to_unidad (inve01.uni_med) se
+    usan para autocompletar esos campos al agregar un registro nuevo — el
+    usuario no los captura a mano.
     """
     df = obtener_catalogo_productos_pv_ctrl()
     if df is None or df.empty:
-        return set(), {}, {"": None}, {}, {}, {}, {}, [""]
+        return set(), {}, {"": None}, {}, {}, {}, {}, {}, [""]
 
     records = df.to_dict("records")
     sae_set: set = set()
@@ -324,6 +320,7 @@ def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, list]:
     code_to_precio: dict = {}
     code_to_linea: dict = {}
     code_to_origen: dict = {}
+    code_to_unidad: dict = {}
     items: list = []
 
     for r in records:
@@ -341,12 +338,16 @@ def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, list]:
         desc_linea = str(r.get("linea") or "").strip()
         code_to_linea[code] = (cve_linea, f"{cve_linea} — {desc_linea}" if desc_linea else cve_linea)
         code_to_origen[code] = str(r.get("codigo_origen") or "").strip()
+        code_to_unidad[code] = str(r.get("unidad") or "").strip().lower()
         items.append(((desc or code).lower(), label))
 
     # opciones ordenadas alfabéticamente por nombre de producto
     items.sort(key=lambda t: t[0])
     options = [""] + [lbl for _, lbl in items]
-    return sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio, code_to_linea, code_to_origen, options
+    return (
+        sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio,
+        code_to_linea, code_to_origen, code_to_unidad, options,
+    )
 
 
 def _catalogo_clientes_sae() -> tuple[set, list]:
@@ -512,7 +513,7 @@ _ENCABEZADOS_EXPORT = {
     "_cve_prod_label": "Cve prod / SAE",
     "_status": "En catálogo SAE",
     "estatus_excel": "Estatus",
-    "precio": "Precio USD/Kg",
+    "precio": "Precio USD/unidad",
     "precio_venta": "Precio Venta",
 }
 
@@ -549,7 +550,7 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
             cell.alignment = header_align
         ws.freeze_panes = "A2"
 
-        fmt_mes = "#,##0.0000" if seccion == "KG" else "#,##0.00"
+        fmt_mes = "#,##0.000"
         meses_idx = {m: columnas.index(m) + 1 for m in meses}
         precio_idx = columnas.index("precio") + 1 if "precio" in columnas else None
         precio_venta_idx = columnas.index("precio_venta") + 1 if "precio_venta" in columnas else None
@@ -565,7 +566,7 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
             if precio_idx:
                 row[precio_idx - 1].number_format = "#,##0.0000"
             if precio_venta_idx:
-                row[precio_venta_idx - 1].number_format = "#,##0.0000"
+                row[precio_venta_idx - 1].number_format = "#,##0.000"
 
         for idx, col_name in enumerate(columnas, start=1):
             largo = len(str(_ENCABEZADOS_EXPORT.get(col_name, col_name)))
@@ -1068,6 +1069,7 @@ def _form_agregar_registro(
     code_to_precio: dict,
     code_to_linea: dict,
     code_to_origen: dict,
+    code_to_unidad: dict,
     sae_set: set,
     clientes_set: set,
     clientes_opciones: list[str],
@@ -1122,6 +1124,7 @@ def _form_agregar_registro(
         precio = float(code_to_precio.get(_code_sel, 0.0)) if _code_sel else 0.0
         linea_desc = code_to_linea.get(_code_sel, ("", ""))[1] if _code_sel else ""
         codigo_origen = code_to_origen.get(_code_sel, "") if _code_sel else ""
+        unidad_sel = (code_to_unidad.get(_code_sel, "") if _code_sel else "") or "unidad"
 
         # si el precio público (tabla de precios x art) es 0, se usa como
         # respaldo el último precio de venta en facturas — cruzado con el
@@ -1141,7 +1144,7 @@ def _form_agregar_registro(
             )
         with col5:
             st.number_input(
-                "precio USD/kg (de SAE, no editable)",
+                f"precio USD/{unidad_sel} (de SAE, no editable)",
                 min_value=0.0, format="%.4f", value=precio, disabled=True,
                 key=f"{prefix}_precio_{_code_sel or 'none'}_{_cve_clie_sel or 'none'}",
             )
@@ -1158,14 +1161,14 @@ def _form_agregar_registro(
         with col8:
             precio_venta = st.number_input(
                 "precio venta (opcional, lo capturas tú)",
-                min_value=0.0, format="%.4f", value=0.0,
+                min_value=0.0, format="%.3f", value=0.0,
                 key=f"{prefix}_precio_venta",
             )
 
         # se arma en bloques de hasta 6 columnas por fila para mantener el
         # orden ene→dic; los 12 meses están disponibles sin restricción
         st.caption("*obligatorio* captura al menos un mes con valor distinto de cero")
-        fmt = "%.4f" if seccion == "KG" else "%.2f"
+        fmt = "%.3f"
         meses_form = meses_presentes
         valores: dict[str, float] = {}
         CHUNK = 6
@@ -1301,7 +1304,7 @@ def _panel_pivot(id_carga: int) -> None:
     df_all["mes"] = pd.to_numeric(df_all["mes"], errors="coerce").fillna(0).astype(int)
 
     # catálogo SAE (cacheado 1 hora)
-    sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio, code_to_linea, code_to_origen, sae_opciones = _catalogo_sae()
+    sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio, code_to_linea, code_to_origen, code_to_unidad, sae_opciones = _catalogo_sae()
     clientes_set, clientes_opciones = _catalogo_clientes_sae()
 
     if "anio" in df_all.columns and not df_all.empty:
@@ -1424,7 +1427,7 @@ def _panel_pivot(id_carga: int) -> None:
             cols_id = orig_data["cols_id"]
             meses_presentes = meses_todos
 
-            decimales = 2 if seccion == "USD" else 4
+            decimales = 3
 
             _form_agregar_registro(
                 seccion=seccion,
@@ -1440,6 +1443,7 @@ def _panel_pivot(id_carga: int) -> None:
                 code_to_precio=code_to_precio,
                 code_to_linea=code_to_linea,
                 code_to_origen=code_to_origen,
+                code_to_unidad=code_to_unidad,
                 sae_set=sae_set,
                 clientes_set=clientes_set,
                 clientes_opciones=clientes_opciones,
@@ -1501,7 +1505,7 @@ def _panel_pivot(id_carga: int) -> None:
             )
             gb.configure_column(
                 "precio",
-                headerName="precio USD/kg",
+                headerName="precio USD/unidad",
                 # precio: viene de SAE al agregar el registro, no editable en la tabla
                 editable=False,
                 width=110,
@@ -1516,7 +1520,7 @@ def _panel_pivot(id_carga: int) -> None:
                 width=120,
                 type=["numericColumn"],
                 cellEditor="agNumberCellEditor",
-                valueFormatter=_value_formatter_js(4),
+                valueFormatter=_value_formatter_js(3),
             )
             for m in meses_presentes:
                 gb.configure_column(
@@ -2010,7 +2014,8 @@ def _puede_autorizar_lineas() -> bool:
     usuario = st.session_state.get("usuario") or {}
     roles = set(_norm_roles_list(usuario.get("roles")))
     return bool(roles & {
-        "jefe de ventas", "supervisor de ventas", "gerente de ventas", "gerente ventas", "superadmin",
+        "jefe de ventas", "supervisor de ventas", "gerente de ventas", "gerente ventas",
+        "forecastadmin", "superadmin",
     })
 
 
@@ -2230,7 +2235,7 @@ def _panel_autorizaciones() -> None:
     for m in meses_presentes_aut:
         gb.configure_column(
             m, headerName=m.upper(), type=["numericColumn"],
-            cellStyle=_CELL_STYLE_VALORES, valueFormatter=_value_formatter_js(2),
+            cellStyle=_CELL_STYLE_VALORES, valueFormatter=_value_formatter_js(3),
         )
 
     grid_response = AgGrid(

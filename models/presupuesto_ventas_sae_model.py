@@ -41,7 +41,7 @@ def obtener_catalogo_productos_pv_model(limit: int = 10000, cve_precio: int = 1)
             "select first ? "
             "i.cve_art as cve_prod, i.descr, i.lin_prod as cve_linea, "
             "l.desc_lin as linea, coalesce(p.precio, 0) as precio, "
-            "ic.camplib10 as codigo_origen "
+            "ic.camplib10 as codigo_origen, i.uni_med as unidad "
             "from inve01 i "
             "left join clin01 l on l.cve_lin = i.lin_prod "
             "left join precio_x_prod01 p on p.cve_art = i.cve_art and p.cve_precio = ? "
@@ -50,7 +50,7 @@ def obtener_catalogo_productos_pv_model(limit: int = 10000, cve_precio: int = 1)
             "order by i.cve_art",
             (int(limit), int(cve_precio)),
         )
-        return _df_from_cursor(cur, ["cve_prod", "descr", "cve_linea", "linea", "precio", "codigo_origen"])
+        return _df_from_cursor(cur, ["cve_prod", "descr", "cve_linea", "linea", "precio", "codigo_origen", "unidad"])
     finally:
         try:
             con.close()
@@ -466,6 +466,8 @@ def obtener_ventas_reales_sae_model(
     cve_art: Optional[str] = None,
     num_alm: Optional[int] = None,
 ) -> pd.DataFrame:
+    """precio_promedio e importe convertidos a USD por línea de factura
+    (par_factf01.prec y tot_partida vienen en pesos, se dividen entre tip_cam)."""
     con = _conn_sae_from_secrets(st.secrets)
     try:
         cur = con.cursor()
@@ -487,8 +489,8 @@ def obtener_ventas_reales_sae_model(
                 coalesce(p.num_alm, f.num_alma) as num_alm,
                 coalesce(p.uni_venta, i.uni_med) as unidad,
                 sum(coalesce(p.cant, 0)) as cantidad,
-                avg(coalesce(p.prec, 0)) as precio_promedio,
-                sum(coalesce(p.tot_partida, 0)) as importe
+                avg(coalesce(p.prec, 0) / nullif(p.tip_cam, 0)) as precio_promedio,
+                sum(coalesce(p.tot_partida, 0) / nullif(p.tip_cam, 0)) as importe
             from factf01 f
             join par_factf01 p
                 on p.cve_doc = f.cve_doc
@@ -601,6 +603,8 @@ def obtener_ventas_reales_resumen_sae_model(
     cve_art: Optional[str] = None,
     num_alm: Optional[int] = None,
 ) -> pd.DataFrame:
+    """precio_promedio e importe convertidos a USD por línea de factura
+    (par_factf01.prec y tot_partida vienen en pesos, se dividen entre tip_cam)."""
     con = _conn_sae_from_secrets(st.secrets)
     try:
         cur = con.cursor()
@@ -619,8 +623,8 @@ def obtener_ventas_reales_resumen_sae_model(
                 l.desc_lin as linea,
                 coalesce(p.num_alm, f.num_alma) as num_alm,
                 sum(coalesce(p.cant, 0)) as cantidad,
-                avg(coalesce(p.prec, 0)) as precio_promedio,
-                sum(coalesce(p.tot_partida, 0)) as importe
+                avg(coalesce(p.prec, 0) / nullif(p.tip_cam, 0)) as precio_promedio,
+                sum(coalesce(p.tot_partida, 0) / nullif(p.tip_cam, 0)) as importe
             from factf01 f
             join par_factf01 p
                 on p.cve_doc = f.cve_doc
