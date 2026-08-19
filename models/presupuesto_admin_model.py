@@ -94,7 +94,7 @@ def obtener_presupuesto_ventas_compras_model(
                     'venta' as tipo,
                     p.id_presupuesto, p.id_carga, p.seccion, p.region, p.anio, p.mes,
                     p.cve_prod, p.company, p.cliente_excel, p.codigo_origen, p.producto_excel,
-                    p.cantidad_kg, p.precio, p.importe, p.valor, p.estatus,
+                    p.cantidad_kg, p.precio, p.precio_venta, p.importe, p.valor, p.estatus,
                     coalesce(l.estatus, 'captura') as estatus_autorizacion,
                     c.usuario_id, c.nombre_archivo, c.version,
                     u.nombre as usuario_nombre
@@ -115,7 +115,7 @@ def obtener_presupuesto_ventas_compras_model(
                     'compra' as tipo,
                     p.id_presupuesto, p.id_carga, p.seccion, p.region, p.anio, p.mes,
                     p.cve_prod, p.company, p.cliente_excel, p.codigo_origen, p.producto_excel,
-                    p.cantidad_kg, p.precio, p.importe, p.valor, p.estatus,
+                    p.cantidad_kg, p.precio, null as precio_venta, p.importe, p.valor, p.estatus,
                     coalesce(l.estatus, 'captura') as estatus_autorizacion,
                     c.usuario_id, c.nombre_archivo, c.version,
                     u.nombre as usuario_nombre
@@ -164,7 +164,7 @@ def obtener_presupuesto_ventas_compras_model(
             return pd.DataFrame(columns=[
                 "tipo", "id_presupuesto", "id_carga", "seccion", "region", "anio", "mes",
                 "cve_prod", "company", "cliente_excel", "codigo_origen", "producto_excel",
-                "cantidad_kg", "precio", "importe", "valor", "estatus", "estatus_autorizacion",
+                "cantidad_kg", "precio", "precio_venta", "importe", "valor", "estatus", "estatus_autorizacion",
                 "usuario_id", "nombre_archivo", "version", "usuario_nombre",
             ])
 

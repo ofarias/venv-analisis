@@ -477,12 +477,13 @@ def _pivotear_meses(
 
 def _agregar_totales_anio(pivote: pd.DataFrame) -> pd.DataFrame:
     """Calcula total_kg_anio/total_usd_anio a partir de los meses ya
-    pivoteados (columna "valor") + "seccion" + "precio" — NO se usan las
-    columnas cantidad_kg/importe guardadas en BD porque en registros
-    antiguos pueden venir en NULL, lo que hace que la suma salga en 0 sin
-    avisar. Mismo criterio que _guardar_pivot: en sección KG, "valor" son
-    los kilos y el importe es valor×precio; en cualquier otra sección
-    "valor" ya es el monto en USD."""
+    pivoteados (columna "valor") + "seccion" + "precio" (y "precio_venta"
+    si viene en el pivote) — NO se usan las columnas cantidad_kg/importe
+    guardadas en BD porque en registros antiguos pueden venir en NULL, lo
+    que hace que la suma salga en 0 sin avisar. Mismo criterio que
+    _guardar_pivot: en sección KG, "valor" son los kilos y el importe es
+    valor×precio (precio venta si el usuario ya lo capturó, si no el de
+    SAE); en cualquier otra sección "valor" ya es el monto en USD."""
     if pivote is None or pivote.empty:
         pivote = pivote.copy() if pivote is not None else pd.DataFrame()
         pivote["total_kg_anio"] = pd.Series(dtype=float)
@@ -499,6 +500,9 @@ def _agregar_totales_anio(pivote: pd.DataFrame) -> pd.DataFrame:
         if "seccion" in pivote.columns else pd.Series(False, index=pivote.index)
     )
     precio_col = pd.to_numeric(pivote["precio"], errors="coerce").fillna(0.0) if "precio" in pivote.columns else 0.0
+    if "precio_venta" in pivote.columns:
+        precio_venta_col = pd.to_numeric(pivote["precio_venta"], errors="coerce").fillna(0.0)
+        precio_col = precio_venta_col.where(precio_venta_col > 0, precio_col)
 
     pivote["total_kg_anio"] = suma_anio.where(es_kg, 0.0)
     pivote["total_usd_anio"] = (suma_anio * precio_col).where(es_kg, suma_anio)
@@ -1543,9 +1547,13 @@ def _panel_pivot(id_carga: int) -> None:
                 if meses_presentes else pd.Series(0.0, index=work_df_mostrar.index)
             )
             precio_num = pd.to_numeric(work_df_mostrar.get("precio"), errors="coerce").fillna(0.0)
+            precio_venta_num = pd.to_numeric(work_df_mostrar.get("precio_venta"), errors="coerce").fillna(0.0)
+            # precio venta manda sobre el precio SAE para el total en USD
+            # cuando el usuario ya lo capturó (>0); si no, se usa el de SAE
+            precio_efectivo = precio_venta_num.where(precio_venta_num > 0, precio_num)
             if seccion == "KG":
                 work_df_mostrar["total_kg_anio"] = suma_meses
-                work_df_mostrar["total_usd_anio"] = suma_meses * precio_num
+                work_df_mostrar["total_usd_anio"] = suma_meses * precio_efectivo
             else:
                 work_df_mostrar["total_kg_anio"] = 0.0
                 work_df_mostrar["total_usd_anio"] = suma_meses
@@ -1968,6 +1976,12 @@ def _panel_ver_todos() -> None:
         cols_extra = ["precio"]
     else:
         cols_extra = []
+
+    if "precio_venta" in df.columns:
+        # solo se usa para calcular total_usd_anio (precio venta > 0 manda
+        # sobre el de SAE) — no se muestra como columna aparte en esta tabla
+        df["precio_venta"] = df.groupby(cols_grupo, dropna=False)["precio_venta"].transform("first")
+        cols_extra.append("precio_venta")
 
     pivote = _pivotear_meses(df, cols_grupo + cols_extra, col_valor="valor")
     pivote = _agregar_totales_anio(pivote)
