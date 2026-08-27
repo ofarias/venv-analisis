@@ -38,6 +38,7 @@ from views.modulo_presupuesto_ventas.presupuesto_compras_view import (
     _panel_pivot as _panel_pivot_compras,
     _selector_carga as _selector_carga_compras,
 )
+from views.modulo_presupuesto_ventas.reporte_ventas_view import mostrar_panel_reporte_gerente
 from controllers.presupuesto_admin_controller import (
     obtener_presupuesto_ventas_compras_ctrl,
     obtener_roles_usuario_id_ctrl,
@@ -1287,6 +1288,8 @@ def _panel_comparacion_sae_ventas(
     clientes_sel: list,
     label_to_code: dict,
     clientes_set: set,
+    region: Optional[str] = None,
+    id_carga: Optional[int] = None,
 ) -> None:
     """Compara el presupuesto capturado (respetando los mismos filtros de
     producto/cliente de arriba) contra las ventas reales de SAE del año de la
@@ -1404,6 +1407,41 @@ def _panel_comparacion_sae_ventas(
             },
             height=min(56 + len(comp) * 35, 500),
         )
+
+        mostrar_grafica = st.checkbox(
+            "📊 mostrar gráfica (presupuesto vs real SAE)",
+            value=False,
+            key=f"pv_sae_grafica_{seccion}_{region}_{id_carga}",
+        )
+        if mostrar_grafica:
+            unidad = "kg" if seccion == "KG" else "USD"
+            col_pres = "presupuesto_kg" if seccion == "KG" else "presupuesto_usd"
+            col_real = "real_kg" if seccion == "KG" else "real_usd"
+
+            TOP_N = 20
+            df_top = comp.head(TOP_N)
+            if len(comp) > TOP_N:
+                st.caption(f"mostrando las {TOP_N} combinaciones con mayor presupuesto de {len(comp):,}")
+
+            # en orden por presupuesto y como pares por combinación
+            # ("Real — cliente/producto", "cliente/producto") en una sola
+            # serie de barras — mismo criterio que la gráfica de rendimiento
+            # de Construcción de forecast; "tipo" colorea Real distinto de
+            # Presupuesto (si no, al ser una sola columna de valores salen
+            # todas las barras del mismo color)
+            filas_g: list[dict] = []
+            for _, r in df_top.iterrows():
+                etiqueta = f"{r['cliente']} / {r['producto']}"
+                filas_g.append({"categoria": f"Real — {etiqueta}", "valor": r[col_real], "tipo": "Real SAE"})
+                filas_g.append({"categoria": etiqueta, "valor": r[col_pres], "tipo": "Presupuesto"})
+
+            df_g = pd.DataFrame(filas_g)
+            df_g["categoria"] = pd.Categorical(df_g["categoria"], categories=df_g["categoria"].tolist(), ordered=True)
+            st.bar_chart(
+                df_g, x="categoria", y="valor", color="tipo",
+                use_container_width=True, height=min(300 + len(df_top) * 25, 600),
+            )
+            st.caption(f"unidad: {unidad}")
 
 
 _MES_NUM_DE = {v: k for k, v in _MESES.items()}
@@ -1639,6 +1677,8 @@ def _panel_pivot(id_carga: int) -> None:
                 use_container_width=True,
                 key=f"pv_export_dl_{id_carga}",
             )
+
+    mostrar_panel_reporte_gerente(id_carga, anio_actual)
 
     sub_tabs = st.tabs([t[0] for t in _TABS_PIVOT])
 
@@ -2156,6 +2196,8 @@ def _panel_pivot(id_carga: int) -> None:
                 clientes_sel=clientes_filtro_sel,
                 label_to_code=label_to_code,
                 clientes_set=clientes_set,
+                region=region,
+                id_carga=id_carga,
             )
 
     _panel_stock_ordenes_sae()

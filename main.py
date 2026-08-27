@@ -69,6 +69,11 @@ def _get_modulo_forzado_desde_deeplink() -> str | None:
     if deeplink_session.get("sg_id") and deeplink_session.get("t"):
         return "solicitudes"
 
+    # reporte de ventas (link público de solo lectura, ver
+    # views/modulo_presupuesto_ventas/reporte_ventas_view.py)
+    if (qp.get("rv") or "").strip():
+        return "reporte_ventas"
+
     modulo_forzado = st.session_state.get("modulo_forzado")
     if modulo_forzado:
         return str(modulo_forzado)
@@ -78,7 +83,7 @@ def _get_modulo_forzado_desde_deeplink() -> str | None:
 
 modulo_forzado = _get_modulo_forzado_desde_deeplink()
 # permitir acceso por deeplink sin login
-if "usuario" not in st.session_state and modulo_forzado != "solicitudes":
+if "usuario" not in st.session_state and modulo_forzado not in ("solicitudes", "reporte_ventas"):
     mostrar_login()
 else:
     if "usuario" not in st.session_state:
@@ -148,6 +153,11 @@ else:
     if modulo_forzado == "solicitudes":
         from views.modulo_solicitudes.solicitudes_gastos_view import mostrar_modulo_solicitudes_gastos
         mostrar_modulo_solicitudes_gastos()
+        st.stop()
+
+    if modulo_forzado == "reporte_ventas":
+        from views.modulo_presupuesto_ventas.reporte_ventas_view import mostrar_reporte_publico
+        mostrar_reporte_publico()
         st.stop()
 
     if "SuperAdmin" in roles:

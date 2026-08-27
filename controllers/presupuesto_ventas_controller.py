@@ -24,11 +24,13 @@ from models.presupuesto_ventas_model import (
     insertar_presupuesto_ventas_desde_df_model,
     insertar_presupuesto_ventas_unitario_model,
     insertar_presupuesto_ventas_linea_estatus_model,
+    insertar_reporte_ventas_model,
     insertar_staging_presupuesto_ventas_model,
     obtener_cargas_presupuesto_ventas_model,
     obtener_presupuesto_ventas_lineas_model,
     obtener_presupuesto_ventas_lineas_pendientes_model,
     obtener_presupuesto_ventas_model,
+    obtener_reporte_ventas_por_token_model,
     obtener_resumen_presupuesto_ventas_model,
     obtener_resumen_staging_presupuesto_ventas_model,
     obtener_staging_presupuesto_ventas_model,
@@ -1260,3 +1262,38 @@ def obtener_presupuesto_ventas_lineas_ctrl(id_carga: int) -> pd.DataFrame:
 
 def obtener_presupuesto_ventas_lineas_pendientes_ctrl() -> pd.DataFrame:
     return obtener_presupuesto_ventas_lineas_pendientes_model()
+
+
+# ── reporte gerencial (link compartible) ──────────────────────────────────────
+
+def guardar_reporte_ventas_ctrl(
+    id_carga: int,
+    anio: int,
+    mes_generado: int,
+    usuario_id: int,
+    usuario_nombre: Optional[str],
+    html_contenido: str,
+) -> str:
+    """Guarda un snapshot del reporte y regresa el token para armar el link
+    público (?rv=<token>)."""
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(24)
+    insertar_reporte_ventas_model(
+        token=token,
+        id_carga=id_carga,
+        anio=anio,
+        mes_generado=mes_generado,
+        usuario_id=usuario_id,
+        usuario_nombre=usuario_nombre,
+        html_contenido=html_contenido,
+    )
+    return token
+
+
+def obtener_reporte_ventas_ctrl(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    try:
+        return obtener_reporte_ventas_por_token_model(token)
+    except Exception:
+        return None

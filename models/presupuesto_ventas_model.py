@@ -1533,3 +1533,67 @@ def obtener_presupuesto_ventas_lineas_pendientes_model() -> pd.DataFrame:
             conn.close()
         except Exception:
             pass
+
+
+# ── reporte gerencial (link compartible) ──────────────────────────────────────
+
+def insertar_reporte_ventas_model(
+    token: str,
+    id_carga: int,
+    anio: int,
+    mes_generado: int,
+    usuario_id: int,
+    usuario_nombre: Optional[str],
+    html_contenido: str,
+) -> int:
+    """Guarda un snapshot del reporte gerencial (HTML ya renderizado) para
+    que el link público (?rv=<token>, sin login) lo muestre sin volver a
+    calcular los datos."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            insert into presupuesto_ventas_reportes (
+                token, id_carga, anio, mes_generado, usuario_id, usuario_nombre, html_contenido
+            ) values (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(token),
+                int(id_carga),
+                int(anio),
+                int(mes_generado),
+                int(usuario_id),
+                str(usuario_nombre).strip() if usuario_nombre else None,
+                str(html_contenido),
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def obtener_reporte_ventas_por_token_model(token: str) -> Optional[dict]:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select id, token, id_carga, anio, mes_generado, usuario_id,
+                   usuario_nombre, html_contenido, creado_en
+            from presupuesto_ventas_reportes
+            where token = %s
+            """,
+            (str(token),),
+        )
+        row = cur.fetchone()
+        return row or None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
