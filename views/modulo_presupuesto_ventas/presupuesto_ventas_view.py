@@ -1409,6 +1409,43 @@ def _panel_comparacion_sae_ventas(
 _MES_NUM_DE = {v: k for k, v in _MESES.items()}
 
 
+def _mes_no_futuro(anio: int, mes_num: int) -> bool:
+    """True si (anio, mes_num) es el mes actual o anterior. Los meses
+    futuros todavía no tienen venta real que comparar — mostrarla ahí sería
+    engañoso (real=0 no porque no se vendió, sino porque el mes no ha
+    pasado), mismo criterio que Construcción de forecast."""
+    hoy = date.today()
+    return (int(anio), int(mes_num)) <= (hoy.year, hoy.month)
+
+
+def _color_real_vs_dp(real, dp) -> str:
+    """Mismo criterio de color que Construcción de forecast
+    (_cell_style_real_vs_dp_js): verde si real==dp (dp>0), rojo si real<dp
+    (incluye real=0 con dp>0), azul si real>dp (incluye dp=0 con real>0),
+    sin color solo si dp=0 y real=0."""
+    if pd.isna(real) or pd.isna(dp):
+        return ""
+    if dp == 0 and real == 0:
+        return ""
+    if real == dp:
+        return "background-color: #d4edda; color: #155724"
+    if real < dp:
+        return "background-color: #f8d7da; color: #721c24"
+    return "background-color: #cce5ff; color: #004085"
+
+
+def _color_valor(v) -> str:
+    """🟩 positivo / 🟥 negativo / sin color en 0 — mismo criterio que
+    _CELL_STYLE_VALORES (Construcción de forecast) y el resto de la app."""
+    if pd.isna(v):
+        return ""
+    if v > 0:
+        return "background-color: #d4edda; color: #155724"
+    if v < 0:
+        return "background-color: #f8d7da; color: #721c24"
+    return ""
+
+
 def _tabla_filtrada_presupuesto(
     work_df: pd.DataFrame,
     seccion: str,
@@ -1485,15 +1522,17 @@ def _tabla_filtrada_presupuesto(
         "total_kg_anio": "Total Kg", "total_usd_anio": "Total USD",
     }
     for mn in meses_cols:
-        mapa_mes = real_por_mes.get(_MES_NUM_DE.get(mn), {})
-        real_col = f"_real_{mn}"
-        df[real_col] = [
-            mapa_mes.get((art, clie), 0.0)
-            for art, clie in zip(df["_cve_art"], df["_cve_clie"])
-        ]
-        meses_cols_out.append(real_col)
+        mes_num = _MES_NUM_DE.get(mn)
+        if mes_num is not None and _mes_no_futuro(anio_actual, mes_num):
+            mapa_mes = real_por_mes.get(mes_num, {})
+            real_col = f"_real_{mn}"
+            df[real_col] = [
+                mapa_mes.get((art, clie), 0.0)
+                for art, clie in zip(df["_cve_art"], df["_cve_clie"])
+            ]
+            meses_cols_out.append(real_col)
+            encabezados[real_col] = f"Real {mn.capitalize()}"
         meses_cols_out.append(mn)
-        encabezados[real_col] = f"Real {mn.capitalize()}"
         encabezados[mn] = mn.upper()
 
     cols_mostrar = [c for c in (
@@ -1501,12 +1540,31 @@ def _tabla_filtrada_presupuesto(
         "precio", "precio_venta", "total_kg_anio", "total_usd_anio",
     ) if c in df.columns] + meses_cols_out
 
+    df_mostrar = df[cols_mostrar].rename(columns=encabezados)
+
+    # colorea cada "Real <mes>" contra el DP (mes) de la misma fila, y cada
+    # columna de mes (DP) por signo — mismo código de colores que
+    # Construcción de forecast
+    estilo = pd.DataFrame("", index=df_mostrar.index, columns=df_mostrar.columns)
+    for mn in meses_cols:
+        header_real = encabezados.get(f"_real_{mn}")
+        header_mes = encabezados[mn]
+        if header_mes in df_mostrar.columns:
+            estilo[header_mes] = [_color_valor(v) for v in df_mostrar[header_mes]]
+        if header_real and header_real in estilo.columns and header_mes in df_mostrar.columns:
+            estilo[header_real] = [
+                _color_real_vs_dp(r, d)
+                for r, d in zip(df_mostrar[header_real], df_mostrar[header_mes])
+            ]
+
     st.caption(
         f"{len(df):,} registro(s) coinciden con el filtro — "
-        "\"Real <mes>\" es la venta real de Aspel SAE de ese mes (cruzada por cliente + producto)"
+        "\"Real <mes>\" es la venta real de Aspel SAE de ese mes (cruzada por cliente + producto) — "
+        "en \"Real <mes>\": 🟩 real = DP  |  🟥 real < DP  |  🟦 real > DP  —  "
+        "en los meses (DP): 🟩 valor positivo  |  🟥 valor negativo"
     )
     st.dataframe(
-        df[cols_mostrar].rename(columns=encabezados),
+        df_mostrar.style.apply(lambda _: estilo, axis=None),
         use_container_width=True, hide_index=True,
         height=min(56 + len(df) * 35, 500),
     )
