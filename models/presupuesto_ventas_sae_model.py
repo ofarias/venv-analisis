@@ -719,3 +719,122 @@ def obtener_ventas_reales_resumen_sae_model(
             con.close()
         except Exception:
             pass
+
+
+def obtener_compras_reales_resumen_sae_model(
+    anio: Optional[int] = None,
+    mes: Optional[int] = None,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+    cve_prov: Optional[str] = None,
+    cve_art: Optional[str] = None,
+    num_alm: Optional[int] = None,
+) -> pd.DataFrame:
+    """compras reales de SAE (comprobantes de compra ya recibidos, no
+    cancelados) — equivalente de obtener_ventas_reales_resumen_sae_model
+    pero para el lado de compras (compc01/par_compc01 en vez de
+    factf01/par_factf01). precio_promedio e importe convertidos a USD por
+    línea (par_compc01.prec y tot_partida vienen en pesos, se dividen entre
+    tip_cam)."""
+    con = _conn_sae_from_secrets(st.secrets)
+    try:
+        cur = con.cursor()
+
+        sql = """
+            select
+                extract(year from c.fecha_doc) as anio,
+                extract(month from c.fecha_doc) as mes,
+                c.cve_clpv as cve_prov,
+                pr.nombre as proveedor,
+                p.cve_art,
+                i.descr as producto,
+                i.lin_prod,
+                l.desc_lin as linea,
+                coalesce(p.num_alm, c.num_alma) as num_alm,
+                sum(coalesce(p.cant, 0)) as cantidad,
+                avg(coalesce(p.prec, 0) / nullif(p.tip_cam, 0)) as precio_promedio,
+                sum(coalesce(p.tot_partida, 0) / nullif(p.tip_cam, 0)) as importe
+            from compc01 c
+            join par_compc01 p
+                on p.cve_doc = c.cve_doc
+            left join prov01 pr
+                on pr.clave = c.cve_clpv
+            left join inve01 i
+                on i.cve_art = p.cve_art
+            left join clin01 l
+                on l.cve_lin = i.lin_prod
+            where 1 = 1
+              and coalesce(c.status, '') <> 'C'
+        """
+        params: list = []
+
+        if anio is not None:
+            sql += " and extract(year from c.fecha_doc) = ?"
+            params.append(int(anio))
+
+        if mes is not None:
+            sql += " and extract(month from c.fecha_doc) = ?"
+            params.append(int(mes))
+
+        if fecha_inicio:
+            sql += " and cast(c.fecha_doc as date) >= ?"
+            params.append(fecha_inicio)
+
+        if fecha_fin:
+            sql += " and cast(c.fecha_doc as date) <= ?"
+            params.append(fecha_fin)
+
+        if cve_prov:
+            sql += " and c.cve_clpv = ?"
+            params.append(str(cve_prov).strip())
+
+        if cve_art:
+            sql += " and p.cve_art = ?"
+            params.append(str(cve_art).strip())
+
+        if num_alm is not None:
+            sql += " and coalesce(p.num_alm, c.num_alma) = ?"
+            params.append(int(num_alm))
+
+        sql += """
+            group by
+                extract(year from c.fecha_doc),
+                extract(month from c.fecha_doc),
+                c.cve_clpv,
+                pr.nombre,
+                p.cve_art,
+                i.descr,
+                i.lin_prod,
+                l.desc_lin,
+                coalesce(p.num_alm, c.num_alma)
+            order by
+                anio desc,
+                mes desc,
+                proveedor,
+                producto
+        """
+
+        cur.execute(sql, tuple(params))
+        return _df_from_cursor(
+            cur,
+            [
+                "anio",
+                "mes",
+                "cve_prov",
+                "proveedor",
+                "cve_art",
+                "producto",
+                "lin_prod",
+                "linea",
+                "num_alm",
+                "cantidad",
+                "precio_promedio",
+                "importe",
+            ],
+        )
+
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass

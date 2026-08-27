@@ -14,6 +14,7 @@ from controllers.forecast_controller import (
     obtener_presupuesto_compras_resumen_por_anio_ctrl,
     obtener_presupuesto_finanzas_resumen_por_anio_ctrl,
     _catalogo_productos_sae,
+    _compras_historicas_sae,
     _ventas_historicas_sae,
 )
 
@@ -23,22 +24,20 @@ _MESES = {1:"ene",2:"feb",3:"mar",4:"abr",5:"may",6:"jun",
 
 _TABS_SEC = [
     ("KG México",        "KG",  "MEXICO"),
-    ("USD México",       "USD", "MEXICO"),
-    ("CAM & Caribe KG",  "KG",  "CAM & Caribe"),
-    ("CAM & Caribe USD", "USD", "CAM & Caribe"),
 ]
 
 # series disponibles para comparar; "mes_suffix" son las columnas que ya arma
-# _construir_comparativo ({mes}_real / {mes}_fc / {mes}_pv / {mes}_pc / {mes}_pf / {mes}_real_filt)
+# _construir_comparativo ({mes}_real / {mes}_real_compras / {mes}_fc / {mes}_pv / {mes}_pc / {mes}_pf / {mes}_real_filt)
 _SERIES_META = {
     "real":          {"label": "Real (SAE)",              "total_col": "total_real",          "mes_suffix": "_real"},
     "real_filtrado": {"label": "Real (SAE Filtrado)",      "total_col": "total_real_filtrado", "mes_suffix": "_real_filt"},
+    "real_compras":  {"label": "Real Compras (SAE)",       "total_col": "total_real_compras",  "mes_suffix": "_real_compras"},
     "fc":            {"label": "Forecast",                 "total_col": "total_fc",             "mes_suffix": "_fc"},
     "pv":            {"label": "Presupuesto Ventas",        "total_col": "total_presupuesto",   "mes_suffix": "_pv"},
     "pc":            {"label": "Presupuesto Compras",       "total_col": "total_pc",             "mes_suffix": "_pc"},
     "pf":            {"label": "Presupuesto Finanzas",      "total_col": "total_pf",             "mes_suffix": "_pf"},
 }
-_SERIES_ORDEN = ["real", "real_filtrado", "fc", "pv", "pc", "pf"]
+_SERIES_ORDEN = ["real", "real_filtrado", "real_compras", "fc", "pv", "pc", "pf"]
 
 
 def _col_sae(seccion: str) -> str:
@@ -56,6 +55,7 @@ _col_pc = _col_pv
 
 def _construir_comparativo(
     df_sae: pd.DataFrame,
+    df_sae_compras: pd.DataFrame,
     df_fc: pd.DataFrame,
     df_pv: pd.DataFrame,
     df_pc: pd.DataFrame,
@@ -65,9 +65,9 @@ def _construir_comparativo(
 ) -> pd.DataFrame:
     """
     Retorna pivot wide:
-      cve_prod | producto | total_real | total_real_filtrado | total_fc |
-      total_presupuesto | total_pc | total_pf | cumplimiento_%
-      + ene_real | ene_fc | ene_pv | ene_pc | ene_pf | ene_Δ% | feb_real | ...
+      cve_prod | producto | total_real | total_real_filtrado | total_real_compras |
+      total_fc | total_presupuesto | total_pc | total_pf | cumplimiento_%
+      + ene_real | ene_real_compras | ene_fc | ene_pv | ene_pc | ene_pf | ene_Δ% | feb_real | ...
 
     total_real_filtrado / {mes}_real_filt tienen el mismo valor que total_real
     / {mes}_real (el real de SAE) fila por fila — lo que cambia con "Real (SAE
@@ -75,6 +75,11 @@ def _construir_comparativo(
     (mostrar_tab_real_vs_forecast) a los códigos presentes en las demás series
     elegidas para comparar (Forecast/Presupuesto Ventas/Compras/Finanzas), en
     vez de incluir también los códigos que solo existen en SAE.
+
+    total_real_compras / {mes}_real_compras vienen de compras ya recibidas en
+    SAE (compc01/par_compc01) — es la referencia correcta al comparar contra
+    Presupuesto Compras (real vs real, no ventas vs compras); ver
+    _referencia_para en el llamador.
     """
     col_sae = _col_sae(seccion)
     col_pv = _col_pv(seccion)
@@ -92,6 +97,18 @@ def _construir_comparativo(
         sae_grp = sae_grp[sae_grp["mes"].isin(meses)]
     else:
         sae_grp = pd.DataFrame(columns=["cve_art", "mes", "real", "producto"])
+
+    # ── agrupar compras SAE por cve_art × mes ─────────────────────────────────
+    if df_sae_compras is not None and not df_sae_compras.empty and "cve_art" in df_sae_compras.columns:
+        df_sae_compras = df_sae_compras.copy()
+        df_sae_compras["mes"] = pd.to_numeric(df_sae_compras["mes"], errors="coerce").astype(int)
+        df_sae_compras[col_sae] = pd.to_numeric(df_sae_compras[col_sae], errors="coerce").fillna(0.0)
+        sae_compras_grp = df_sae_compras.groupby(["cve_art", "mes"], as_index=False).agg(
+            real_compras=(col_sae, "sum"),
+        )
+        sae_compras_grp = sae_compras_grp[sae_compras_grp["mes"].isin(meses)]
+    else:
+        sae_compras_grp = pd.DataFrame(columns=["cve_art", "mes", "real_compras"])
 
     # ── agrupar forecast por cve_prod × mes ───────────────────────────────────
     if df_fc is not None and not df_fc.empty:
@@ -143,8 +160,14 @@ def _construir_comparativo(
 
     # ── unión por cve_prod = cve_art ──────────────────────────────────────────
     sae_grp = sae_grp.rename(columns={"cve_art": "cve_prod"})
+    sae_compras_grp = sae_compras_grp.rename(columns={"cve_art": "cve_prod"})
     merged = pd.merge(
         fc_grp, sae_grp,
+        on=["cve_prod", "mes"],
+        how="outer",
+    )
+    merged = pd.merge(
+        merged, sae_compras_grp,
         on=["cve_prod", "mes"],
         how="outer",
     )
@@ -163,7 +186,7 @@ def _construir_comparativo(
         on=["cve_prod", "mes"],
         how="outer",
     )
-    merged = merged.fillna({"real": 0.0, "fc": 0.0, "pv": 0.0, "pc": 0.0, "pf": 0.0})
+    merged = merged.fillna({"real": 0.0, "real_compras": 0.0, "fc": 0.0, "pv": 0.0, "pc": 0.0, "pf": 0.0})
 
     # nombre de producto: preferir el de SAE, fallback forecast, presupuesto, pres. finanzas
     merged["producto"] = (
@@ -185,6 +208,7 @@ def _construir_comparativo(
 
         total_real = 0.0
         total_real_filtrado = 0.0
+        total_real_compras = 0.0
         total_fc   = 0.0
         total_pv   = 0.0
         total_pc   = 0.0
@@ -192,6 +216,7 @@ def _construir_comparativo(
         for mes in meses:
             row = sub[sub["mes"] == mes]
             real = float(row["real"].sum()) if not row.empty else 0.0
+            real_compras = float(row["real_compras"].sum()) if not row.empty else 0.0
             fc   = float(row["fc"].sum())   if not row.empty else 0.0
             pv   = float(row["pv"].sum())   if not row.empty else 0.0
             pc   = float(row["pc"].sum())   if not row.empty else 0.0
@@ -200,16 +225,18 @@ def _construir_comparativo(
             mn = _MESES[mes]
             fila[f"{mn}_real"] = real
             fila[f"{mn}_real_filt"] = real_filt
+            fila[f"{mn}_real_compras"] = real_compras
             fila[f"{mn}_fc"]   = fc
             fila[f"{mn}_pv"]   = pv
             fila[f"{mn}_pc"]   = pc
             fila[f"{mn}_pf"]   = pf
             fila[f"{mn}_Δ%"]   = round((real - fc) / fc * 100, 1) if fc != 0 else None
             fila[f"{mn}_Δ%_pv"] = round((real - pv) / pv * 100, 1) if pv != 0 else None
-            fila[f"{mn}_Δ%_pc"] = round((real - pc) / pc * 100, 1) if pc != 0 else None
+            fila[f"{mn}_Δ%_pc"] = round((real_compras - pc) / pc * 100, 1) if pc != 0 else None
             fila[f"{mn}_Δ%_pf"] = round((real - pf) / pf * 100, 1) if pf != 0 else None
             total_real += real
             total_real_filtrado += real_filt
+            total_real_compras += real_compras
             total_fc   += fc
             total_pv   += pv
             total_pc   += pc
@@ -217,13 +244,14 @@ def _construir_comparativo(
 
         fila["total_real"] = round(total_real, 2)
         fila["total_real_filtrado"] = round(total_real_filtrado, 2)
+        fila["total_real_compras"] = round(total_real_compras, 2)
         fila["total_fc"]   = round(total_fc, 2)
         fila["total_presupuesto"] = round(total_pv, 2)
         fila["total_pc"]   = round(total_pc, 2)
         fila["total_pf"]   = round(total_pf, 2)
         fila["cumplimiento_%"] = round(total_real / total_fc * 100, 1) if total_fc != 0 else None
         fila["cumplimiento_pv_%"] = round(total_real / total_pv * 100, 1) if total_pv != 0 else None
-        fila["cumplimiento_pc_%"] = round(total_real / total_pc * 100, 1) if total_pc != 0 else None
+        fila["cumplimiento_pc_%"] = round(total_real_compras / total_pc * 100, 1) if total_pc != 0 else None
         fila["cumplimiento_pf_%"] = round(total_real / total_pf * 100, 1) if total_pf != 0 else None
         filas.append(fila)
 
@@ -240,21 +268,35 @@ def _elegir_comparacion(series_sel: list[str]) -> tuple[str, list[str]]:
     return baseline, otros
 
 
+def _referencia_para(otro: str, baseline: str) -> str:
+    """Serie que realmente actúa como referencia al comparar contra `otro`:
+    normalmente `baseline`, salvo que la referencia elegida sea "real"
+    (ventas facturadas SAE) y lo comparado sea "Presupuesto Compras" — ahí la
+    referencia real debe ser compras ya recibidas en SAE ("real_compras"), no
+    ventas, porque comparar ventas contra un presupuesto de compras no tiene
+    el mismo significado que comparar real vs plan."""
+    if baseline == "real" and otro == "pc":
+        return "real_compras"
+    return baseline
+
+
 def _agregar_comparaciones(
     df_comp: pd.DataFrame, baseline: str, otros: list[str], meses: list[int]
 ) -> pd.DataFrame:
     """Agrega columnas total_delta_{otro}_%, total_cumpl_{otro}_% y
-    {mes}_delta_{otro}_% para cada serie no-baseline, relativas a `baseline`.
-    Si baseline es "real", el numerador es real (igual que el cálculo
-    histórico real-vs-plan); si no, el numerador es la serie "otro" y el
-    denominador es baseline."""
+    {mes}_delta_{otro}_% para cada serie no-baseline, relativas a la
+    referencia efectiva de cada `otro` (ver _referencia_para).
+    Si baseline es "real", el numerador es la referencia (igual que el
+    cálculo histórico real-vs-plan); si no, el numerador es la serie "otro" y
+    el denominador es la referencia."""
     df = df_comp.copy()
-    base_total_col = _SERIES_META[baseline]["total_col"]
 
     for otro in otros:
+        referencia = _referencia_para(otro, baseline)
+        ref_total_col = _SERIES_META[referencia]["total_col"]
         otro_total_col = _SERIES_META[otro]["total_col"]
-        num, den = (df[base_total_col], df[otro_total_col]) if baseline == "real" \
-            else (df[otro_total_col], df[base_total_col])
+        num, den = (df[ref_total_col], df[otro_total_col]) if baseline == "real" \
+            else (df[otro_total_col], df[ref_total_col])
         # NaN (no pd.NA): pd.NA hace que la columna pase a dtype "object" y
         # rompe tanto la comparación "val >= 0" del estilo de color como la
         # escritura a Excel con openpyxl (ninguno de los dos sabe qué hacer
@@ -265,12 +307,12 @@ def _agregar_comparaciones(
 
         for mes in meses:
             mn = _MESES[mes]
-            base_mes_col = f"{mn}{_SERIES_META[baseline]['mes_suffix']}"
+            ref_mes_col = f"{mn}{_SERIES_META[referencia]['mes_suffix']}"
             otro_mes_col = f"{mn}{_SERIES_META[otro]['mes_suffix']}"
-            if base_mes_col not in df.columns or otro_mes_col not in df.columns:
+            if ref_mes_col not in df.columns or otro_mes_col not in df.columns:
                 continue
-            num_m, den_m = (df[base_mes_col], df[otro_mes_col]) if baseline == "real" \
-                else (df[otro_mes_col], df[base_mes_col])
+            num_m, den_m = (df[ref_mes_col], df[otro_mes_col]) if baseline == "real" \
+                else (df[otro_mes_col], df[ref_mes_col])
             den_m_safe = den_m.replace(0, float("nan"))
             df[f"{mn}_delta_{otro}_%"] = ((num_m - den_m) / den_m_safe * 100).round(1)
 
@@ -342,12 +384,14 @@ def mostrar_tab_real_vs_forecast(
         return
 
     st.caption(
-        f"Comparativo de Ventas Reales SAE, Forecast, Presupuesto de Ventas, Presupuesto de Compras y "
-        f"Presupuesto de Finanzas — año {anio}. Elige abajo qué series comparar. "
+        f"Comparativo de Ventas Reales SAE, Compras Reales SAE, Forecast, Presupuesto de Ventas, "
+        f"Presupuesto de Compras y Presupuesto de Finanzas — año {anio}. Elige abajo qué series comparar. "
         "Verde = la serie de referencia ≥ la otra serie comparada. Rojo = lo contrario. "
         "Presupuesto de Ventas y Presupuesto de Compras solo consideran líneas ya **autorizadas**. "
         "Real (SAE Filtrado) solo muestra el real de los productos cuyo código existe tanto en Presupuesto "
         "de Ventas como en Presupuesto de Compras. "
+        "Al comparar contra Presupuesto de Compras, la referencia real es \"Real Compras (SAE)\" "
+        "(compras ya recibidas), no las ventas facturadas. "
         "⚠️ Presupuesto Finanzas no distingue región (MEXICO / CAM & Caribe): se muestra el mismo total en ambas."
     )
 
@@ -395,17 +439,24 @@ def mostrar_tab_real_vs_forecast(
     # carga datos SAE (cacheados)
     with st.spinner("cargando ventas SAE…"):
         df_sae = _ventas_historicas_sae(int(anio_sel))
+    with st.spinner("cargando compras SAE…"):
+        df_compras_sae = _compras_historicas_sae(int(anio_sel))
 
     # filtrar solo el año seleccionado
     if df_sae is not None and not df_sae.empty and "anio" in df_sae.columns:
         df_sae["anio"] = pd.to_numeric(df_sae["anio"], errors="coerce")
         df_sae = df_sae[df_sae["anio"] == int(anio_sel)]
+    if df_compras_sae is not None and not df_compras_sae.empty and "anio" in df_compras_sae.columns:
+        df_compras_sae["anio"] = pd.to_numeric(df_compras_sae["anio"], errors="coerce")
+        df_compras_sae = df_compras_sae[df_compras_sae["anio"] == int(anio_sel)]
 
     # ── filtro por línea (INV01.LIN_PROD ligado con clin01/LINEAS.ID) ──────────
     productos_linea: set[str] | None = None
     if linea_sel:
         if df_sae is not None and not df_sae.empty and "linea" in df_sae.columns:
             df_sae = df_sae[df_sae["linea"].astype(str).str.strip().isin(linea_sel)]
+        if df_compras_sae is not None and not df_compras_sae.empty and "linea" in df_compras_sae.columns:
+            df_compras_sae = df_compras_sae[df_compras_sae["linea"].astype(str).str.strip().isin(linea_sel)]
         if df_cat is not None and not df_cat.empty:
             productos_linea = set(
                 df_cat.loc[
@@ -428,11 +479,17 @@ def mostrar_tab_real_vs_forecast(
             df_sae = df_sae[
                 df_sae["cve_art"].astype(str).str.strip().str.upper().str.startswith(prefijo_tipo)
             ]
+        if df_compras_sae is not None and not df_compras_sae.empty and "cve_art" in df_compras_sae.columns:
+            df_compras_sae = df_compras_sae[
+                df_compras_sae["cve_art"].astype(str).str.strip().str.upper().str.startswith(prefijo_tipo)
+            ]
 
     # ── filtro por producto ─────────────────────────────────────────────────────
     if productos_sel:
         if df_sae is not None and not df_sae.empty and "cve_art" in df_sae.columns:
             df_sae = df_sae[df_sae["cve_art"].astype(str).str.strip().isin(productos_sel)]
+        if df_compras_sae is not None and not df_compras_sae.empty and "cve_art" in df_compras_sae.columns:
+            df_compras_sae = df_compras_sae[df_compras_sae["cve_art"].astype(str).str.strip().isin(productos_sel)]
         productos_linea = productos_sel if productos_linea is None else (productos_linea & productos_sel)
 
     # ── presupuesto de finanzas (no distingue región: se calcula una sola vez) ──
@@ -511,6 +568,7 @@ def mostrar_tab_real_vs_forecast(
             if (
                 (df_fc is None or df_fc.empty)
                 and (df_sae is None or df_sae.empty)
+                and (df_compras_sae is None or df_compras_sae.empty)
                 and (df_pv is None or df_pv.empty)
                 and (df_pc is None or df_pc.empty)
                 and (df_pf_all is None or df_pf_all.empty)
@@ -518,7 +576,9 @@ def mostrar_tab_real_vs_forecast(
                 st.info(f"sin datos para {label}")
                 continue
 
-            df_comp = _construir_comparativo(df_sae, df_fc, df_pv, df_pc, df_pf_all, seccion, meses)
+            df_comp = _construir_comparativo(
+                df_sae, df_compras_sae, df_fc, df_pv, df_pc, df_pf_all, seccion, meses
+            )
 
             if df_comp is None or df_comp.empty:
                 st.info(f"sin productos para comparar en {label}")
@@ -545,10 +605,16 @@ def mostrar_tab_real_vs_forecast(
 
             df_comp = _agregar_comparaciones(df_comp, baseline, otros, meses)
             unidad = "kg" if seccion == "KG" else "USD"
-            baseline_label = _SERIES_META[baseline]["label"]
 
             # ── KPIs del total ─────────────────────────────────────────────
-            totales_sum = {k: df_comp[_SERIES_META[k]["total_col"]].sum() for k in series_sel}
+            # incluye "real_compras" aunque no esté en series_sel: se necesita
+            # como referencia interna al comparar contra Presupuesto Compras
+            # (ver _referencia_para)
+            claves_totales = set(series_sel) | {"real_compras"}
+            totales_sum = {
+                k: df_comp[_SERIES_META[k]["total_col"]].sum()
+                for k in claves_totales if _SERIES_META[k]["total_col"] in df_comp.columns
+            }
 
             cols_tot = st.columns(len(series_sel))
             for col, k in zip(cols_tot, series_sel):
@@ -558,16 +624,18 @@ def mostrar_tab_real_vs_forecast(
                 cols_cumpl = st.columns(len(otros))
                 cols_delta = st.columns(len(otros))
                 for col_c, col_d, otro in zip(cols_cumpl, cols_delta, otros):
+                    referencia = _referencia_para(otro, baseline)
+                    referencia_label = _SERIES_META[referencia]["label"]
                     otro_label = _SERIES_META[otro]["label"]
-                    num, den = (totales_sum[baseline], totales_sum[otro]) if baseline == "real" \
-                        else (totales_sum[otro], totales_sum[baseline])
+                    num, den = (totales_sum[referencia], totales_sum[otro]) if baseline == "real" \
+                        else (totales_sum[otro], totales_sum[referencia])
                     cumpl = round(num / den * 100, 1) if den else 0.0
                     col_c.metric(
-                        f"Cumplimiento {otro_label} (vs {baseline_label})", f"{cumpl:.1f}%",
+                        f"Cumplimiento {otro_label} (vs {referencia_label})", f"{cumpl:.1f}%",
                         delta=f"{cumpl - 100:.1f}pp vs plan", delta_color="normal",
                     )
                     col_d.metric(
-                        f"Diferencia {otro_label} (vs {baseline_label})", f"{num - den:+,.0f}",
+                        f"Diferencia {otro_label} (vs {referencia_label})", f"{num - den:+,.0f}",
                         delta_color="normal",
                     )
 
@@ -591,8 +659,9 @@ def mostrar_tab_real_vs_forecast(
                 cols_orden.append(total_col)
 
             for otro in otros:
+                referencia_label = _SERIES_META[_referencia_para(otro, baseline)]["label"]
                 ccol = f"total_cumpl_{otro}_%"
-                titulo = f"cumplimiento % {_SERIES_META[otro]['label']} (vs {baseline_label})"
+                titulo = f"cumplimiento % {_SERIES_META[otro]['label']} (vs {referencia_label})"
                 col_cfg[ccol] = st.column_config.NumberColumn(titulo, format="%.1f", disabled=True)
                 encabezados[ccol] = titulo
                 cols_orden.append(ccol)
@@ -606,8 +675,9 @@ def mostrar_tab_real_vs_forecast(
                     encabezados[c] = titulo
                     cols_orden.append(c)
                 for otro in otros:
+                    referencia_label = _SERIES_META[_referencia_para(otro, baseline)]["label"]
                     c = f"{mn}_delta_{otro}_%"
-                    titulo = f"{mn.upper()} Δ% {_SERIES_META[otro]['label']} (vs {baseline_label})"
+                    titulo = f"{mn.upper()} Δ% {_SERIES_META[otro]['label']} (vs {referencia_label})"
                     col_cfg[c] = st.column_config.NumberColumn(titulo, format="%.1f", disabled=True)
                     encabezados[c] = titulo
                     cols_orden.append(c)

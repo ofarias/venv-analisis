@@ -42,6 +42,7 @@ from models.presupuesto_ventas_sae_model import (
     obtener_ordenes_compra_pendientes_sae_model,
     obtener_productos_sae_model,
     obtener_ultimo_precio_venta_sae_model,
+    obtener_ventas_reales_resumen_sae_model,
     obtener_vendedores_sae_model,
 )
 from controllers.solicitudes_controller import buscar_clientes_sae_ctrl
@@ -1192,6 +1193,22 @@ def obtener_ordenes_compra_pendientes_pv_ctrl() -> pd.DataFrame:
             "cve_doc", "serie", "folio", "fecha_doc", "fecha_rec",
             "cve_prov", "proveedor", "cve_art", "producto", "cve_linea", "linea",
             "cantidad", "unidad", "precio",
+        ])
+
+
+@st.cache_data(ttl=1800, show_spinner="cargando ventas reales SAE…")
+def obtener_ventas_reales_sae_pv_ctrl(anio: int) -> pd.DataFrame:
+    """Ventas reales de SAE (facturación ya emitida, no cancelada) por
+    cliente + producto + mes, para comparar contra el presupuesto de ventas
+    capturado — mismo criterio/columnas que usa Construcción de forecast."""
+    try:
+        df = obtener_ventas_reales_resumen_sae_model(anio=int(anio))
+        return df if df is not None else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame(columns=[
+            "anio", "mes", "cve_clie", "cliente", "cve_vend", "vendedor",
+            "cve_art", "producto", "lin_prod", "linea", "num_alm",
+            "cantidad", "precio_promedio", "importe",
         ])
 
 

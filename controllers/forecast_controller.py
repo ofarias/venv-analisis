@@ -28,6 +28,7 @@ from models.presupuesto_finanzas_model import (
 )
 from models.presupuesto_ventas_sae_model import (
     obtener_catalogo_productos_pv_model,
+    obtener_compras_reales_resumen_sae_model,
     obtener_existencias_productos_sae_model,
     obtener_productos_sae_model,
     obtener_ventas_reales_resumen_sae_model,
@@ -210,6 +211,23 @@ def obtener_presupuesto_compras_resumen_por_anio_ctrl(
     return _resumir_presupuesto(df_raw, seccion, region)
 
 
+def obtener_presupuesto_compras_resumen_ctrl(
+    id_carga_pc: Optional[int],
+    seccion: str,
+    region: Optional[str],
+    solo_autorizados: bool = False,
+) -> pd.DataFrame:
+    """Presupuesto de compras agregado por cve_prod × mes de UNA carga
+    puntual (usado al generar propuesta) — equivalente de
+    obtener_presupuesto_resumen_ctrl pero para presupuesto_compras. Alimenta
+    el método "Presupuesto Compras — <carga>" (pc_carga:<id_carga>), donde el
+    usuario elige a mano una carga en vez de todas las del año."""
+    if not id_carga_pc:
+        return pd.DataFrame(columns=_COLS_PRESUPUESTO_VACIO)
+    df_raw = obtener_presupuesto_compras_model(id_carga=id_carga_pc, solo_autorizados=solo_autorizados)
+    return _resumir_presupuesto(df_raw, seccion, region)
+
+
 @st.cache_data(ttl=900, show_spinner="cargando presupuesto de finanzas…")
 def obtener_presupuesto_finanzas_resumen_por_anio_ctrl(anio: int) -> pd.DataFrame:
     """
@@ -262,22 +280,35 @@ def generar_propuesta_ctrl(
         except (ValueError, IndexError):
             id_carga_metodo = None
         df_pv = obtener_presupuesto_resumen_ctrl(id_carga_metodo, seccion, region, solo_autorizados=True)
+    elif isinstance(metodo, str) and metodo.startswith("pc_carga:"):
+        # "Presupuesto Compras — <carga>": mismo criterio que pv_carga:<id>
+        # pero sobre presupuesto_compras — el usuario elige a mano UNA carga
+        # de compras en vez de todas las del año (pc_anio)
+        try:
+            id_carga_metodo = int(metodo.split(":", 1)[1])
+        except (ValueError, IndexError):
+            id_carga_metodo = None
+        df_pv = obtener_presupuesto_compras_resumen_ctrl(id_carga_metodo, seccion, region, solo_autorizados=True)
     else:
         df_pv = obtener_presupuesto_resumen_ctrl(id_carga_pv, seccion, region)
 
     # forecast_detalle.metodo es un ENUM que no admite las claves dinámicas
-    # "pv_carga:<id>" ni "pc_anio" — se persisten como "presupuesto" (el
-    # presupuesto de referencia ya quedó resuelto arriba con los datos de
-    # esa carga puntual o del año); si no se sanea, el INSERT truena con
-    # "Data truncated for column 'metodo'"
+    # "pv_carga:<id>" / "pc_carga:<id>" ni "pc_anio" — se persisten como
+    # "presupuesto" (el presupuesto de referencia ya quedó resuelto arriba
+    # con los datos de esa carga puntual o del año); si no se sanea, el
+    # INSERT truena con "Data truncated for column 'metodo'"
     metodo_guardado = (
         "presupuesto"
-        if metodo == "pc_anio" or (isinstance(metodo, str) and metodo.startswith("pv_carga:"))
+        if metodo == "pc_anio" or (isinstance(metodo, str) and (metodo.startswith("pv_carga:") or metodo.startswith("pc_carga:")))
         else metodo
     )
 
-    # 2. ventas históricas SAE (2 años atrás)
-    df_ventas_raw = _ventas_historicas_sae(anio)
+    # 2. ventas/compras históricas SAE (2 años atrás) — compras cuando el
+    # forecast que se está generando es de tipo "compra", para que
+    # venta_real_mes_ant/venta_real_prom_3m reflejen compras reales y no
+    # ventas cuando el método automático (ej. prom_3m) se aplica del lado
+    # de compras
+    df_ventas_raw = _compras_historicas_sae(anio) if tipo == "compra" else _ventas_historicas_sae(anio)
 
     # 3. generar propuesta
     df_prop = generar_propuesta_forecast(
@@ -625,6 +656,22 @@ def _ventas_historicas_sae(anio: int) -> pd.DataFrame:
             return df2 if df2 is not None else pd.DataFrame()
         # también trae año anterior para cálculos de referencia
         df_ant = obtener_ventas_reales_resumen_sae_model(anio=anio - 1)
+        if df_ant is not None and not df_ant.empty:
+            return pd.concat([df, df_ant], ignore_index=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=1800, show_spinner="cargando compras SAE…")
+def _compras_historicas_sae(anio: int) -> pd.DataFrame:
+    try:
+        df = obtener_compras_reales_resumen_sae_model(anio=anio)
+        if df is None or df.empty:
+            df2 = obtener_compras_reales_resumen_sae_model(anio=anio - 1)
+            return df2 if df2 is not None else pd.DataFrame()
+        # también trae año anterior para cálculos de referencia
+        df_ant = obtener_compras_reales_resumen_sae_model(anio=anio - 1)
         if df_ant is not None and not df_ant.empty:
             return pd.concat([df, df_ant], ignore_index=True)
         return df

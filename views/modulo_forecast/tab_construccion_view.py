@@ -10,12 +10,16 @@ from controllers.forecast_controller import (
     generar_propuesta_ctrl,
     guardar_forecast_fila_ctrl,
     obtener_forecast_detalle_ctrl,
+    _compras_historicas_sae,
     _ventas_historicas_sae,
     _existencias_sae,
 )
 from controllers.presupuesto_ventas_controller import (
     obtener_cargas_presupuesto_ventas_ctrl,
     obtener_catalogo_productos_pv_ctrl,
+)
+from controllers.presupuesto_compras_controller import (
+    obtener_cargas_presupuesto_compras_ctrl,
 )
 
 
@@ -36,7 +40,7 @@ _METODOS_LABEL_VENTA = {
 }
 _METODOS_LABEL_COMPRA = {
     "manual": "Manual",
-    "pc_anio": "Presupuesto Compras",
+    "pc_anio": "Presupuesto Compras (todas las cargas)",
 }
 
 # resalta en verde los valores positivos y en rojo los negativos; 0 sin color
@@ -53,6 +57,56 @@ function(params) {
 }
 """)
 
+# ventana de urgencia de Compra (Demand Plan): mes actual + 2 siguientes —
+# todas las celdas en amarillo, sin importar el valor
+_CELL_STYLE_VENTANA_AMARILLO = JsCode("""
+function(params) {
+    return {backgroundColor: '#fff3cd', color: '#856404'};
+}
+""")
+
+# ventana de urgencia de Compra (Demand Plan): los 2 meses siguientes a la
+# ventana amarilla — en rojo solo si la celda tiene valor mayor a 0
+_CELL_STYLE_VENTANA_ROJA = JsCode("""
+function(params) {
+    if (params.value > 0) {
+        return {backgroundColor: '#f8d7da', color: '#721c24'};
+    }
+    return null;
+}
+""")
+
+# resalta la fila de totales pinneada al fondo del grid
+_ROW_STYLE_TOTAL = JsCode("""
+function(params) {
+    if (params.node.rowPinned) {
+        return {fontWeight: 'bold', backgroundColor: '#e9ecef'};
+    }
+    return null;
+}
+""")
+
+
+def _cell_style_real_vs_dp_js(mes_col: str) -> JsCode:
+    """cellStyle de una columna "Real <mes>": compara contra el DP (forecast)
+    del mismo mes (columna `mes_col`) en la misma fila.
+    - DP > 0 y real = DP           → verde
+    - DP > 0 y real < DP (incl. 0) → rojo
+    - real > DP (incl. DP = 0)     → azul
+    - DP = 0 y real = 0            → sin color (nada que comparar)"""
+    return JsCode(f"""
+    function(params) {{
+        if (params.value === null || params.value === undefined) return null;
+        var real = params.value;
+        var dp = params.data ? params.data['{mes_col}'] : null;
+        if (dp === null || dp === undefined) dp = 0;
+        if (dp === 0 && real === 0) return null;
+        if (real === dp) return {{backgroundColor: '#d4edda', color: '#155724'}};
+        if (real < dp) return {{backgroundColor: '#f8d7da', color: '#721c24'}};
+        return {{backgroundColor: '#cce5ff', color: '#004085'}};
+    }}
+    """)
+
 
 def _value_formatter_js(decimales: int) -> JsCode:
     return JsCode(f"""
@@ -63,10 +117,10 @@ def _value_formatter_js(decimales: int) -> JsCode:
     """)
 
 
-def _etiqueta_carga_pv(r: dict) -> str:
-    """Etiqueta de una carga de presupuesto de ventas para el selector de
-    método — usa el comentario (ahí indican de qué industria es) y cae a
-    nombre de archivo + año si no hay comentario."""
+def _etiqueta_carga(r: dict) -> str:
+    """Etiqueta de una carga de presupuesto (ventas o compras, mismo
+    esquema) para el selector de método — usa el comentario (ahí indican de
+    qué industria es) y cae a nombre de archivo + año si no hay comentario."""
     comentario = str(r.get("comentarios") or "").strip()
     if comentario:
         return comentario
@@ -77,12 +131,21 @@ def _etiqueta_carga_pv(r: dict) -> str:
 
 def _metodos_opciones(usuario_datos_id: int, tipo: str) -> dict:
     """Opciones del selector de método, según el tipo del sub-tab activo:
-    - compra: fijas (manual, presupuesto compras) — no aplican las cargas de
-      presupuesto de ventas.
+    - compra: manual + "todas las cargas del año" + una opción por cada
+      carga de presupuesto de compras del dueño de la versión.
     - venta: manual + una opción por cada carga de presupuesto de ventas del
       dueño de la versión, identificada por su comentario/industria."""
     if tipo == "compra":
-        return dict(_METODOS_LABEL_COMPRA)
+        opciones = dict(_METODOS_LABEL_COMPRA)
+        try:
+            df_cargas_pc = obtener_cargas_presupuesto_compras_ctrl(limit=50, usuario_id=usuario_datos_id)
+        except Exception:
+            df_cargas_pc = None
+        if df_cargas_pc is not None and not df_cargas_pc.empty:
+            for r in df_cargas_pc.to_dict("records"):
+                id_carga = int(r["id_carga"])
+                opciones[f"pc_carga:{id_carga}"] = f"Presupuesto Compras — {_etiqueta_carga(r)}"
+        return opciones
 
     opciones = dict(_METODOS_LABEL_VENTA)
     try:
@@ -92,7 +155,7 @@ def _metodos_opciones(usuario_datos_id: int, tipo: str) -> dict:
     if df_cargas_pv is not None and not df_cargas_pv.empty:
         for r in df_cargas_pv.to_dict("records"):
             id_carga = int(r["id_carga"])
-            opciones[f"pv_carga:{id_carga}"] = f"Presupuesto Ventas — {_etiqueta_carga_pv(r)}"
+            opciones[f"pv_carga:{id_carga}"] = f"Presupuesto Ventas — {_etiqueta_carga(r)}"
     return opciones
 
 
@@ -123,15 +186,26 @@ def _puede_editar_sin_restriccion() -> bool:
 
 
 def _mes_editable_compra(anio: int, mes: int) -> bool:
-    """Regla de los 3 meses (solo forecast de Compra / Demand Plan): solo se
-    puede mover el forecast de meses posteriores a los 3 meses siguientes al
-    actual — si estamos en julio, agosto/septiembre/octubre quedan
-    bloqueados y noviembre en adelante (incluido cualquier año futuro) queda
-    editable."""
+    """Regla de los 3 meses (solo forecast de Compra / Demand Plan): el mes
+    actual y los 2 siguientes quedan bloqueados (3 meses en total, misma
+    ventana que se resalta en amarillo) — si estamos en agosto,
+    agosto/septiembre/octubre quedan bloqueados y noviembre en adelante
+    (incluido cualquier año futuro) queda editable."""
     hoy = date.today()
     idx_hoy = hoy.year * 12 + hoy.month
     idx_celda = int(anio) * 12 + int(mes)
-    return idx_celda >= idx_hoy + 4
+    return idx_celda >= idx_hoy + 3
+
+
+def _offset_mes_actual(anio: int, mes: int) -> int:
+    """Diferencia en meses entre (anio, mes) y el mes actual — 0 = mes
+    actual, 1 = mes siguiente, etc. (puede ser negativo). Usado para la
+    ventana de colores de urgencia de Compra (Demand Plan): mes actual + 2
+    siguientes en amarillo, los 2 siguientes a esos en rojo (si hay valor)."""
+    hoy = date.today()
+    idx_hoy = hoy.year * 12 + hoy.month
+    idx_celda = int(anio) * 12 + int(mes)
+    return idx_celda - idx_hoy
 
 
 def _mes_editable_venta(anio: int, mes: int) -> bool:
@@ -154,11 +228,49 @@ def _mes_editable(tipo: str, anio: int, mes: int) -> bool:
     return _mes_editable_venta(anio, mes)
 
 
-def _pivot_forecast(df: pd.DataFrame, meses: list[int], precio_map: dict | None = None) -> pd.DataFrame:
+def _real_sae_map(df_sae: pd.DataFrame, seccion: str, anio: int, meses: list[int]) -> dict[str, float]:
+    """cve_art → total real (ventas o compras, según qué df_sae se pase) de
+    SAE, sumado sobre los meses seleccionados del año en curso — mismo
+    criterio que la columna "Real (SAE)" de la pantalla Real vs Forecast."""
+    if df_sae is None or df_sae.empty or "cve_art" not in df_sae.columns:
+        return {}
+    df = df_sae.copy()
+    df["anio"] = pd.to_numeric(df["anio"], errors="coerce")
+    df["mes"] = pd.to_numeric(df["mes"], errors="coerce")
+    df = df[(df["anio"] == int(anio)) & (df["mes"].isin(meses))]
+    if df.empty:
+        return {}
+    col = "cantidad" if seccion == "KG" else "importe"
+    if col not in df.columns:
+        return {}
+    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    grp = df.groupby("cve_art", as_index=False)[col].sum()
+    return dict(zip(grp["cve_art"].astype(str).str.strip(), grp[col]))
+
+
+def _pivot_forecast(
+    df: pd.DataFrame,
+    meses: list[int],
+    precio_map: dict | None = None,
+    real_map: dict | None = None,
+    real_col: str | None = None,
+    real_map_por_mes: dict[int, dict] | None = None,
+    real_col_prefix: str | None = None,
+) -> pd.DataFrame:
     """Convierte detalle long → wide con columnas de meses. "precio" es el
     precio SAE del producto; "total_kg" es la suma de los meses mostrados;
     "total_usd" la convierte a dólares con ese precio — mismo criterio que
-    "Total Kilos Año"/"Total USD Año" en presupuesto de ventas."""
+    "Total Kilos Año"/"Total USD Año" en presupuesto de ventas.
+
+    real_map (cve_prod → total real SAE de los meses seleccionados) se agrega
+    como `real_col` cuando se pasan ambos — un solo total acumulado de los
+    meses mostrados.
+
+    real_map_por_mes (mes → {cve_prod: total real SAE de ESE mes}) agrega,
+    en cambio, una columna `{real_col_prefix}_{mes}` por cada mes con datos,
+    colocada justo antes de la columna de forecast de ese mismo mes — permite
+    comparar mes a mes ("Real Ene" junto a "Ene") en vez de un solo total
+    agregado; ver _mostrar_construccion_tipo (venta y compra por igual)."""
     if df is None or df.empty:
         return pd.DataFrame()
     cols_id = ["cve_prod", "producto_excel"]
@@ -184,8 +296,52 @@ def _pivot_forecast(df: pd.DataFrame, meses: list[int], precio_map: dict | None 
     wide["precio"] = precio_prod
     wide["total_usd"] = wide["total_kg"] * precio_prod
 
-    col_order = cols_id + ["precio", "total_kg", "total_usd"] + ref_cols + meses_cols
+    ref_cols_out = list(ref_cols)
+    if real_map and real_col:
+        wide[real_col] = wide["cve_prod"].astype(str).str.strip().map(real_map).fillna(0.0)
+        ref_cols_out.append(real_col)
+
+    # columnas mes a mes: si hay real por mes, la columna "real_<mes>" va
+    # justo antes de la columna de forecast de ese mismo mes
+    meses_cols_out: list[str] = []
+    for m in meses:
+        mn = _MESES.get(m)
+        if real_map_por_mes and real_col_prefix and m in real_map_por_mes:
+            real_mes_col = f"{real_col_prefix}_{mn}"
+            wide[real_mes_col] = wide["cve_prod"].astype(str).str.strip().map(real_map_por_mes[m]).fillna(0.0)
+            meses_cols_out.append(real_mes_col)
+        if mn in wide.columns:
+            meses_cols_out.append(mn)
+
+    col_order = cols_id + ["precio", "total_kg", "total_usd"] + ref_cols_out + meses_cols_out
     return wide[[c for c in col_order if c in wide.columns]]
+
+
+def _grafica_rendimiento(
+    fila_total: dict, meses_sel: list[int], real_col_prefix: str | None
+) -> pd.DataFrame:
+    """DP vs Real, en orden cronológico y como pares por mes ("Real Ene",
+    "Ene", "Real Feb", "Feb", …) en vez de series agrupadas — a partir de los
+    totales ya sumados en `fila_total` (fila TOTAL pinneada del grid).
+    "Real \\<mes>" solo aparece en los meses que tienen esa columna (mes
+    actual y anteriores; ver _mostrar_construccion_tipo)."""
+    filas: list[dict] = []
+    for m in sorted(meses_sel):
+        mn = _MESES[m]
+        if mn not in fila_total:
+            continue
+        if real_col_prefix:
+            real_mes_col = f"{real_col_prefix}_{mn}"
+            if real_mes_col in fila_total:
+                filas.append({"categoria": f"Real {mn.capitalize()}", "valor": fila_total[real_mes_col]})
+        filas.append({"categoria": mn.capitalize(), "valor": fila_total[mn]})
+    if not filas:
+        return pd.DataFrame()
+    df = pd.DataFrame(filas)
+    # categórica ordenada: preserva el orden de inserción (cronológico, Real
+    # antes que el mes) en vez del orden alfabético que usaría el eje X por defecto
+    df["categoria"] = pd.Categorical(df["categoria"], categories=df["categoria"].tolist(), ordered=True)
+    return df.set_index("categoria")
 
 
 def mostrar_tab_construccion(
@@ -218,6 +374,13 @@ def mostrar_tab_construccion(
         for r in df_cat_precio.to_dict("records")
     } if df_cat_precio is not None and not df_cat_precio.empty else {}
 
+    # ventas y compras reales SAE — compartidas entre ambos sub-tabs, cada
+    # uno usa la que le corresponde (venta → "Venta Real", compra → "Compra Real")
+    with st.spinner("cargando ventas SAE…"):
+        df_ventas_sae = _ventas_historicas_sae(int(anio))
+    with st.spinner("cargando compras SAE…"):
+        df_compras_sae = _compras_historicas_sae(int(anio))
+
     tipo_tabs = st.tabs([label for _, label in _TIPOS])
     for tab_ui, (tipo, _label) in zip(tipo_tabs, _TIPOS):
         with tab_ui:
@@ -232,6 +395,8 @@ def mostrar_tab_construccion(
                 es_admin=es_admin,
                 meses_sel=meses_sel,
                 precio_map=precio_map,
+                df_ventas_sae=df_ventas_sae,
+                df_compras_sae=df_compras_sae,
             )
 
 
@@ -246,13 +411,15 @@ def _mostrar_construccion_tipo(
     es_admin: bool,
     meses_sel: list[int],
     precio_map: dict,
+    df_ventas_sae: pd.DataFrame,
+    df_compras_sae: pd.DataFrame,
 ) -> None:
     # regla de meses editables — distinta para Venta y Compra
     # (Admin/SuperAdmin/forecastAdmin sin restricción en ambas): se ven
     # todos los meses seleccionados, pero los bloqueados quedan de solo
     # lectura en la tabla y no se tocan al generar propuesta ni al agregar
     # un producto manualmente.
-    # - Compra: regla de los 3 meses (mes actual + 3 siguientes bloqueados).
+    # - Compra: regla de los 3 meses (mes actual + 2 siguientes bloqueados).
     # - Venta: se puede mover el forecast desde el mes actual hasta
     #   diciembre del año en curso (los meses ya transcurridos del año
     #   quedan bloqueados).
@@ -260,7 +427,7 @@ def _mostrar_construccion_tipo(
     if not es_admin and len(meses_editables) < len(meses_sel):
         if tipo == "compra":
             st.caption(
-                "🔒 el mes actual y los 3 siguientes están bloqueados — solo se puede mover "
+                "🔒 el mes actual y los 2 siguientes están bloqueados — solo se puede mover "
                 "el forecast a partir del 4º mes en adelante"
             )
         else:
@@ -296,7 +463,7 @@ def _mostrar_construccion_tipo(
         if st.button("⚡ generar propuesta", use_container_width=True, key=f"fc_btn_generar_{tipo}"):
             if not meses_editables:
                 if tipo == "compra":
-                    st.warning("los meses seleccionados están dentro de la ventana bloqueada (mes actual + 3 siguientes)")
+                    st.warning("los meses seleccionados están dentro de la ventana bloqueada (mes actual + 2 siguientes)")
                 else:
                     st.warning("los meses seleccionados ya pasaron — solo se puede mover el forecast desde el mes actual hasta diciembre")
             else:
@@ -343,7 +510,27 @@ def _mostrar_construccion_tipo(
                 _panel_carga_manual(id_version, seccion, region, anio, meses_editables, usuario_id, tipo)
                 continue
 
-            pivot_orig = _pivot_forecast(df_det, meses_sel, precio_map)
+            df_real_sae = df_ventas_sae if tipo == "venta" else df_compras_sae
+            real_col = "venta_real_sae" if tipo == "venta" else "compra_real_sae"
+            real_label = "Venta Real" if tipo == "venta" else "Compra Real"
+
+            # además del total acumulado de siempre, real mes a mes junto a
+            # cada columna de forecast del mismo mes (venta y compra por
+            # igual) — solo para el mes actual y anteriores, ya que los
+            # meses futuros todavía no tienen real (SAE) que mostrar.
+            real_map = _real_sae_map(df_real_sae, seccion, anio, meses_sel)
+            real_map_por_mes = {
+                m: _real_sae_map(df_real_sae, seccion, anio, [m])
+                for m in meses_sel
+                if _offset_mes_actual(anio, m) <= 0
+            }
+            real_col_prefix = real_col
+
+            pivot_orig = _pivot_forecast(
+                df_det, meses_sel, precio_map,
+                real_map=real_map, real_col=real_col,
+                real_map_por_mes=real_map_por_mes, real_col_prefix=real_col_prefix,
+            )
             decimales = 0 if seccion == "KG" else 2
 
             gb = GridOptionsBuilder.from_dataframe(pivot_orig)
@@ -375,11 +562,38 @@ def _mostrar_construccion_tipo(
                 "presupuesto_valor", headerName="presupuesto", editable=False, width=110,
                 type=["numericColumn"], valueFormatter=_value_formatter_js(2),
             )
+            if real_col in pivot_orig.columns:
+                gb.configure_column(
+                    real_col, headerName=real_label, editable=False, width=110,
+                    type=["numericColumn"], valueFormatter=_value_formatter_js(2),
+                )
             for m in meses_sel:
                 mn = _MESES[m]
+                real_mes_col = f"{real_col_prefix}_{mn}" if real_col_prefix else None
+                if real_mes_col and real_mes_col in pivot_orig.columns:
+                    gb.configure_column(
+                        real_mes_col,
+                        headerName=f"Real {mn.capitalize()}",
+                        editable=False, width=110,
+                        type=["numericColumn"], valueFormatter=_value_formatter_js(decimales),
+                        cellStyle=_cell_style_real_vs_dp_js(mn),
+                    )
                 if mn not in pivot_orig.columns:
                     continue
                 editable_mes = es_admin or _mes_editable(tipo, anio, m)
+
+                # ventana de urgencia (solo Compra / Demand Plan): mes actual
+                # + 2 siguientes en amarillo (toda la columna), los 2
+                # siguientes a esos en rojo (solo celdas con valor > 0); el
+                # resto conserva el criterio normal verde/rojo por signo
+                cell_style_mes = _CELL_STYLE_VALORES
+                if tipo == "compra":
+                    offset = _offset_mes_actual(anio, m)
+                    if 0 <= offset <= 2:
+                        cell_style_mes = _CELL_STYLE_VENTANA_AMARILLO
+                    elif offset in (3, 4):
+                        cell_style_mes = _CELL_STYLE_VENTANA_ROJA
+
                 gb.configure_column(
                     mn,
                     headerName=mn.upper() if editable_mes else f"🔒 {mn.upper()}",
@@ -387,14 +601,30 @@ def _mostrar_construccion_tipo(
                     width=90,
                     type=["numericColumn"],
                     cellEditor="agNumberCellEditor",
-                    cellStyle=_CELL_STYLE_VALORES,
+                    cellStyle=cell_style_mes,
                     valueFormatter=_value_formatter_js(decimales),
                 )
+
+            # fila de totales pinneada al fondo: suma de todos los productos
+            # por mes (columnas ene..dic, incluyendo real_<mes> si aplica) y
+            # en el año (Total KG/Total USD)
+            fila_total: dict = {"cve_prod": "TOTAL", "producto_excel": ""}
+            for c in ("total_kg", "total_usd", real_col, "venta_real_mes_ant", "venta_real_prom_3m", "presupuesto_valor"):
+                if c in pivot_orig.columns:
+                    fila_total[c] = float(pd.to_numeric(pivot_orig[c], errors="coerce").fillna(0.0).sum())
+            for m in meses_sel:
+                mn = _MESES[m]
+                real_mes_col = f"{real_col_prefix}_{mn}" if real_col_prefix else None
+                if real_mes_col and real_mes_col in pivot_orig.columns:
+                    fila_total[real_mes_col] = float(pd.to_numeric(pivot_orig[real_mes_col], errors="coerce").fillna(0.0).sum())
+                if mn in pivot_orig.columns:
+                    fila_total[mn] = float(pd.to_numeric(pivot_orig[mn], errors="coerce").fillna(0.0).sum())
+            gb.configure_grid_options(pinnedBottomRowData=[fila_total], getRowStyle=_ROW_STYLE_TOTAL)
 
             regla_caption = (
                 "regla de los 3 meses" if tipo == "compra" else "solo mes actual → diciembre"
             )
-            st.caption(f"🟩 valor positivo  |  🟥 valor negativo  |  🔒 mes bloqueado ({regla_caption})")
+            st.caption(f"🟩 valor positivo  |  🟥 valor negativo  |  🔒 mes bloqueado ({regla_caption})  |  fila TOTAL = suma de todos los productos")
 
             grid_response = AgGrid(
                 pivot_orig,
@@ -419,6 +649,18 @@ def _mostrar_construccion_tipo(
                     st.rerun()
                 else:
                     st.info("sin cambios detectados")
+
+            mostrar_grafica = st.checkbox(
+                "📊 mostrar gráfica de rendimiento (DP vs Real por mes)",
+                value=True,
+                key=f"fc_show_grafica_{tipo}_{seccion}_{region}_{id_version}",
+            )
+            if mostrar_grafica:
+                df_grafica = _grafica_rendimiento(fila_total, meses_sel, real_col_prefix)
+                if not df_grafica.empty:
+                    st.bar_chart(df_grafica, use_container_width=True, height=300)
+                else:
+                    st.info("sin datos suficientes para la gráfica")
 
             _panel_carga_manual(id_version, seccion, region, anio, meses_editables, usuario_id, tipo)
 

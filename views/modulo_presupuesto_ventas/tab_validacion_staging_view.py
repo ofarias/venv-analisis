@@ -471,10 +471,7 @@ _MESES_NOMBRES = {
 }
 
 _TABS_PIVOT = [
-    ("USD México",       "USD", "MEXICO"),
     ("KG México",        "KG",  "MEXICO"),
-    ("CAM & Caribe USD", "USD", "CAM & Caribe"),
-    ("CAM & Caribe KG",  "KG",  "CAM & Caribe"),
 ]
 
 _COLS_ID_PIVOT = ["company", "cliente_excel", "codigo_origen", "producto_excel"]

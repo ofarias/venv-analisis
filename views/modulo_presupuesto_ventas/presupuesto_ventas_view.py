@@ -26,6 +26,7 @@ from controllers.presupuesto_ventas_controller import (
     obtener_presupuesto_ventas_lineas_ctrl,
     obtener_presupuesto_ventas_lineas_pendientes_ctrl,
     obtener_ultimo_precio_venta_ctrl,
+    obtener_ventas_reales_sae_pv_ctrl,
     registrar_carga_presupuesto_ventas_ctrl,
     upsert_presupuesto_ventas_linea_ctrl,
 )
@@ -1276,6 +1277,241 @@ def _panel_stock_ordenes_sae() -> None:
             )
 
 
+# ── panel: comparación vs ventas reales SAE (solo lectura) ────────────────────
+
+def _panel_comparacion_sae_ventas(
+    work_df: pd.DataFrame,
+    seccion: str,
+    anio_actual: int,
+    productos_sel: list,
+    clientes_sel: list,
+    label_to_code: dict,
+    clientes_set: set,
+) -> None:
+    """Compara el presupuesto capturado (respetando los mismos filtros de
+    producto/cliente de arriba) contra las ventas reales de SAE del año de la
+    carga — cruzando por cliente + producto SAE (mismo criterio de
+    cve_art/cve_clie que usa Construcción de forecast). Panel de solo
+    lectura, no toca la tabla editable."""
+    with st.container(border=True):
+        st.markdown("**📈 comparación vs ventas reales (SAE)**")
+        st.caption(
+            "cruza por cliente + producto SAE — solo compara líneas con cliente/producto "
+            "reconocidos en el catálogo SAE; respeta los filtros de arriba"
+        )
+
+        df_pv = work_df.copy()
+        if productos_sel:
+            df_pv = df_pv[df_pv["producto_excel"].astype(str).str.strip().isin(productos_sel)]
+        if clientes_sel:
+            df_pv = df_pv[df_pv["cliente_excel"].astype(str).str.strip().isin(clientes_sel)]
+
+        if df_pv.empty:
+            st.info("sin registros de presupuesto para comparar con los filtros elegidos")
+            return
+
+        meses_cols = [c for c in _MESES.values() if c in df_pv.columns]
+        suma_meses = (
+            df_pv[meses_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+            if meses_cols else pd.Series(0.0, index=df_pv.index)
+        )
+        precio_num = pd.to_numeric(df_pv.get("precio"), errors="coerce").fillna(0.0)
+        precio_venta_num = pd.to_numeric(df_pv.get("precio_venta"), errors="coerce").fillna(0.0)
+        precio_efectivo = precio_venta_num.where(precio_venta_num > 0, precio_num)
+        if seccion == "KG":
+            df_pv["_presupuesto_kg"] = suma_meses
+            df_pv["_presupuesto_usd"] = suma_meses * precio_efectivo
+        else:
+            df_pv["_presupuesto_kg"] = 0.0
+            df_pv["_presupuesto_usd"] = suma_meses
+
+        df_pv["_cve_art"] = df_pv.get("_cve_prod_label", "").astype(str).map(
+            lambda lbl: label_to_code.get(lbl, "") or ""
+        )
+
+        def _cve_clie_de(v) -> str:
+            v = str(v or "").strip()
+            return v.split(" - ", 1)[0].strip() if v in clientes_set and " - " in v else ""
+
+        df_pv["_cve_clie"] = df_pv.get("cliente_excel", "").apply(_cve_clie_de)
+
+        grp_pv = df_pv.groupby(["_cve_art", "_cve_clie"], as_index=False).agg(
+            producto=("producto_excel", "first"),
+            cliente=("cliente_excel", "first"),
+            presupuesto_kg=("_presupuesto_kg", "sum"),
+            presupuesto_usd=("_presupuesto_usd", "sum"),
+        )
+
+        # el real de SAE se acota siempre a los códigos (producto/cliente) que
+        # sí aparecen en el presupuesto ya filtrado — evita traer el año
+        # completo de ventas SAE (miles de líneas ajenas al presupuesto)
+        codigos_art = set(grp_pv["_cve_art"]) - {""}
+        codigos_clie = set(grp_pv["_cve_clie"]) - {""}
+
+        df_real = obtener_ventas_reales_sae_pv_ctrl(anio_actual)
+        if df_real is not None and not df_real.empty and (codigos_art or codigos_clie):
+            df_real = df_real.copy()
+            df_real["cve_art"] = df_real["cve_art"].astype(str).str.strip()
+            df_real["cve_clie"] = df_real["cve_clie"].astype(str).str.strip()
+            if codigos_art:
+                df_real = df_real[df_real["cve_art"].isin(codigos_art)]
+            if codigos_clie:
+                df_real = df_real[df_real["cve_clie"].isin(codigos_clie)]
+            grp_real = df_real.groupby(["cve_art", "cve_clie"], as_index=False).agg(
+                real_kg=("cantidad", "sum"),
+                real_usd=("importe", "sum"),
+            )
+        else:
+            grp_real = pd.DataFrame(columns=["cve_art", "cve_clie", "real_kg", "real_usd"])
+
+        comp = pd.merge(
+            grp_pv, grp_real,
+            left_on=["_cve_art", "_cve_clie"], right_on=["cve_art", "cve_clie"],
+            how="outer",
+        )
+        comp["producto"] = comp["producto"].fillna(comp["_cve_art"])
+        comp["cliente"] = comp["cliente"].fillna(comp["_cve_clie"])
+        for c in ("presupuesto_kg", "presupuesto_usd", "real_kg", "real_usd"):
+            comp[c] = pd.to_numeric(comp.get(c), errors="coerce").fillna(0.0)
+
+        comp["diferencia_usd"] = comp["real_usd"] - comp["presupuesto_usd"]
+        den_usd = comp["presupuesto_usd"].replace(0, float("nan"))
+        comp["cumplimiento_%"] = (comp["real_usd"] / den_usd * 100).round(1)
+
+        comp = comp[[
+            "cliente", "producto", "presupuesto_kg", "presupuesto_usd",
+            "real_kg", "real_usd", "diferencia_usd", "cumplimiento_%",
+        ]].sort_values("presupuesto_usd", ascending=False)
+
+        if comp.empty:
+            st.info("sin ventas reales de SAE que crucen con este presupuesto")
+            return
+
+        st.caption(f"{len(comp):,} combinación(es) cliente/producto")
+        st.dataframe(
+            comp,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "cliente": st.column_config.TextColumn("cliente"),
+                "producto": st.column_config.TextColumn("producto"),
+                "presupuesto_kg": st.column_config.NumberColumn("presupuesto kg", format="%.0f"),
+                "presupuesto_usd": st.column_config.NumberColumn("presupuesto USD", format="%.2f"),
+                "real_kg": st.column_config.NumberColumn("real SAE kg", format="%.0f"),
+                "real_usd": st.column_config.NumberColumn("real SAE USD", format="%.2f"),
+                "diferencia_usd": st.column_config.NumberColumn("diferencia USD (real − presupuesto)", format="%.2f"),
+                "cumplimiento_%": st.column_config.NumberColumn("cumplimiento %", format="%.1f"),
+            },
+            height=min(56 + len(comp) * 35, 500),
+        )
+
+
+_MES_NUM_DE = {v: k for k, v in _MESES.items()}
+
+
+def _tabla_filtrada_presupuesto(
+    work_df: pd.DataFrame,
+    seccion: str,
+    meses_presentes: list,
+    productos_sel: list,
+    clientes_sel: list,
+    anio_actual: int,
+    label_to_code: dict,
+    clientes_set: set,
+) -> None:
+    """Tabla de solo lectura con las filas del presupuesto que coinciden con
+    los filtros de producto/cliente elegidos arriba — la tabla editable de
+    arriba no se toca, esto es nada más para revisar el resultado del
+    filtro. Incluye, junto a cada mes capturado, la venta real de Aspel SAE
+    de ese mismo mes ("Real <mes>"), cruzando por cliente + producto SAE —
+    mismo criterio que usa Construcción de forecast."""
+    if not productos_sel and not clientes_sel:
+        st.caption("elige un producto o cliente arriba para ver los resultados aquí")
+        return
+
+    df = work_df.copy()
+    if productos_sel:
+        df = df[df["producto_excel"].astype(str).str.strip().isin(productos_sel)]
+    if clientes_sel:
+        df = df[df["cliente_excel"].astype(str).str.strip().isin(clientes_sel)]
+
+    st.markdown("**resultado del filtro**")
+    if df.empty:
+        st.info("sin registros que coincidan con los filtros elegidos")
+        return
+
+    meses_cols = [c for c in meses_presentes if c in df.columns]
+    suma_meses = (
+        df[meses_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+        if meses_cols else pd.Series(0.0, index=df.index)
+    )
+    precio_num = pd.to_numeric(df.get("precio"), errors="coerce").fillna(0.0)
+    precio_venta_num = pd.to_numeric(df.get("precio_venta"), errors="coerce").fillna(0.0)
+    precio_efectivo = precio_venta_num.where(precio_venta_num > 0, precio_num)
+    if seccion == "KG":
+        df["total_kg_anio"] = suma_meses
+        df["total_usd_anio"] = suma_meses * precio_efectivo
+    else:
+        df["total_kg_anio"] = 0.0
+        df["total_usd_anio"] = suma_meses
+
+    # venta real de Aspel SAE mes a mes — cruza por cliente + producto SAE
+    df["_cve_art"] = df.get("_cve_prod_label", "").astype(str).map(
+        lambda lbl: label_to_code.get(lbl, "") or ""
+    )
+
+    def _cve_clie_de(v) -> str:
+        v = str(v or "").strip()
+        return v.split(" - ", 1)[0].strip() if v in clientes_set and " - " in v else ""
+
+    df["_cve_clie"] = df.get("cliente_excel", "").apply(_cve_clie_de)
+
+    col_real = "cantidad" if seccion == "KG" else "importe"
+    real_por_mes: dict[int, dict] = {}
+    df_real = obtener_ventas_reales_sae_pv_ctrl(anio_actual)
+    if df_real is not None and not df_real.empty:
+        dfr = df_real.copy()
+        dfr["cve_art"] = dfr["cve_art"].astype(str).str.strip()
+        dfr["cve_clie"] = dfr["cve_clie"].astype(str).str.strip()
+        dfr["mes"] = pd.to_numeric(dfr["mes"], errors="coerce").astype(int)
+        for mes, sub in dfr.groupby("mes"):
+            grp = sub.groupby(["cve_art", "cve_clie"], as_index=False)[col_real].sum()
+            real_por_mes[int(mes)] = dict(zip(zip(grp["cve_art"], grp["cve_clie"]), grp[col_real]))
+
+    meses_cols_out: list[str] = []
+    encabezados = {
+        "cliente_excel": "cliente", "producto_excel": "producto",
+        "estatus_excel": "status", "precio_venta": "precio venta",
+        "total_kg_anio": "Total Kg", "total_usd_anio": "Total USD",
+    }
+    for mn in meses_cols:
+        mapa_mes = real_por_mes.get(_MES_NUM_DE.get(mn), {})
+        real_col = f"_real_{mn}"
+        df[real_col] = [
+            mapa_mes.get((art, clie), 0.0)
+            for art, clie in zip(df["_cve_art"], df["_cve_clie"])
+        ]
+        meses_cols_out.append(real_col)
+        meses_cols_out.append(mn)
+        encabezados[real_col] = f"Real {mn.capitalize()}"
+        encabezados[mn] = mn.upper()
+
+    cols_mostrar = [c for c in (
+        "company", "cliente_excel", "producto_excel", "estatus_excel",
+        "precio", "precio_venta", "total_kg_anio", "total_usd_anio",
+    ) if c in df.columns] + meses_cols_out
+
+    st.caption(
+        f"{len(df):,} registro(s) coinciden con el filtro — "
+        "\"Real <mes>\" es la venta real de Aspel SAE de ese mes (cruzada por cliente + producto)"
+    )
+    st.dataframe(
+        df[cols_mostrar].rename(columns=encabezados),
+        use_container_width=True, hide_index=True,
+        height=min(56 + len(df) * 35, 500),
+    )
+
+
 # ── panel: tabla pivot ────────────────────────────────────────────────────────
 
 def _panel_pivot(id_carga: int) -> None:
@@ -1458,6 +1694,24 @@ def _panel_pivot(id_carga: int) -> None:
                 st.info(f"sin datos para {label} — usa \"➕ agregar registro\" para capturar uno")
                 continue
 
+            # la columna de autorización siempre va primero (estática/pinned
+            # a la izquierda) — se fuerza aquí en cada render porque, tras un
+            # ciclo de edición, `work_key` se reemplaza por lo que devuelve
+            # el grid y el orden de columnas ya no está garantizado
+            if "_estatus_linea_badge" in work_df.columns:
+                work_df = work_df[
+                    ["_estatus_linea_badge"] + [c for c in work_df.columns if c != "_estatus_linea_badge"]
+                ]
+
+            # filtros de producto/cliente (widgets abajo de los botones, ver
+            # más adelante) — se leen aquí porque el grid se arma antes en el
+            # layout; como el valor ya quedó en session_state de la corrida
+            # anterior, no hace falta que el widget se dibuje primero
+            filtro_prod_key = f"pv_filtro_prod_{seccion}_{region}_{id_carga}"
+            filtro_cli_key = f"pv_filtro_cli_{seccion}_{region}_{id_carga}"
+            productos_filtro_sel = st.session_state.get(filtro_prod_key, [])
+            clientes_filtro_sel = st.session_state.get(filtro_cli_key, [])
+
             # única restricción de edición: una línea deja de ser editable en
             # cuanto se solicita autorización ("enviada") y mientras esté
             # "autorizada" — "captura" y "rechazada" permiten editar
@@ -1472,6 +1726,17 @@ def _panel_pivot(id_carga: int) -> None:
             gb.configure_default_column(editable=False, resizable=True, width=100)
             gb.configure_selection("multiple", use_checkbox=True, header_checkbox=True)
 
+            # columnas sin ningún dato capturado (todo vacío/NaN en la carga
+            # actual) se ocultan — p.ej. "company" o "código origen" cuando
+            # esa carga no los trae
+            def _columna_vacia(nombre_col: str) -> bool:
+                if nombre_col not in work_df.columns:
+                    return True
+                serie = work_df[nombre_col].astype(str).str.strip()
+                return bool(serie.isin(["", "nan", "None"]).all())
+
+            _COLS_OCULTAS_SI_VACIAS = {"company", "codigo_origen"}
+
             # cliente, producto y código origen quedan fijos una vez
             # capturado el registro (cliente y producto se definen al
             # agregarlo, código origen viene de SAE) — solo "company"
@@ -1482,16 +1747,20 @@ def _panel_pivot(id_carga: int) -> None:
                     c, headerName=c.replace("_excel", "").replace("_", " "),
                     editable=False if c in _CAMPOS_ID_BLOQUEADOS else editable_no_congelada,
                     width=130,
+                    pinned="left",
+                    hide=c in _COLS_OCULTAS_SI_VACIAS and _columna_vacia(c),
                 )
 
             gb.configure_column("_nueva", hide=True)
             gb.configure_column("_estatus_linea", hide=True)
             gb.configure_column(
                 "_estatus_linea_badge", headerName="autorización", editable=False, width=120,
+                pinned="left",
                 headerTooltip="🔵 captura  |  🟡 enviada (esperando autorización)  |  🟢 autorizada  |  🔴 rechazada",
             )
             gb.configure_column(
                 "_status", headerName="SAE", editable=False, width=70,
+                pinned="left",
                 headerTooltip="🟢 producto en catálogo SAE  |  🟠 no encontrado en SAE",
             )
             gb.configure_column(
@@ -1501,9 +1770,11 @@ def _panel_pivot(id_carga: int) -> None:
                 # se elige al agregar el registro, no se reasigna después
                 editable=False,
                 width=200,
+                pinned="left",
             )
             gb.configure_column(
                 "estatus_excel", headerName="status", editable=editable_no_congelada, width=110,
+                pinned="left",
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["", "Budgeted", "Not in BGT", "Prospecto"]},
             )
@@ -1513,6 +1784,7 @@ def _panel_pivot(id_carga: int) -> None:
                 # precio: viene de SAE al agregar el registro, no editable en la tabla
                 editable=False,
                 width=110,
+                pinned="left",
                 type=["numericColumn"],
                 valueFormatter=_value_formatter_js(4),
             )
@@ -1522,6 +1794,7 @@ def _panel_pivot(id_carga: int) -> None:
                 # precio_venta: lo captura el usuario a mano en la tabla
                 editable=editable_no_congelada,
                 width=120,
+                pinned="left",
                 type=["numericColumn"],
                 cellEditor="agNumberCellEditor",
                 valueFormatter=_value_formatter_js(3),
@@ -1785,6 +2058,47 @@ def _panel_pivot(id_carga: int) -> None:
 
                     st.session_state[ver_key] += 1
                     st.rerun()
+
+            st.divider()
+            st.markdown("**🔍 filtros**")
+            productos_opciones_tab = (
+                sorted(work_df["producto_excel"].astype(str).str.strip().replace("", pd.NA).dropna().unique())
+                if "producto_excel" in work_df.columns else []
+            )
+            clientes_opciones_tab = (
+                sorted(work_df["cliente_excel"].astype(str).str.strip().replace("", pd.NA).dropna().unique())
+                if "cliente_excel" in work_df.columns else []
+            )
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                st.multiselect(
+                    "filtrar por producto", options=productos_opciones_tab, key=filtro_prod_key,
+                )
+            with col_f2:
+                st.multiselect(
+                    "filtrar por cliente", options=clientes_opciones_tab, key=filtro_cli_key,
+                )
+
+            _tabla_filtrada_presupuesto(
+                work_df=work_df,
+                seccion=seccion,
+                meses_presentes=meses_presentes,
+                productos_sel=productos_filtro_sel,
+                clientes_sel=clientes_filtro_sel,
+                anio_actual=anio_actual,
+                label_to_code=label_to_code,
+                clientes_set=clientes_set,
+            )
+
+            _panel_comparacion_sae_ventas(
+                work_df=work_df,
+                seccion=seccion,
+                anio_actual=anio_actual,
+                productos_sel=productos_filtro_sel,
+                clientes_sel=clientes_filtro_sel,
+                label_to_code=label_to_code,
+                clientes_set=clientes_set,
+            )
 
     _panel_stock_ordenes_sae()
 

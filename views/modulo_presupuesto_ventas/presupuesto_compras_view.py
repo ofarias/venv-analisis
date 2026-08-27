@@ -1273,6 +1273,17 @@ def _panel_pivot(id_carga: int) -> None:
             gb.configure_default_column(editable=False, resizable=True, width=100)
             gb.configure_selection("multiple", use_checkbox=True, header_checkbox=True)
 
+            # columnas sin ningún dato capturado (todo vacío/NaN en la carga
+            # actual) se ocultan — p.ej. "company" o "código origen" cuando
+            # esa carga no los trae
+            def _columna_vacia(nombre_col: str) -> bool:
+                if nombre_col not in work_df.columns:
+                    return True
+                serie = work_df[nombre_col].astype(str).str.strip()
+                return bool(serie.isin(["", "nan", "None"]).all())
+
+            _COLS_OCULTAS_SI_VACIAS = {"company", "codigo_origen"}
+
             # cliente, producto y código origen quedan fijos una vez
             # capturado el registro (cliente y producto se definen al
             # agregarlo, código origen viene de SAE) — solo "company"
@@ -1283,16 +1294,20 @@ def _panel_pivot(id_carga: int) -> None:
                     c, headerName=c.replace("_excel", "").replace("_", " "),
                     editable=False if c in _CAMPOS_ID_BLOQUEADOS else editable_no_congelada,
                     width=130,
+                    pinned="left",
+                    hide=c in _COLS_OCULTAS_SI_VACIAS and _columna_vacia(c),
                 )
 
             gb.configure_column("_nueva", hide=True)
             gb.configure_column("_estatus_linea", hide=True)
             gb.configure_column(
                 "_estatus_linea_badge", headerName="autorización", editable=False, width=120,
+                pinned="left",
                 headerTooltip="🔵 captura  |  🟡 enviada (esperando autorización)  |  🟢 autorizada  |  🔴 rechazada",
             )
             gb.configure_column(
                 "_status", headerName="SAE", editable=False, width=70,
+                pinned="left",
                 headerTooltip="🟢 producto en catálogo SAE  |  🟠 no encontrado en SAE",
             )
             gb.configure_column(
@@ -1302,9 +1317,11 @@ def _panel_pivot(id_carga: int) -> None:
                 # se elige al agregar el registro, no se reasigna después
                 editable=False,
                 width=200,
+                pinned="left",
             )
             gb.configure_column(
                 "estatus_excel", headerName="status", editable=editable_no_congelada, width=110,
+                pinned="left",
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["", "Budgeted", "Not in BGT", "Prospecto"]},
             )
@@ -1314,6 +1331,7 @@ def _panel_pivot(id_carga: int) -> None:
                 # costo: ult_costo SAE / tipo de cambio Banxico al agregar el registro, no editable en la tabla
                 editable=False,
                 width=110,
+                pinned="left",
                 type=["numericColumn"],
                 valueFormatter=_value_formatter_js(4),
             )
