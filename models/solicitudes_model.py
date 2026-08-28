@@ -28,9 +28,20 @@ def _uuid_solo_hex(x) -> str:
     return _UUID_NO_HEX_RE.sub("", s)
 
 
-# comparación SQL que ignora guiones/espacios en la columna UUID almacenada,
-# para que coincida con el parámetro ya normalizado por _uuid_solo_hex()
-_UUID_COL_NORMALIZADA = "replace(replace(upper(trim({col})), '-', ''), ' ', '')"
+# comparación SQL que ignora guiones (ASCII y variantes Unicode) y espacios en
+# la columna UUID almacenada, para que coincida con el parámetro ya
+# normalizado por _uuid_solo_hex(). El usuario a veces pega el UUID copiado
+# de un PDF, donde el guión puede venir como "‐" (U+2010) u otra variante en
+# vez del guión ASCII "-", y DATOSCFD_PDF puede tener la misma mezcla si el
+# UUID se guardó tal como se capturó.
+_UUID_DASH_CHARS = ["-", "‐", "‑", "‒", "–", "—", "―", "−", " "]
+
+
+def _uuid_col_normalizada(col: str) -> str:
+    expr = f"upper(trim({col}))"
+    for ch in _UUID_DASH_CHARS:
+        expr = f"replace({expr}, '{ch}', '')"
+    return expr
 
 @dataclass
 class SolicitudCabecera:
@@ -330,7 +341,7 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(
-            """
+            f"""
         select
           d.id, d.solicitud_id, d.renglon,
           d.fecha_gasto,
@@ -386,7 +397,7 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
              and exists (
                 select 1
                 from DATOSCFD_PDF p
-                where upper(trim(p.UUID)) = upper(trim(d.uuid))
+                where {_uuid_col_normalizada('p.UUID')} = {_uuid_col_normalizada('d.uuid')}
                 limit 1
              )
             then 1 else 0
@@ -494,7 +505,7 @@ def get_datoscfd_by_uuid(uuid: str, secrets=None) -> dict | None:
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(
-            f"select * from DATOSCFD where {_UUID_COL_NORMALIZADA.format(col='UUID')} = %s limit 1",
+            f"select * from DATOSCFD where {_uuid_col_normalizada('UUID')} = %s limit 1",
             (uuid_norm,),
         )
         row = cur.fetchone()
@@ -772,7 +783,7 @@ def uuid_ya_usado(uuid: str, exclude_solicitud_id: int | None = None) -> dict | 
               d.fecha_creacion
             from solicitudes_detalle d
             join solicitudes s on s.id = d.solicitud_id
-            where {_UUID_COL_NORMALIZADA.format(col='d.uuid')} = %s
+            where {_uuid_col_normalizada('d.uuid')} = %s
         """
         params = [uuid_norm]
 
@@ -1317,7 +1328,7 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
-            """
+            f"""
             select
                 d.id,
                 d.concepto,
@@ -1329,7 +1340,7 @@ def get_validacion_detalle_solicitud_rows(solicitud_id: int) -> list[dict]:
                     when d.uuid is not null and trim(d.uuid) <> '' and exists (
                         select 1
                         from DATOSCFD_PDF p
-                        where upper(trim(p.UUID)) = upper(trim(d.uuid))
+                        where {_uuid_col_normalizada('p.UUID')} = {_uuid_col_normalizada('d.uuid')}
                         limit 1
                     ) then 1
                     else 0
@@ -1470,7 +1481,7 @@ def get_pdf_by_uuid(uuid: str):
             f"""
             select ARCHIVO, NOMBRE_ARCHIVO
             from DATOSCFD_PDF
-            where {_UUID_COL_NORMALIZADA.format(col='UUID')} = %s
+            where {_uuid_col_normalizada('UUID')} = %s
             limit 1
             """,
             (uuid_norm,),
@@ -1663,7 +1674,7 @@ def get_datoscfd_by_uuids(uuids: list[str]) -> list[dict]:
         sql = f"""
             select *
             from DATOSCFD
-            where {_UUID_COL_NORMALIZADA.format(col='UUID')} in ({placeholders})
+            where {_uuid_col_normalizada('UUID')} in ({placeholders})
         """
         cur.execute(sql, tuple(uuids_norm))
         rows = cur.fetchall() or []
