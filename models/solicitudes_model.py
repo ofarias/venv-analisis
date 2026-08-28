@@ -1458,18 +1458,22 @@ def get_detalle_contabilidad_view(solicitud_id: int):
 
 
 def get_pdf_by_uuid(uuid: str):
+    uuid_norm = _uuid_solo_hex(uuid)
+    if not uuid_norm:
+        return None, None
+
     conn = obtener_conexion()
     try:
         cur = conn.cursor()
 
         cur.execute(
-            """
+            f"""
             select ARCHIVO, NOMBRE_ARCHIVO
             from DATOSCFD_PDF
-            where upper(trim(UUID)) = upper(trim(%s))
+            where {_UUID_COL_NORMALIZADA.format(col='UUID')} = %s
             limit 1
             """,
-            (uuid,),
+            (uuid_norm,),
         )
 
         row = cur.fetchone()
