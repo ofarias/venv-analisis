@@ -1066,6 +1066,7 @@ def _form_agregar_registro(
     region: Optional[str],
     id_carga: int,
     work_key: str,
+    grid_nonce_key: str,
     cols_id: list[str],
     meses_presentes: list[str],
     sae_opciones: list[str],
@@ -1224,6 +1225,11 @@ def _form_agregar_registro(
             st.session_state[work_key] = pd.concat(
                 [st.session_state[work_key], pd.DataFrame([fila])], ignore_index=True
             )
+            # forzar el re-montado del AgGrid: si no cambia su `key`, en el
+            # rerun siguiente el componente devuelve su estado viejo (sin esta
+            # fila) y `work_key` se sobrescribe con él, perdiendo el registro
+            # antes de que "guardar cambios" lo vea
+            st.session_state[grid_nonce_key] = st.session_state.get(grid_nonce_key, 0) + 1
             st.success("registro agregado — revísalo en la tabla y guarda los cambios")
             st.rerun()
 
@@ -1694,7 +1700,12 @@ def _panel_pivot(id_carga: int) -> None:
             ver_key = f"pv_ver_{seccion}_{region}_{id_carga}"
             orig_key = f"pv_orig_{seccion}_{region}_{id_carga}"
             work_key = f"pv_work_{seccion}_{region}_{id_carga}"
+            # nonce que fuerza el re-montado del AgGrid cuando el estado de
+            # trabajo cambia fuera del grid (agregar/descartar filas), sin
+            # recargar de BD (eso lo hace ver_key)
+            grid_nonce_key = f"pv_gridnonce_{seccion}_{region}_{id_carga}"
             st.session_state.setdefault(ver_key, 0)
+            st.session_state.setdefault(grid_nonce_key, 0)
 
             necesita_reload = (
                 orig_key not in st.session_state
@@ -1772,6 +1783,7 @@ def _panel_pivot(id_carga: int) -> None:
                 region=region,
                 id_carga=id_carga,
                 work_key=work_key,
+                grid_nonce_key=grid_nonce_key,
                 cols_id=cols_id,
                 meses_presentes=meses_presentes,
                 sae_opciones=sae_opciones,
@@ -1955,7 +1967,7 @@ def _panel_pivot(id_carga: int) -> None:
                 fit_columns_on_grid_load=False,
                 allow_unsafe_jscode=True,
                 height=min(56 + len(work_df) * 35, 680),
-                key=f"pv_pivot_{seccion}_{region}_{id_carga}_{st.session_state[ver_key]}",
+                key=f"pv_pivot_{seccion}_{region}_{id_carga}_{st.session_state[ver_key]}_{st.session_state[grid_nonce_key]}",
             )
             edited = pd.DataFrame(grid_response.get("data", []))
             edited = edited.drop(columns=["total_kg_anio", "total_usd_anio"], errors="ignore")
@@ -1963,8 +1975,12 @@ def _panel_pivot(id_carga: int) -> None:
             # se guarda de inmediato lo que el grid reportó como estado de
             # trabajo, para que el próximo rerun (disparado por la edición de
             # OTRA celda) siga desde aquí en vez de reconstruir desde BD y
-            # revertir lo que el usuario acaba de escribir
-            if not edited.empty:
+            # revertir lo que el usuario acaba de escribir.
+            # se ignora una respuesta con MENOS filas que el estado de trabajo:
+            # es el grid devolviendo un estado viejo (aún no recibió el rowData
+            # nuevo tras agregar una fila) y sobrescribirlo perdería el registro
+            # recién capturado antes de guardarlo
+            if not edited.empty and len(edited) >= len(st.session_state[work_key]):
                 st.session_state[work_key] = edited
 
             # al elegir cve_prod en una fila nueva, se llena "producto" con el
@@ -1989,7 +2005,9 @@ def _panel_pivot(id_carga: int) -> None:
                 if hubo_cambio:
                     # se mutó el estado de trabajo directamente, sin tocar
                     # ver_key: no hace falta recargar de BD, solo redibujar
+                    # (se re-monta el grid para que no devuelva el nombre viejo)
                     st.session_state[work_key] = work_actual
+                    st.session_state[grid_nonce_key] += 1
                     edited = work_actual
                     st.rerun()
 
@@ -2099,6 +2117,10 @@ def _panel_pivot(id_carga: int) -> None:
 
                     if registros_borrados:
                         st.session_state[ver_key] += 1
+                    if nuevas_borradas:
+                        # el estado de trabajo perdió filas fuera del grid:
+                        # re-montar el AgGrid o su respuesta vieja las resucita
+                        st.session_state[grid_nonce_key] += 1
 
                     if registros_borrados or nuevas_borradas:
                         st.success(
