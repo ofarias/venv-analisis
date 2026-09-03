@@ -1536,6 +1536,85 @@ def _color_valor(v) -> str:
     return ""
 
 
+def _panel_resumen_captura(
+    work_df: pd.DataFrame,
+    seccion: str,
+    label_to_code: dict,
+    code_to_linea: dict,
+) -> None:
+    """Resumen de lo capturado en la tabla editable (respeta ediciones sin
+    guardar): totales generales + desglose de USD por línea de producto
+    (INDUSTRIA) separando Presupuesto vs Proyectos, como el bloque
+    INDUSTRIA/PPTO/PROYECTOS del Excel."""
+    df = work_df.copy()
+    if "producto_excel" not in df.columns:
+        st.info("sin datos para resumir")
+        return
+    df = df[df["producto_excel"].astype(str).str.strip() != ""]
+    if df.empty:
+        st.info("sin datos para resumir")
+        return
+
+    meses_cols = [c for c in _MESES.values() if c in df.columns]
+    suma_meses = (
+        df[meses_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+        if meses_cols else pd.Series(0.0, index=df.index)
+    )
+    precio = pd.to_numeric(df.get("precio"), errors="coerce").fillna(0.0)
+    pv_col = df["precio_venta"] if "precio_venta" in df.columns else pd.Series(0.0, index=df.index)
+    precio_venta = pd.to_numeric(pv_col, errors="coerce").fillna(0.0)
+    precio_efectivo = precio_venta.where(precio_venta > 0, precio)
+    if seccion == "KG":
+        df["_kg"] = suma_meses
+        df["_usd"] = suma_meses * precio_efectivo
+    else:
+        df["_kg"] = 0.0
+        df["_usd"] = suma_meses
+
+    total_clientes = (
+        df["cliente_excel"].astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+        if "cliente_excel" in df.columns else 0
+    )
+    total_productos = df["producto_excel"].astype(str).str.strip().nunique()
+    total_kg = float(df["_kg"].sum())
+    total_usd = float(df["_usd"].sum())
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("clientes", f"{total_clientes:,}")
+    c2.metric("productos", f"{total_productos:,}")
+    c3.metric("total kilos", f"{total_kg:,.0f}")
+    c4.metric("total USD", f"{total_usd:,.2f}")
+
+    def _linea_de(lbl: str) -> str:
+        code = label_to_code.get(str(lbl or ""), "") or ""
+        desc = code_to_linea.get(code, ("", ""))[1] if code else ""
+        desc = str(desc or "").split(" — ", 1)[-1].strip()
+        return desc or "(sin línea SAE)"
+
+    df["_industria"] = df.get("_cve_prod_label", "").astype(str).map(_linea_de)
+    df["_grupo"] = df.get("estatus_excel", "").astype(str).str.strip().map(
+        lambda e: "Proyectos" if e == "Prospecto" else "Presupuesto"
+    )
+
+    piv = df.pivot_table(
+        index="_industria", columns="_grupo", values="_usd", aggfunc="sum", fill_value=0.0,
+    )
+    for col in ("Presupuesto", "Proyectos"):
+        if col not in piv.columns:
+            piv[col] = 0.0
+    piv = piv[["Presupuesto", "Proyectos"]]
+    piv["Total"] = piv["Presupuesto"] + piv["Proyectos"]
+    piv = piv.sort_values("Total", ascending=False)
+    piv.loc["GRAN TOTAL"] = piv.sum()
+    piv = piv.reset_index().rename(columns={"_industria": "Industria"})
+
+    st.caption("USD por línea de producto — Presupuesto vs Proyectos")
+    st.dataframe(
+        piv.style.format({c: "{:,.2f}" for c in ("Presupuesto", "Proyectos", "Total")}),
+        use_container_width=True, hide_index=True,
+    )
+
+
 def _tabla_filtrada_presupuesto(
     work_df: pd.DataFrame,
     seccion: str,
@@ -2227,6 +2306,18 @@ def _panel_pivot(id_carga: int) -> None:
 
                     st.session_state[ver_key] += 1
                     st.rerun()
+
+            resumen_key = f"pv_resumen_{seccion}_{region}_{id_carga}"
+            st.session_state.setdefault(resumen_key, False)
+            if st.button(
+                "📊 ocultar resumen" if st.session_state[resumen_key] else "📊 ver resumen",
+                key=f"pv_btn_resumen_{seccion}_{region}_{id_carga}",
+            ):
+                st.session_state[resumen_key] = not st.session_state[resumen_key]
+                st.rerun()
+            if st.session_state[resumen_key]:
+                with st.container(border=True):
+                    _panel_resumen_captura(work_df, seccion, label_to_code, code_to_linea)
 
             st.divider()
             st.markdown("**🔍 filtros**")
