@@ -1096,6 +1096,7 @@ def eliminar_registro_presupuesto_ventas_ctrl(
     cliente_excel: Optional[str] = None,
     codigo_origen: Optional[str] = None,
     company: Optional[str] = None,
+    linea_uid: str = "",
 ) -> int:
     """Elimina un registro completo (todos sus meses) de la tabla presupuesto."""
     return eliminar_presupuesto_ventas_por_registro_model(
@@ -1106,6 +1107,7 @@ def eliminar_registro_presupuesto_ventas_ctrl(
         cliente_excel=cliente_excel,
         codigo_origen=codigo_origen,
         company=company,
+        linea_uid=linea_uid,
     )
 
 
@@ -1224,6 +1226,7 @@ def upsert_presupuesto_ventas_linea_ctrl(
     producto_excel: str,
     estatus: str,
     usuario_id: int,
+    linea_uid: str = "",
 ) -> tuple[int, Optional[str]]:
     return upsert_presupuesto_ventas_linea_model(
         id_carga=id_carga,
@@ -1233,6 +1236,7 @@ def upsert_presupuesto_ventas_linea_ctrl(
         producto_excel=producto_excel,
         estatus=estatus,
         usuario_id=usuario_id,
+        linea_uid=linea_uid,
     )
 
 

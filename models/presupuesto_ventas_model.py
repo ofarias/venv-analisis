@@ -706,6 +706,7 @@ def obtener_presupuesto_ventas_model(
                 cliente_excel,
                 codigo_origen,
                 producto_excel,
+                linea_uid,
                 cantidad_kg,
                 precio,
                 precio_venta,
@@ -771,6 +772,7 @@ def obtener_presupuesto_ventas_model(
                       and l.cliente_excel <=> presupuesto_ventas.cliente_excel
                       and l.codigo_origen <=> presupuesto_ventas.codigo_origen
                       and l.producto_excel = presupuesto_ventas.producto_excel
+                      and l.linea_uid = presupuesto_ventas.linea_uid
                       and l.estatus = 'autorizada'
                 )
             """
@@ -799,6 +801,7 @@ def obtener_presupuesto_ventas_model(
                 "cliente_excel",
                 "codigo_origen",
                 "producto_excel",
+                "linea_uid",
                 "cantidad_kg",
                 "precio",
                 "precio_venta",
@@ -1153,9 +1156,10 @@ def guardar_presupuesto_ventas_batch_model(
                 insert into presupuesto_ventas (
                     id_carga, seccion, region, estatus_excel,
                     company, cliente_excel, codigo_origen, cve_prod, cve_linea, producto_excel,
+                    linea_uid,
                     precio, precio_venta, anio, mes, valor, cantidad_kg, importe,
                     estatus, usuario_id
-                ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+                ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
             """
             rows = [
                 (
@@ -1169,6 +1173,7 @@ def guardar_presupuesto_ventas_batch_model(
                     str(r.get("cve_prod")).strip() if r.get("cve_prod") else None,
                     str(r.get("cve_linea")).strip() if r.get("cve_linea") else None,
                     str(r.get("producto_excel") or "").strip(),
+                    str(r.get("linea_uid") or "").strip(),
                     float(r.get("precio") or 0),
                     float(r.get("precio_venta") or 0),
                     int(r["anio"]),
@@ -1206,13 +1211,14 @@ def guardar_presupuesto_ventas_batch_model(
             sql = (
                 "update presupuesto_ventas "
                 "set cve_prod = %s, cve_linea = %s, updated_at = current_timestamp "
-                "where id_carga = %s and producto_excel = %s"
+                "where id_carga = %s and producto_excel = %s and linea_uid = %s"
             )
             params = [
                 str(c["cve_prod"]).strip() if c.get("cve_prod") else None,
                 str(c["cve_linea"]).strip() if c.get("cve_linea") else None,
                 int(c["id_carga"]),
                 str(c.get("producto_excel") or ""),
+                str(c.get("linea_uid") or ""),
             ]
             for campo in ("cliente_excel", "codigo_origen", "company"):
                 valor = c.get(campo)
@@ -1229,7 +1235,7 @@ def guardar_presupuesto_ventas_batch_model(
                 "update presupuesto_ventas "
                 "set company = %s, cliente_excel = %s, codigo_origen = %s, producto_excel = %s, "
                 "updated_at = current_timestamp "
-                "where id_carga = %s and producto_excel = %s"
+                "where id_carga = %s and producto_excel = %s and linea_uid = %s"
             )
             params = [
                 str(idn["company"]).strip() if idn.get("company") else None,
@@ -1238,6 +1244,7 @@ def guardar_presupuesto_ventas_batch_model(
                 str(idn.get("producto_excel") or "").strip(),
                 int(idn["id_carga"]),
                 str(idn.get("producto_excel_orig") or ""),
+                str(idn.get("linea_uid") or ""),
             ]
             for campo, campo_orig in (
                 ("cliente_excel", "cliente_excel_orig"),
@@ -1275,17 +1282,20 @@ def eliminar_presupuesto_ventas_por_registro_model(
     cliente_excel: str | None,
     codigo_origen: str | None,
     company: str | None,
+    linea_uid: str = "",
 ) -> int:
     """Elimina TODOS los meses (todo el registro de la fila pivoteada) que
-    coincidan con la combinación company/cliente/código/producto en una carga+sección+región."""
+    coincidan con la combinación company/cliente/código/producto/linea_uid en una
+    carga+sección+región."""
     conn = obtener_conexion()
     try:
         cur = conn.cursor()
         sql = (
             "delete from presupuesto_ventas "
-            "where id_carga = %s and seccion = %s and producto_excel = %s"
+            "where id_carga = %s and seccion = %s and producto_excel = %s "
+            "and linea_uid = %s"
         )
-        params: list = [int(id_carga), str(seccion), str(producto_excel)]
+        params: list = [int(id_carga), str(seccion), str(producto_excel), str(linea_uid or "")]
 
         if region is not None:
             sql += " and region = %s"; params.append(str(region))
@@ -1375,6 +1385,7 @@ def upsert_presupuesto_ventas_linea_model(
     producto_excel: str,
     estatus: str,
     usuario_id: int,
+    linea_uid: str = "",
 ) -> tuple[int, str | None]:
     """Crea la línea si no existe (estatus inicial 'captura') o actualiza su
     estatus si ya existe. Devuelve (linea_id, estatus_anterior)."""
@@ -1387,6 +1398,7 @@ def upsert_presupuesto_ventas_linea_model(
             where id_carga = %s
               and company <=> %s and cliente_excel <=> %s
               and codigo_origen <=> %s and producto_excel = %s
+              and linea_uid = %s
             """,
             (
                 int(id_carga),
@@ -1394,6 +1406,7 @@ def upsert_presupuesto_ventas_linea_model(
                 str(cliente_excel).strip() if cliente_excel else None,
                 str(codigo_origen).strip() if codigo_origen else None,
                 str(producto_excel).strip(),
+                str(linea_uid or ""),
             ),
         )
         existente = cur.fetchone()
@@ -1415,8 +1428,8 @@ def upsert_presupuesto_ventas_linea_model(
                 """
                 insert into presupuesto_ventas_lineas (
                     id_carga, company, cliente_excel, codigo_origen, producto_excel,
-                    estatus, creado_por, actualizado_por
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s)
+                    linea_uid, estatus, creado_por, actualizado_por
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     int(id_carga),
@@ -1424,6 +1437,7 @@ def upsert_presupuesto_ventas_linea_model(
                     str(cliente_excel).strip() if cliente_excel else None,
                     str(codigo_origen).strip() if codigo_origen else None,
                     str(producto_excel).strip(),
+                    str(linea_uid or ""),
                     str(estatus),
                     int(usuario_id),
                     int(usuario_id),
@@ -1485,7 +1499,7 @@ def obtener_presupuesto_ventas_lineas_model(id_carga: int) -> pd.DataFrame:
         cur.execute(
             """
             select id, id_carga, company, cliente_excel, codigo_origen, producto_excel,
-                   estatus, creado_por, fecha_creacion, actualizado_por, fecha_actualizacion
+                   linea_uid, estatus, creado_por, fecha_creacion, actualizado_por, fecha_actualizacion
             from presupuesto_ventas_lineas
             where id_carga = %s
             """,
@@ -1495,7 +1509,7 @@ def obtener_presupuesto_ventas_lineas_model(id_carga: int) -> pd.DataFrame:
         if not rows:
             return pd.DataFrame(columns=[
                 "id", "id_carga", "company", "cliente_excel", "codigo_origen",
-                "producto_excel", "estatus", "creado_por", "fecha_creacion",
+                "producto_excel", "linea_uid", "estatus", "creado_por", "fecha_creacion",
                 "actualizado_por", "fecha_actualizacion",
             ])
         return pd.DataFrame(rows)
@@ -1516,7 +1530,7 @@ def obtener_presupuesto_ventas_lineas_pendientes_model() -> pd.DataFrame:
             """
             select
                 l.id, l.id_carga, l.company, l.cliente_excel, l.codigo_origen,
-                l.producto_excel, l.estatus, l.creado_por, l.fecha_creacion,
+                l.producto_excel, l.linea_uid, l.estatus, l.creado_por, l.fecha_creacion,
                 l.actualizado_por, l.fecha_actualizacion,
                 c.nombre_archivo, c.anio, c.version, c.comentarios,
                 c.usuario_id as carga_usuario_id

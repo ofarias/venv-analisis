@@ -94,6 +94,7 @@ def obtener_presupuesto_ventas_compras_model(
                     'venta' as tipo,
                     p.id_presupuesto, p.id_carga, p.seccion, p.region, p.anio, p.mes,
                     p.cve_prod, p.company, p.cliente_excel, p.codigo_origen, p.producto_excel,
+                    p.linea_uid,
                     p.cantidad_kg, p.precio, p.precio_venta, p.importe, p.valor, p.estatus,
                     coalesce(l.estatus, 'captura') as estatus_autorizacion,
                     c.usuario_id, c.nombre_archivo, c.version,
@@ -107,6 +108,7 @@ def obtener_presupuesto_ventas_compras_model(
                    and l.cliente_excel <=> p.cliente_excel
                    and l.codigo_origen <=> p.codigo_origen
                    and l.producto_excel = p.producto_excel
+                   and l.linea_uid = p.linea_uid
                 where p.estatus = 'activo'
 
                 union all
@@ -115,6 +117,7 @@ def obtener_presupuesto_ventas_compras_model(
                     'compra' as tipo,
                     p.id_presupuesto, p.id_carga, p.seccion, p.region, p.anio, p.mes,
                     p.cve_prod, p.company, p.cliente_excel, p.codigo_origen, p.producto_excel,
+                    p.linea_uid,
                     p.cantidad_kg, p.precio, null as precio_venta, p.importe, p.valor, p.estatus,
                     coalesce(l.estatus, 'captura') as estatus_autorizacion,
                     c.usuario_id, c.nombre_archivo, c.version,
@@ -128,6 +131,7 @@ def obtener_presupuesto_ventas_compras_model(
                    and l.cliente_excel <=> p.cliente_excel
                    and l.codigo_origen <=> p.codigo_origen
                    and l.producto_excel = p.producto_excel
+                   and l.linea_uid = p.linea_uid
                 where p.estatus = 'activo'
             ) t
             where 1 = 1
@@ -163,7 +167,7 @@ def obtener_presupuesto_ventas_compras_model(
         if not rows:
             return pd.DataFrame(columns=[
                 "tipo", "id_presupuesto", "id_carga", "seccion", "region", "anio", "mes",
-                "cve_prod", "company", "cliente_excel", "codigo_origen", "producto_excel",
+                "cve_prod", "company", "cliente_excel", "codigo_origen", "producto_excel", "linea_uid",
                 "cantidad_kg", "precio", "precio_venta", "importe", "valor", "estatus", "estatus_autorizacion",
                 "usuario_id", "nombre_archivo", "version", "usuario_nombre",
             ])

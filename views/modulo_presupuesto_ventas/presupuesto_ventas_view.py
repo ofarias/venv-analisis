@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from io import BytesIO
 from typing import Optional
@@ -68,6 +69,11 @@ _TABS_PIVOT = [
 ]
 
 _COLS_ID = ["company", "cliente_excel", "codigo_origen", "producto_excel"]
+# discriminador de línea: permite varias líneas para el mismo (company, cliente,
+# código, producto). '' = fila de Excel/legacy (una línea por identidad); las
+# líneas capturadas a mano llevan un uuid propio. Se maneja como clave extra
+# local, NO se agrega a _COLS_ID (que se usa en varios lugares de solo lectura).
+LINEA_KEY = "linea_uid"
 
 # resalta en verde los valores positivos y en rojo los negativos; 0 sin color
 _CELL_STYLE_VALORES = JsCode("""
@@ -210,6 +216,7 @@ def _cambiar_estatus_linea_ventas(
     usuario_nombre: Optional[str],
     usuario_email: Optional[str],
     comentario: Optional[str] = None,
+    linea_uid: str = "",
 ) -> int:
     linea_id, estatus_anterior = upsert_presupuesto_ventas_linea_ctrl(
         id_carga=id_carga,
@@ -219,6 +226,7 @@ def _cambiar_estatus_linea_ventas(
         producto_excel=producto_excel,
         estatus=estatus_nuevo,
         usuario_id=usuario_id,
+        linea_uid=linea_uid,
     )
     insertar_presupuesto_ventas_linea_estatus_ctrl(
         linea_id=linea_id,
@@ -382,47 +390,53 @@ def _construir_pivot(
     code_to_label: dict,
 ) -> tuple[pd.DataFrame, dict, dict]:
     cols_id = [c for c in _COLS_ID if c in df.columns]
+    # grupo real de una línea: identidad + discriminador de línea. Las filas
+    # de Excel/legacy traen linea_uid = '' (o no la traen) y siguen agrupando
+    # por identidad; las capturadas a mano tienen un uuid y quedan separadas.
+    grp = cols_id + [LINEA_KEY]
 
     if df.empty:
         pivot_vacio = pd.DataFrame(
-            columns=cols_id + ["_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"]
+            columns=cols_id + [LINEA_KEY, "_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"]
         )
         return pivot_vacio, {}, {}
 
     # pivot_table descarta filas con NaN en el índice; rellenamos con ""
     df = df.copy()
-    for c in cols_id:
+    if LINEA_KEY not in df.columns:
+        df[LINEA_KEY] = ""
+    for c in grp:
         df[c] = df[c].fillna("")
 
     # mapping (row_key, mes) → id_presupuesto  (solo meses con registro real)
     mapping: dict = {}
     for _, row in df.iterrows():
-        key = tuple(str(row.get(c) or "") for c in cols_id)
+        key = tuple(str(row.get(c) or "") for c in grp)
         mapping[(key, int(row["mes"]))] = int(row["id_presupuesto"])
 
     # row_meta: datos constantes por fila para insertar nuevos meses
     meta_cols = ["id_carga", "seccion", "region", "anio",
-                 "cve_prod", "estatus_excel", "precio", "precio_venta"] + cols_id
+                 "cve_prod", "estatus_excel", "precio", "precio_venta"] + grp
     meta_cols = [c for c in meta_cols if c in df.columns]
     row_meta: dict = {}
     for _, row in df.iterrows():
-        key = tuple(str(row.get(c) or "") for c in cols_id)
+        key = tuple(str(row.get(c) or "") for c in grp)
         if key not in row_meta:
             row_meta[key] = {c: row.get(c) for c in meta_cols}
 
-    meta_map = df.groupby(cols_id, dropna=False)[
+    meta_map = df.groupby(grp, dropna=False)[
         [c for c in ["precio", "precio_venta", "cve_prod", "estatus_excel"] if c in df.columns]
     ].first().reset_index()
 
     pivot = df.pivot_table(
-        index=cols_id,
+        index=grp,
         columns="mes",
         values="valor",
         aggfunc="sum",
         fill_value=0.0,
     ).reset_index()
     pivot = pivot.rename(columns=_MESES)
-    pivot = pivot.merge(meta_map, on=cols_id, how="left")
+    pivot = pivot.merge(meta_map, on=grp, how="left")
 
     meses_presentes = [_MESES[m] for m in range(1, 13) if _MESES[m] in pivot.columns]
 
@@ -437,7 +451,7 @@ def _construir_pivot(
     pivot["_status"] = pivot["cve_prod"].apply(_status) if "cve_prod" in pivot.columns else "🟠"
     pivot["_cve_prod_label"] = pivot["cve_prod"].apply(_label) if "cve_prod" in pivot.columns else ""
 
-    col_order = cols_id + ["_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"] + meses_presentes
+    col_order = cols_id + [LINEA_KEY, "_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"] + meses_presentes
     pivot = pivot[[c for c in col_order if c in pivot.columns]]
     return pivot, mapping, row_meta
 
@@ -708,6 +722,9 @@ def _guardar_pivot(
     identidad_updates: list[dict] = []
     errores = 0
 
+    # grupo real de una línea: identidad + discriminador de línea (linea_uid)
+    grp = cols_id + [LINEA_KEY]
+
     for i in range(len(orig)):
         es_nueva = bool(orig.iloc[i].get("_nueva"))
 
@@ -723,16 +740,18 @@ def _guardar_pivot(
                 errores += 1
                 continue
 
-            row_key = tuple(str(edited.iloc[i].get(c) or "").strip() for c in cols_id)
+            linea_uid = str(edited.iloc[i].get(LINEA_KEY) or "").strip() or uuid.uuid4().hex
+            row_key = tuple(str(edited.iloc[i].get(c) or "").strip() for c in cols_id) + (linea_uid,)
             meta = {
                 "id_carga": id_carga,
                 "seccion": seccion,
                 "region": region,
                 "anio": anio,
+                LINEA_KEY: linea_uid,
                 **{c: edited.iloc[i].get(c) for c in cols_id},
             }
         else:
-            row_key = tuple(str(orig.iloc[i].get(c) or "") for c in cols_id)
+            row_key = tuple(str(orig.iloc[i].get(c) or "") for c in grp)
             meta = dict(row_meta.get(row_key, {}))
             meta_orig = meta  # identidad tal como está hoy en BD, antes de cualquier rename
 
@@ -740,7 +759,9 @@ def _guardar_pivot(
             # mientras la línea no esté congelada se puede editar cualquier campo,
             # incluida su identidad — se actualiza en BD por id_carga + identidad
             # anterior, igual que cve_prod_updates
-            row_key_edit = tuple(str(edited.iloc[i].get(c) or "") for c in cols_id)
+            row_key_edit = tuple(str(edited.iloc[i].get(c) or "") for c in cols_id) + (
+                str(meta_orig.get(LINEA_KEY) or ""),
+            )
             producto_edit_id = str(edited.iloc[i].get("producto_excel") or "").strip()
             if row_key_edit != row_key and producto_edit_id:
                 identidad_nueva = {
@@ -755,6 +776,7 @@ def _guardar_pivot(
                     "cliente_excel_orig": meta_orig.get("cliente_excel") or None,
                     "codigo_origen_orig": meta_orig.get("codigo_origen") or None,
                     "company_orig": meta_orig.get("company") or None,
+                    "linea_uid": str(meta_orig.get(LINEA_KEY) or ""),
                     **identidad_nueva,
                 })
                 # los inserts de meses nuevos para esta fila usan ya la
@@ -786,6 +808,7 @@ def _guardar_pivot(
                     "cliente_excel": meta_orig.get("cliente_excel") or None,
                     "codigo_origen": meta_orig.get("codigo_origen") or None,
                     "company": meta_orig.get("company") or None,
+                    "linea_uid": str(meta_orig.get(LINEA_KEY) or ""),
                     "cve_linea": cve_linea_edit,
                     "cve_prod": cve_edit_cod,
                 })
@@ -852,6 +875,7 @@ def _guardar_pivot(
                     "cliente_excel": meta.get("cliente_excel") or None,
                     "codigo_origen": meta.get("codigo_origen") or None,
                     "producto_excel": str(meta.get("producto_excel") or ""),
+                    "linea_uid": str(meta.get(LINEA_KEY) or ""),
                     "cve_prod": meta.get("cve_prod") or None,
                     "cve_linea": meta.get("cve_linea") or None,
                     "estatus_excel": meta.get("estatus_excel") or None,
@@ -1188,7 +1212,26 @@ def _form_agregar_registro(
                         m.upper(), value=0.0, format=fmt, key=f"{prefix}_val_{m}",
                     )
 
-        if st.button("agregar", key=f"{prefix}_btn"):
+        # resultado en vivo de lo que se lleva capturado (se recalcula en cada
+        # rerun al escribir un mes) — mismo criterio de precio que la tabla:
+        # precio venta si el usuario lo capturó (>0), si no el de SAE
+        total_meses = sum(
+            float(v) for v in valores.values() if isinstance(v, (int, float))
+        )
+        precio_efectivo = precio_venta if precio_venta and precio_venta > 0 else precio
+        col_btn, col_res = st.columns([1, 4])
+        with col_btn:
+            agregar = st.button("agregar", key=f"{prefix}_btn", use_container_width=True)
+        with col_res:
+            if seccion == "KG":
+                txt = f"**Total: {total_meses:,.3f} kg**"
+                if precio_efectivo:
+                    txt += f"  ·  **USD {total_meses * precio_efectivo:,.2f}**"
+            else:
+                txt = f"**Total: USD {total_meses:,.2f}**"
+            st.markdown(txt)
+
+        if agregar:
             if not producto_excel.strip():
                 st.error("ingresa el nombre del producto")
                 return
@@ -1208,6 +1251,9 @@ def _form_agregar_registro(
                 "cliente_excel": cliente.strip(),
                 "codigo_origen": codigo_origen.strip(),
                 "producto_excel": producto_excel.strip(),
+                # cada línea capturada a mano es independiente aunque comparta
+                # producto/cliente con otra
+                LINEA_KEY: uuid.uuid4().hex,
                 "_status": "🟢" if code in sae_set else "🟠",
                 "_cve_prod_label": code_to_label.get(code, "") if code else "",
                 "estatus_excel": estatus_excel,
@@ -1626,6 +1672,7 @@ def _panel_pivot(id_carga: int) -> None:
         # presupuesto sin registros aún (p. ej. creado de forma manual, sin Excel):
         # se arma una estructura vacía con las columnas base para permitir captura manual
         df_all = pd.DataFrame(columns=_COLS_ID + [
+            LINEA_KEY,
             "mes", "anio", "seccion", "region", "valor", "importe",
             "cantidad_kg", "precio", "precio_venta", "cve_prod", "estatus_excel",
             "id_carga", "id_presupuesto",
@@ -1728,26 +1775,24 @@ def _panel_pivot(id_carga: int) -> None:
                         pivot_db[m] = 0.0
 
                 col_order = (
-                    cols_id_reload + ["_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"] + meses_todos
+                    cols_id_reload + [LINEA_KEY, "_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"] + meses_todos
                 )
                 pivot_db = pivot_db[[c for c in col_order if c in pivot_db.columns]]
                 pivot_db["_nueva"] = False
 
                 # estatus de autorización por línea (no por mes): si no hay
                 # fila en presupuesto_ventas_lineas para esa combinación
-                # company/cliente/código/producto, es "captura" implícito
+                # company/cliente/código/producto/linea_uid, es "captura" implícito
+                clave_linea_cols = ("company", "cliente_excel", "codigo_origen", "producto_excel", LINEA_KEY)
                 lineas_df = obtener_presupuesto_ventas_lineas_ctrl(id_carga)
                 estatus_por_linea: dict[tuple, str] = {}
                 if lineas_df is not None and not lineas_df.empty:
                     for r in lineas_df.to_dict("records"):
-                        clave = tuple(
-                            str(r.get(c) or "") for c in
-                            ("company", "cliente_excel", "codigo_origen", "producto_excel")
-                        )
+                        clave = tuple(str(r.get(c) or "") for c in clave_linea_cols)
                         estatus_por_linea[clave] = str(r.get("estatus") or "captura")
 
                 def _estatus_linea_de(row):
-                    clave = tuple(str(row.get(c) or "") for c in cols_id_reload)
+                    clave = tuple(str(row.get(c) or "") for c in list(cols_id_reload) + [LINEA_KEY])
                     return estatus_por_linea.get(clave, "captura")
 
                 pivot_db["_estatus_linea"] = (
@@ -1863,6 +1908,7 @@ def _panel_pivot(id_carga: int) -> None:
 
             gb.configure_column("_nueva", hide=True)
             gb.configure_column("_estatus_linea", hide=True)
+            gb.configure_column(LINEA_KEY, hide=True)
             gb.configure_column(
                 "_estatus_linea_badge", headerName="autorización", editable=False, width=120,
                 pinned="left",
@@ -2079,8 +2125,9 @@ def _panel_pivot(id_carga: int) -> None:
 
                     registros_borrados = 0
                     filas_bd = 0
+                    clave_del_cols = list(cols_id) + [LINEA_KEY]
                     claves_borradas = {
-                        tuple(str(f.get(c) or "").strip() for c in cols_id)
+                        tuple(str(f.get(c) or "").strip() for c in clave_del_cols)
                         for f in seleccionadas
                     }
                     nuevas_borradas = [
@@ -2098,6 +2145,7 @@ def _panel_pivot(id_carga: int) -> None:
                                 cliente_excel=fila.get("cliente_excel") or None,
                                 codigo_origen=fila.get("codigo_origen") or None,
                                 company=fila.get("company") or None,
+                                linea_uid=str(fila.get(LINEA_KEY) or ""),
                             )
                             filas_bd += n
                             if n:
@@ -2110,7 +2158,7 @@ def _panel_pivot(id_carga: int) -> None:
                     # fuerza una recarga desde BD para que quede consistente
                     work_actual = st.session_state[work_key]
                     mask_fuera = work_actual.apply(
-                        lambda r: tuple(str(r.get(c) or "").strip() for c in cols_id) in claves_borradas,
+                        lambda r: tuple(str(r.get(c) or "").strip() for c in clave_del_cols) in claves_borradas,
                         axis=1,
                     )
                     st.session_state[work_key] = work_actual[~mask_fuera].reset_index(drop=True)
@@ -2161,6 +2209,7 @@ def _panel_pivot(id_carga: int) -> None:
                             usuario_id=usuario_id,
                             usuario_nombre=usuario_nombre,
                             usuario_email=usuario_email,
+                            linea_uid=str(fila.get(LINEA_KEY) or ""),
                         )
 
                     if estatus_destino == "enviada":
@@ -2404,11 +2453,14 @@ def _panel_ver_todos() -> None:
     # tabla de presupuesto; se agrupa también por id_carga para no mezclar
     # cifras de cargas/versiones distintas que compartan la misma identidad
     cols_grupo = [c for c in _ENCABEZADOS_VER_TODOS if c in df.columns and c != "precio"]
-    for c in cols_grupo:
+    # linea_uid entra al agrupado para no fundir dos líneas distintas del mismo
+    # producto/cliente, pero no se muestra como columna
+    cols_grupo_pivot = cols_grupo + ([LINEA_KEY] if LINEA_KEY in df.columns else [])
+    for c in cols_grupo_pivot:
         df[c] = df[c].fillna("")
 
     if "precio" in df.columns:
-        df["precio"] = df.groupby(cols_grupo, dropna=False)["precio"].transform("first")
+        df["precio"] = df.groupby(cols_grupo_pivot, dropna=False)["precio"].transform("first")
         cols_extra = ["precio"]
     else:
         cols_extra = []
@@ -2416,10 +2468,10 @@ def _panel_ver_todos() -> None:
     if "precio_venta" in df.columns:
         # solo se usa para calcular total_usd_anio (precio venta > 0 manda
         # sobre el de SAE) — no se muestra como columna aparte en esta tabla
-        df["precio_venta"] = df.groupby(cols_grupo, dropna=False)["precio_venta"].transform("first")
+        df["precio_venta"] = df.groupby(cols_grupo_pivot, dropna=False)["precio_venta"].transform("first")
         cols_extra.append("precio_venta")
 
-    pivote = _pivotear_meses(df, cols_grupo + cols_extra, col_valor="valor")
+    pivote = _pivotear_meses(df, cols_grupo_pivot + cols_extra, col_valor="valor")
     pivote = _agregar_totales_anio(pivote)
 
     st.caption(f"{len(pivote):,} línea(s)  |  🔵 captura 🟡 enviada 🟢 autorizada 🔴 rechazada")
@@ -2485,12 +2537,15 @@ def _resolver_linea_autorizacion(
     anio = int(fila.get("anio") or 0)
     producto_excel = str(fila.get("producto_excel") or "")
 
+    linea_uid = str(fila.get(LINEA_KEY) or "")
+
     if fila["tipo"] == "venta":
         linea_id, estatus_anterior = upsert_presupuesto_ventas_linea_ctrl(
             id_carga=id_carga, company=fila.get("company") or None,
             cliente_excel=fila.get("cliente_excel") or None,
             codigo_origen=fila.get("codigo_origen") or None,
             producto_excel=producto_excel, estatus=estatus_nuevo, usuario_id=usuario_id,
+            linea_uid=linea_uid,
         )
         insertar_presupuesto_ventas_linea_estatus_ctrl(
             linea_id=linea_id, estatus_anterior=estatus_anterior, estatus_nuevo=estatus_nuevo,
@@ -2508,6 +2563,7 @@ def _resolver_linea_autorizacion(
             cliente_excel=fila.get("cliente_excel") or None,
             codigo_origen=fila.get("codigo_origen") or None,
             producto_excel=producto_excel, estatus=estatus_nuevo, usuario_id=usuario_id,
+            linea_uid=linea_uid,
         )
         insertar_presupuesto_compras_linea_estatus_ctrl(
             linea_id=linea_id, estatus_anterior=estatus_anterior, estatus_nuevo=estatus_nuevo,
@@ -2528,11 +2584,13 @@ def _agregar_meses_pendientes(pendientes: pd.DataFrame) -> pd.DataFrame:
     de kilos del año — una línea puede generar más de una fila si tiene datos
     en más de un bloque sección/región (p. ej. USD y KG). Mismo formato que
     la tabla de presupuesto (meses como columnas)."""
-    cols_id = ["company", "cliente_excel", "codigo_origen", "producto_excel"]
+    cols_id = ["company", "cliente_excel", "codigo_origen", "producto_excel", LINEA_KEY]
     claves = ["tipo", "id_carga"] + cols_id
     claves_extendidas = claves + ["seccion", "region"]
 
     pendientes = pendientes.copy()
+    if LINEA_KEY not in pendientes.columns:
+        pendientes[LINEA_KEY] = ""
     for col in cols_id:
         if col in pendientes.columns:
             pendientes[col] = pendientes[col].fillna("")
@@ -2654,7 +2712,7 @@ def _panel_autorizaciones() -> None:
 
     cols_mostrar = ["usuario", "presupuesto"] + [c for c in [
         "tipo", "id_carga", "region", "company", "cliente_excel", "codigo_origen",
-        "producto_excel", "anio", "version", "fecha_actualizacion",
+        "producto_excel", LINEA_KEY, "anio", "version", "fecha_actualizacion",
         "precio", "total_kg_anio", "total_usd_anio", "carga_usuario_id",
     ] if c in pendientes.columns] + list(_MESES.values())
 
@@ -2673,6 +2731,7 @@ def _panel_autorizaciones() -> None:
     gb.configure_column("usuario", headerName="Usuario", width=140, pinned="left")
     gb.configure_column("presupuesto", headerName="Presupuesto", width=220, pinned="left")
     gb.configure_column("carga_usuario_id", hide=True)
+    gb.configure_column(LINEA_KEY, hide=True)
     for col, header, decimales in (
         ("precio", "Precio", 4),
         ("total_kg_anio", "Total Kilos Año", 4),
@@ -2713,7 +2772,7 @@ def _panel_autorizaciones() -> None:
     # se deduplica por identidad para no procesarla ni notificar por correo más de una vez
     claves_unicas = {
         (f.get("tipo"), f.get("id_carga"), f.get("company"), f.get("cliente_excel"),
-         f.get("codigo_origen"), f.get("producto_excel"))
+         f.get("codigo_origen"), f.get("producto_excel"), f.get(LINEA_KEY))
         for f in filas_seleccionadas
     }
     n_lineas = len(claves_unicas)
@@ -2730,6 +2789,7 @@ def _panel_autorizaciones() -> None:
             clave = (
                 fila.get("tipo"), fila.get("id_carga"), fila.get("company"),
                 fila.get("cliente_excel"), fila.get("codigo_origen"), fila.get("producto_excel"),
+                fila.get(LINEA_KEY),
             )
             if clave in vistas:
                 continue
