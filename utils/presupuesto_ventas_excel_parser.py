@@ -336,7 +336,8 @@ def normalizar_presupuesto_excel_dinamico(
 
 
 # ── Vendedor format parsers ───────────────────────────────────────────────────
-# Handles: ALIMENTOS (datetime month cols), BAKING, JUICE, BREWING DP3 (Clave SAE)
+# Handles: ALIMENTOS (datetime month cols), BAKING, JUICE, BREWING DP3 (Clave SAE),
+# ROGELIO (CLAVE/NOMBRE DEL CLIENTE/CLAVE DEL PRODUCTO SKU/TIPO)
 
 def _es_datetime(v: Any) -> bool:
     return isinstance(v, _DT)
@@ -379,6 +380,10 @@ def _detectar_formato_vendedor(df: pd.DataFrame) -> str:
         if any("CODIGO UNIVERSAL" in s for s in str_set):
             if any(_detectar_mes(v) for v in row):
                 return "baking"
+
+        # ROGELIO: header CLAVE | NOMBRE DEL CLIENTE | CLAVE DEL PRODUCTO SKU | ... | TIPO
+        if {"NOMBRE DEL CLIENTE", "CLAVE DEL PRODUCTO SKU", "TIPO"} <= str_set:
+            return "rogelio"
 
     return "standard"
 
@@ -446,7 +451,7 @@ def _dedup_vendedor(registros: list[dict]) -> pd.DataFrame:
     agg: dict = {}
     for c in ("fila_excel", "estatus_excel", "canal", "cve_prod",
               "vendedor_excel", "unidad_negocio_excel", "linea_excel",
-              "comentario", "precio"):
+              "comentario", "precio", "precio_venta"):
         if c in df.columns:
             agg[c] = "first"
     for c in ("valor", "cantidad_kg", "importe"):
@@ -763,6 +768,114 @@ def _parsear_brewing_dp3(df: pd.DataFrame, anio: int) -> pd.DataFrame:
     return _dedup_vendedor(registros)
 
 
+def _parsear_rogelio(df: pd.DataFrame, anio: int) -> pd.DataFrame:
+    """
+    ROGELIO vendedor format.
+    Encabezado (se repite: bloque normal y bloque "PROYECTOS" más abajo en la hoja):
+    CLAVE | NOMBRE DEL CLIENTE | CLAVE DEL PRODUCTO SKU | PRODUCTO | AREA | VENDEDOR |
+    PRECIO UNITARIO EN DÓLARES | TIPO | <12 meses, KG> | TOTAL | <bloque USD, se ignora>.
+    El bloque de dólares que sigue a la derecha no se usa: el importe se calcula como
+    kg * precio, igual que los demás formatos de este archivo.
+    TIPO = PRESUPUESTO en el bloque normal, PROSPECTO en el bloque "PROYECTOS" — se
+    guarda tal cual en estatus_excel ("Presupuesto"/"Prospecto"), no hace falta detectar
+    la etiqueta de sección aparte porque cada renglón ya trae su propio TIPO.
+    """
+    header_rows = []
+    for i in range(len(df)):
+        row = df.iloc[i].tolist()
+        str_set = {_norm(v) for v in row if pd.notna(v) and _txt(v)}
+        if {"NOMBRE DEL CLIENTE", "CLAVE DEL PRODUCTO SKU", "TIPO"} <= str_set:
+            header_rows.append(i)
+
+    if not header_rows:
+        return pd.DataFrame()
+
+    def _idx(header_row: list[Any], label: str, exact: bool = True) -> int | None:
+        for j, v in enumerate(header_row):
+            txt = _norm(v)
+            if (txt == label) if exact else (label in txt):
+                return j
+        return None
+
+    registros: list[dict] = []
+
+    for h_num, header_i in enumerate(header_rows):
+        header = df.iloc[header_i].tolist()
+
+        idx_clave = _idx(header, "CLAVE")
+        idx_cliente = _idx(header, "NOMBRE DEL CLIENTE")
+        idx_sku = _idx(header, "CLAVE DEL PRODUCTO SKU")
+        idx_producto = _idx(header, "PRODUCTO")
+        idx_area = _idx(header, "AREA")
+        idx_vendedor = _idx(header, "VENDEDOR")
+        idx_precio = _idx(header, "PRECIO UNITARIO", exact=False)
+        idx_tipo = _idx(header, "TIPO")
+
+        if idx_producto is None or idx_tipo is None:
+            continue
+
+        month_cols: list[tuple[int, int]] = []
+        for j in range(idx_tipo + 1, len(header)):
+            mes = _detectar_mes(header[j])
+            if mes:
+                month_cols.append((j, mes))
+                if len(month_cols) == 12:
+                    break
+
+        if not month_cols:
+            continue
+
+        end_i = header_rows[h_num + 1] if h_num + 1 < len(header_rows) else len(df)
+
+        for row_i in range(header_i + 1, end_i):
+            row = df.iloc[row_i].tolist()
+
+            producto = _txt(_obtener(row, idx_producto))
+            if not producto:
+                break
+
+            codigo_origen = _txt(_obtener(row, idx_clave))
+            cliente = _txt(_obtener(row, idx_cliente))
+            cve_prod = _txt(_obtener(row, idx_sku))
+            area = _txt(_obtener(row, idx_area))
+            vendedor = _txt(_obtener(row, idx_vendedor))
+            precio = _float(_obtener(row, idx_precio))
+            tipo = _norm(_obtener(row, idx_tipo))
+
+            estatus = "Prospecto" if tipo == "PROSPECTO" else "Presupuesto"
+
+            for col_idx, mes in month_cols:
+                valor = _float(_obtener(row, col_idx))
+                if valor == 0:
+                    continue
+
+                registros.append({
+                    "fila_excel": row_i + 1,
+                    "seccion": "KG",
+                    "region": "MEXICO",
+                    "estatus_excel": estatus,
+                    "company": None,
+                    "canal": None,
+                    "cliente_excel": cliente or None,
+                    "codigo_origen": codigo_origen or None,
+                    "cve_prod": cve_prod or None,
+                    "vendedor_excel": vendedor or None,
+                    "unidad_negocio_excel": None,
+                    "linea_excel": area or None,
+                    "producto_excel": producto,
+                    "precio": precio,
+                    "precio_venta": precio,
+                    "anio": int(anio),
+                    "mes": int(mes),
+                    "cantidad_kg": valor,
+                    "importe": round(valor * precio, 2),
+                    "valor": valor,
+                    "comentario": None,
+                })
+
+    return _dedup_vendedor(registros)
+
+
 def normalizar_presupuesto_vendedor_excel(
     archivo,
     hoja: str,
@@ -779,6 +892,7 @@ def normalizar_presupuesto_vendedor_excel(
         "baking":      _parsear_baking,
         "juice":       _parsear_juice,
         "brewing_dp3": _parsear_brewing_dp3,
+        "rogelio":     _parsear_rogelio,
     }
 
     fn = parsers.get(formato)
@@ -811,6 +925,7 @@ def normalizar_presupuesto_excel_auto(
         "baking":      _parsear_baking,
         "juice":       _parsear_juice,
         "brewing_dp3": _parsear_brewing_dp3,
+        "rogelio":     _parsear_rogelio,
     }
 
     fn = parsers[formato]

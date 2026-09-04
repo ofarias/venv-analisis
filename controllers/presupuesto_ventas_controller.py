@@ -218,6 +218,49 @@ def _valor(row: pd.Series, col: Optional[str]) -> Any:
     return row.get(col)
 
 
+def _resolver_cliente_sae(
+    codigo_origen: Any,
+    cliente_excel: Any,
+    clientes_por_clave: dict[str, dict],
+    clientes_por_nombre: dict[str, dict],
+    resolver_por_nombre: bool = True,
+) -> tuple[Optional[str], Optional[str], bool]:
+    """Resuelve un cliente contra el catálogo de SAE.
+
+    La clave de cliente que traen algunos Excel (p.ej. Rogelio) viene sin los
+    ceros a la izquierda que usa SAE (28 en vez de 0028) — se prueba primero el
+    match por código, rellenando a 4 dígitos, y si pega se usa el nombre de SAE
+    como definitivo (formato "clave - nombre - estado", igual que en la captura
+    manual), no el que haya escrito quien capturó el Excel.
+
+    Retorna (cve_clie, cliente_excel_final, encontrado). cliente_excel_final es
+    None cuando no hubo match por código (se debe conservar el cliente_excel
+    original en ese caso).
+    """
+    codigo_txt = _clean_upper(codigo_origen)
+    if codigo_txt.isdigit() and len(codigo_txt) < 4:
+        codigo_txt = codigo_txt.zfill(4)
+
+    if codigo_txt and codigo_txt in clientes_por_clave:
+        cliente_sae = clientes_por_clave[codigo_txt]
+        partes = [
+            _clean_text(cliente_sae.get("clave")),
+            _clean_text(cliente_sae.get("nombre")),
+            _clean_text(cliente_sae.get("estado")),
+        ]
+        cliente_excel_final = " - ".join(p for p in partes if p)
+        return cliente_sae["clave"], cliente_excel_final, True
+
+    cliente_txt = _clean_upper(cliente_excel)
+    if cliente_txt:
+        if cliente_txt in clientes_por_clave:
+            return clientes_por_clave[cliente_txt]["clave"], None, True
+        if resolver_por_nombre and cliente_txt in clientes_por_nombre:
+            return clientes_por_nombre[cliente_txt]["clave"], None, True
+
+    return None, None, False
+
+
 def _df_to_lookup(df: pd.DataFrame, key_col: str) -> dict[str, dict]:
     if df is None or df.empty or key_col not in df.columns:
         return {}
@@ -448,7 +491,12 @@ def validar_staging_presupuesto_ventas_con_sae_ctrl(
         }
 
     productos = obtener_productos_sae_model()
-    clientes = obtener_clientes_sae_model()
+    # se usa buscar_clientes_sae_ctrl (no obtener_clientes_sae_model) porque trae
+    # calle/municipio/estado — necesarios para armar el mismo label
+    # "clave - nombre - estado" que usa el selector de la captura manual
+    # (_catalogo_clientes_sae en presupuesto_ventas_view.py); si aquí guardáramos
+    # solo el nombre de clie01 quedaría distinto a lo que se ve/guarda a mano.
+    clientes = pd.DataFrame(buscar_clientes_sae_ctrl(q="", limit=5000))
     vendedores = obtener_vendedores_sae_model()
     lineas = obtener_lineas_sae_model()
 
@@ -473,6 +521,7 @@ def validar_staging_presupuesto_ventas_con_sae_ctrl(
         producto_excel = _clean_text(row.get("producto_excel"))
         cve_prod_manual = _clean_text(row.get("cve_prod"))
         cliente_excel = _clean_text(row.get("cliente_excel"))
+        codigo_origen = _clean_text(row.get("codigo_origen"))
         vendedor_excel = _clean_text(row.get("vendedor_excel"))
         linea_excel = _clean_text(row.get("linea_excel"))
 
@@ -480,6 +529,7 @@ def validar_staging_presupuesto_ventas_con_sae_ctrl(
         cve_clie: Optional[str] = None
         cve_vend: Optional[str] = None
         cve_linea: Optional[str] = None
+        cliente_excel_final: Optional[str] = None
 
         observaciones: list[str] = []
 
@@ -498,14 +548,12 @@ def validar_staging_presupuesto_ventas_con_sae_ctrl(
         else:
             observaciones.append("producto_sae_no_encontrado")
 
-        ce = _clean_upper(cliente_excel)
-        if cliente_excel:
-            if ce in clientes_por_clave:
-                cve_clie = clientes_por_clave[ce]["clave"]
-            elif resolver_por_nombre and ce in clientes_por_nombre:
-                cve_clie = clientes_por_nombre[ce]["clave"]
-            else:
-                observaciones.append("cliente_sae_no_encontrado")
+        cve_clie, cliente_excel_final, cliente_ok = _resolver_cliente_sae(
+            codigo_origen, cliente_excel, clientes_por_clave, clientes_por_nombre,
+            resolver_por_nombre=resolver_por_nombre,
+        )
+        if cliente_excel and not cliente_ok:
+            observaciones.append("cliente_sae_no_encontrado")
 
         ve = _clean_upper(vendedor_excel)
         if vendedor_excel:
@@ -540,6 +588,7 @@ def validar_staging_presupuesto_ventas_con_sae_ctrl(
             cve_clie=cve_clie,
             cve_vend=cve_vend,
             cve_linea=cve_linea if cve_linea else None,
+            cliente_excel=cliente_excel_final,
             id_unidad_negocio=id_unidad_negocio,
             estatus_match=estatus_match,
             observaciones="|".join(observaciones) if observaciones else None,
@@ -966,6 +1015,28 @@ def cargar_excel_directo_presupuesto_ventas_ctrl(
 
     if df_norm is None or df_norm.empty:
         raise ValueError("No se generaron registros para cargar.")
+
+    clientes = pd.DataFrame(buscar_clientes_sae_ctrl(q="", limit=5000))
+    clientes_por_clave = _df_to_lookup(clientes, "clave")
+    clientes_por_nombre = _df_to_lookup(clientes, "nombre")
+
+    cve_clie_col: list[Optional[str]] = []
+    cliente_excel_col: list[Optional[str]] = []
+    for _, row in df_norm.iterrows():
+        cve_clie, cliente_excel_final, _ = _resolver_cliente_sae(
+            row.get("codigo_origen"), row.get("cliente_excel"),
+            clientes_por_clave, clientes_por_nombre,
+        )
+        cve_clie_col.append(cve_clie)
+        cliente_excel_col.append(cliente_excel_final or row.get("cliente_excel"))
+
+    df_norm = df_norm.copy()
+    df_norm["cve_clie"] = cve_clie_col
+    df_norm["cliente_excel"] = cliente_excel_col
+    # codigo_origen aquí solo trae la clave de cliente del Excel (usada arriba
+    # nada más para encontrarlo en SAE) — en Ventas ese campo no representa un
+    # "código de origen" real (a diferencia de Compras), así que no se persiste.
+    df_norm["codigo_origen"] = None
 
     id_carga = insertar_carga_presupuesto_ventas_model(
         nombre_archivo=nombre_archivo,

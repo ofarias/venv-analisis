@@ -303,6 +303,7 @@ def actualizar_match_staging_presupuesto_ventas_model(
     cve_clie: str | None = None,
     cve_vend: str | None = None,
     cve_linea: str | None = None,
+    cliente_excel: str | None = None,
     estatus_match: str | None = None,
     observaciones: str | None = None,
 ) -> bool:
@@ -348,6 +349,10 @@ def actualizar_match_staging_presupuesto_ventas_model(
         if cve_linea is not None:
             sets.append("cve_linea = %s")
             params.append(str(cve_linea).strip() if cve_linea else None)
+
+        if cliente_excel is not None:
+            sets.append("cliente_excel = %s")
+            params.append(str(cliente_excel).strip() if cliente_excel else None)
 
         if estatus_match is not None:
             sets.append("estatus_match = %s")
@@ -618,6 +623,8 @@ def insertar_presupuesto_desde_staging_model(
                 codigo_origen,
                 canal,
                 comentario,
+                cliente_excel,
+                producto_excel,
                 estatus,
                 usuario_id
             )
@@ -645,6 +652,8 @@ def insertar_presupuesto_desde_staging_model(
                 s.codigo_origen,
                 s.canal,
                 s.comentario,
+                s.cliente_excel,
+                s.producto_excel,
                 'activo',
                 %s
             from presupuesto_ventas_staging s
@@ -935,10 +944,10 @@ def insertar_presupuesto_ventas_desde_df_model(
         sql = """
             insert into presupuesto_ventas (
                 id_carga, seccion, region, estatus_excel,
-                company, cliente_excel, codigo_origen, cve_prod, producto_excel,
+                company, cliente_excel, codigo_origen, cve_clie, cve_prod, producto_excel,
                 precio, precio_venta, anio, mes, valor, cantidad_kg, importe,
                 canal, comentario, estatus, usuario_id
-            ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+            ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
         """
         total = 0
         for _, row in df.iterrows():
@@ -950,6 +959,7 @@ def insertar_presupuesto_ventas_desde_df_model(
                 str(row.get("company") or "").strip() or None,
                 str(row.get("cliente_excel") or "").strip() or None,
                 str(row.get("codigo_origen") or "").strip() or None,
+                str(row.get("cve_clie") or "").strip() or None,
                 str(row.get("cve_prod") or "").strip() or None,
                 str(row.get("producto_excel") or "").strip() or None,
                 float(row.get("precio") or 0),
@@ -1127,6 +1137,18 @@ def actualizar_cve_prod_presupuesto_ventas_model(
             pass
 
 
+def _cve_clie_desde_cliente_excel(cliente_excel) -> str | None:
+    """La captura manual guarda cliente_excel ya con el formato "clave - nombre -
+    estado" que trae el selector de clientes SAE (ver _catalogo_clientes_sae en
+    presupuesto_ventas_view.py) — se extrae la clave de ahí para llenar cve_clie,
+    que antes se quedaba vacío en los registros capturados a mano."""
+    texto = str(cliente_excel or "").strip()
+    if " - " not in texto:
+        return None
+    clave = texto.split(" - ", 1)[0].strip()
+    return clave or None
+
+
 def guardar_presupuesto_ventas_batch_model(
     inserts: list[dict],
     updates: list[dict],
@@ -1155,11 +1177,11 @@ def guardar_presupuesto_ventas_batch_model(
             sql_insert = """
                 insert into presupuesto_ventas (
                     id_carga, seccion, region, estatus_excel,
-                    company, cliente_excel, codigo_origen, cve_prod, cve_linea, producto_excel,
+                    company, cliente_excel, codigo_origen, cve_clie, cve_prod, cve_linea, producto_excel,
                     linea_uid,
                     precio, precio_venta, anio, mes, valor, cantidad_kg, importe,
                     estatus, usuario_id
-                ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+                ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
             """
             rows = [
                 (
@@ -1170,6 +1192,7 @@ def guardar_presupuesto_ventas_batch_model(
                     str(r.get("company")).strip() if r.get("company") else None,
                     str(r.get("cliente_excel")).strip() if r.get("cliente_excel") else None,
                     str(r.get("codigo_origen")).strip() if r.get("codigo_origen") else None,
+                    _cve_clie_desde_cliente_excel(r.get("cliente_excel")),
                     str(r.get("cve_prod")).strip() if r.get("cve_prod") else None,
                     str(r.get("cve_linea")).strip() if r.get("cve_linea") else None,
                     str(r.get("producto_excel") or "").strip(),
