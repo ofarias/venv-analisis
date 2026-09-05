@@ -76,7 +76,13 @@ def _value_formatter_js(decimales: int) -> JsCode:
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _get_usuario_id() -> int:
+    """Usuario "activo"; si SuperAdmin eligió un usuario en el panel de
+    soporte de presupuesto_ventas_view.py (`pv_soporte_usuario_id`, mismo
+    session_state), se actúa como ese usuario también aquí en Compras."""
     usuario = st.session_state.get("usuario") or {}
+    soporte_id = st.session_state.get("pv_soporte_usuario_id")
+    if soporte_id and _tiene_rol(usuario.get("roles"), "superadmin"):
+        return int(soporte_id)
     return int(usuario.get("id") or usuario.get("id_usuario") or 0)
 
 

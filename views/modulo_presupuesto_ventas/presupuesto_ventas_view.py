@@ -53,6 +53,7 @@ from controllers.presupuesto_compras_controller import (
     upsert_presupuesto_compras_linea_ctrl,
 )
 from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
+from controllers.usuario_controller import get_usuarios
 from utils.envio_correo import enviar_correo
 
 
@@ -100,9 +101,24 @@ def _value_formatter_js(decimales: int) -> JsCode:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _get_usuario_id() -> int:
+def _usuario_real_id() -> int:
     usuario = st.session_state.get("usuario") or {}
     return int(usuario.get("id") or usuario.get("id_usuario") or 0)
+
+
+def _get_usuario_id() -> int:
+    """Usuario "activo" para efectos de carga/consulta de presupuesto.
+
+    Si quien tiene la sesión es SuperAdmin y eligió un usuario en el panel de
+    soporte (`_panel_soporte_seleccionar_usuario`), se actúa como ese usuario
+    (mismo id que usan sus cargas) para poder darle asistencia sin pedirle
+    sus credenciales. Cualquier otro rol siempre ve/opera lo suyo.
+    """
+    usuario = st.session_state.get("usuario") or {}
+    soporte_id = st.session_state.get("pv_soporte_usuario_id")
+    if soporte_id and _tiene_rol(usuario.get("roles"), "superadmin"):
+        return int(soporte_id)
+    return _usuario_real_id()
 
 
 def _norm_roles_list(values) -> list[str]:
@@ -122,6 +138,11 @@ def _tiene_rol(roles: list[str], *objetivos: str) -> bool:
 def _puede_ver_todos_presupuesto() -> bool:
     usuario = st.session_state.get("usuario") or {}
     return _tiene_rol(usuario.get("roles"), "forecastadmin", "superadmin")
+
+
+def _es_superadmin() -> bool:
+    usuario = st.session_state.get("usuario") or {}
+    return _tiene_rol(usuario.get("roles"), "superadmin")
 
 
 # ── autorización por línea ──────────────────────────────────────────────────
@@ -2928,10 +2949,78 @@ def _panel_autorizaciones() -> None:
             st.rerun()
 
 
+# ── panel: soporte SuperAdmin (actuar como otro usuario) ───────────────────────
+
+def _panel_soporte_seleccionar_usuario() -> None:
+    """Solo SuperAdmin: permite elegir un usuario para ver/capturar/cargar su
+    presupuesto (ventas y compras) con fines de asistencia y soporte, sin
+    necesitar sus credenciales. La elección se guarda en sesión y la usa
+    `_get_usuario_id()` (también en presupuesto_compras_view.py) mientras
+    dure la sesión o hasta que se vuelva a "— mi usuario —"."""
+    if not _es_superadmin():
+        return
+
+    df_usuarios = get_usuarios()
+    if df_usuarios is None or df_usuarios.empty or "id" not in df_usuarios.columns:
+        return
+
+    if "estatus" in df_usuarios.columns:
+        df_usuarios = df_usuarios[
+            df_usuarios["estatus"].astype(str).str.strip().str.lower() != "inactivo"
+        ]
+
+    usuario_real_id = _usuario_real_id()
+    col_nombre = "nombre" if "nombre" in df_usuarios.columns else "username"
+    df_usuarios = df_usuarios.sort_values(col_nombre)
+
+    opciones = {"— mi usuario —": None}
+    for r in df_usuarios.to_dict(orient="records"):
+        uid = int(r["id"])
+        if uid == usuario_real_id:
+            continue
+        etiqueta = f"{r.get('nombre') or r.get('username')} ({r.get('username')})"
+        opciones[etiqueta] = uid
+
+    labels_usuarios = list(opciones.keys())
+    valor_actual = st.session_state.get("pv_soporte_usuario_id")
+    idx = next((i for i, l in enumerate(labels_usuarios) if opciones[l] == valor_actual), 0)
+
+    with st.expander(
+        "🛠️ soporte SuperAdmin — ver/cargar presupuesto de otro usuario",
+        expanded=valor_actual is not None,
+    ):
+        label = st.selectbox(
+            "actuar como usuario",
+            options=labels_usuarios,
+            index=idx,
+            key="pv_soporte_usuario_select",
+            help=(
+                "para dar soporte: mientras esté seleccionado, las cargas, la captura "
+                "manual y 'gestionar cargas' muestran y guardan como si fueras esa "
+                "persona (aplica a Ventas y Compras). Elige '— mi usuario —' para volver a lo tuyo."
+            ),
+        )
+        nuevo_id = opciones[label]
+        if nuevo_id != st.session_state.get("pv_soporte_usuario_id"):
+            st.session_state["pv_soporte_usuario_id"] = nuevo_id
+            st.session_state["pv_soporte_usuario_nombre"] = label if nuevo_id else None
+            for k in ("pv_id_carga", "pv_id_carga_compras", "pv_select_carga", "pv_select_carga_compras"):
+                st.session_state.pop(k, None)
+            st.rerun()
+
+    if st.session_state.get("pv_soporte_usuario_id"):
+        st.warning(
+            f"🛠️ modo soporte activo — viendo y capturando como "
+            f"**{st.session_state.get('pv_soporte_usuario_nombre')}**",
+        )
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def mostrar_modulo_presupuesto_ventas() -> None:
     st.subheader("presupuesto de ventas y compras")
+
+    _panel_soporte_seleccionar_usuario()
 
     labels = ["📂 cargar Excel", "📊 tabla presupuesto", "🗑️ gestionar cargas"]
     ver_todos = _puede_ver_todos_presupuesto()
