@@ -815,9 +815,19 @@ def _parsear_rogelio(df: pd.DataFrame, anio: int) -> pd.DataFrame:
             continue
 
         month_cols: list[tuple[int, int]] = []
+        meses_vistos: set[int] = set()
         for j in range(idx_tipo + 1, len(header)):
+            if _norm(header[j]) == "TOTAL":
+                break
             mes = _detectar_mes(header[j])
             if mes:
+                if mes in meses_vistos:
+                    # el bloque de dólares a la derecha repite los mismos
+                    # nombres de mes — si llegamos aquí sin toparnos con
+                    # "TOTAL" antes (p.ej. semestres sin columna TOTAL),
+                    # cortamos para no duplicar el conteo de kg con usd.
+                    break
+                meses_vistos.add(mes)
                 month_cols.append((j, mes))
                 if len(month_cols) == 12:
                     break
