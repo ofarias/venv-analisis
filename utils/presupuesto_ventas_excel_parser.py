@@ -842,7 +842,11 @@ def _parsear_rogelio(df: pd.DataFrame, anio: int) -> pd.DataFrame:
 
             producto = _txt(_obtener(row, idx_producto))
             if not producto:
-                break
+                # fila en blanco (separador) o resumen ("TOTAL GLOBAL") dentro
+                # del bloque — se salta sin cortar el bloque completo, porque
+                # puede haber más filas con producto después (p.ej. el bloque
+                # "PROYECTOS" trae un separador en medio de los prospectos).
+                continue
 
             codigo_origen = _txt(_obtener(row, idx_clave))
             cliente = _txt(_obtener(row, idx_cliente))
