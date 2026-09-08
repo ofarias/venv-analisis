@@ -1038,6 +1038,24 @@ def cargar_excel_directo_presupuesto_ventas_ctrl(
     # "código de origen" real (a diferencia de Compras), así que no se persiste.
     df_norm["codigo_origen"] = None
 
+    # El parser ya asigna un linea_uid propio a cada renglón del Excel que
+    # comparta identidad (mismo cliente/producto capturado más de una vez, o una
+    # línea PRESUPUESTO y otra PROSPECTO). Aquí solo se resuelven las colisiones
+    # que aparecen DESPUÉS de resolver el cliente contra SAE — p.ej. dos claves
+    # de Excel distintas que terminan en el mismo cliente SAE — numerando cada
+    # fila que aún comparta la unique key completa (identidad + linea_uid).
+    if "linea_uid" not in df_norm.columns:
+        df_norm["linea_uid"] = ""
+    df_norm["linea_uid"] = df_norm["linea_uid"].fillna("").astype(str)
+    _ident = [c for c in ("seccion", "region", "anio", "mes", "company",
+                          "cliente_excel", "codigo_origen", "producto_excel")
+              if c in df_norm.columns]
+    if _ident:
+        _dup = df_norm.groupby(_ident + ["linea_uid"], dropna=False).cumcount()
+        df_norm.loc[_dup > 0, "linea_uid"] = (
+            df_norm.loc[_dup > 0, "linea_uid"] + "d" + _dup[_dup > 0].astype(str)
+        )
+
     id_carga = insertar_carga_presupuesto_ventas_model(
         nombre_archivo=nombre_archivo,
         hoja_origen=hoja,

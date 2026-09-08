@@ -89,6 +89,17 @@ function(params) {
 }
 """)
 
+# fondo azul claro para las celdas de una línea prospecto ("Proyectos") — solo
+# se aplica a las columnas cliente, producto, cve prod, status, precio y totales
+_CELL_STYLE_PROSPECTO = JsCode("""
+function(params) {
+    if (params.data && params.data.estatus_excel === 'Prospecto') {
+        return {backgroundColor: '#d6ebff'};
+    }
+    return null;
+}
+""")
+
 
 def _value_formatter_js(decimales: int) -> JsCode:
     return JsCode(f"""
@@ -1363,6 +1374,7 @@ def _panel_comparacion_sae_ventas(
     clientes_set: set,
     region: Optional[str] = None,
     id_carga: Optional[int] = None,
+    estatus_sel: Optional[list] = None,
 ) -> None:
     """Compara el presupuesto capturado (respetando los mismos filtros de
     producto/cliente de arriba) contra las ventas reales de SAE del año de la
@@ -1381,6 +1393,8 @@ def _panel_comparacion_sae_ventas(
             df_pv = df_pv[df_pv["producto_excel"].astype(str).str.strip().isin(productos_sel)]
         if clientes_sel:
             df_pv = df_pv[df_pv["cliente_excel"].astype(str).str.strip().isin(clientes_sel)]
+        if estatus_sel:
+            df_pv = df_pv[df_pv.get("estatus_excel", "").astype(str).str.strip().isin(estatus_sel)]
 
         if df_pv.empty:
             st.info("sin registros de presupuesto para comparar con los filtros elegidos")
@@ -1645,6 +1659,7 @@ def _tabla_filtrada_presupuesto(
     anio_actual: int,
     label_to_code: dict,
     clientes_set: set,
+    estatus_sel: Optional[list] = None,
 ) -> None:
     """Tabla de solo lectura con las filas del presupuesto que coinciden con
     los filtros de producto/cliente elegidos arriba — la tabla editable de
@@ -1652,8 +1667,8 @@ def _tabla_filtrada_presupuesto(
     filtro. Incluye, junto a cada mes capturado, la venta real de Aspel SAE
     de ese mismo mes ("Real <mes>"), cruzando por cliente + producto SAE —
     mismo criterio que usa Construcción de forecast."""
-    if not productos_sel and not clientes_sel:
-        st.caption("elige un producto o cliente arriba para ver los resultados aquí")
+    if not productos_sel and not clientes_sel and not estatus_sel:
+        st.caption("elige un producto, cliente o estatus arriba para ver los resultados aquí")
         return
 
     df = work_df.copy()
@@ -1661,6 +1676,8 @@ def _tabla_filtrada_presupuesto(
         df = df[df["producto_excel"].astype(str).str.strip().isin(productos_sel)]
     if clientes_sel:
         df = df[df["cliente_excel"].astype(str).str.strip().isin(clientes_sel)]
+    if estatus_sel:
+        df = df[df.get("estatus_excel", "").astype(str).str.strip().isin(estatus_sel)]
 
     st.markdown("**resultado del filtro**")
     if df.empty:
@@ -1964,8 +1981,10 @@ def _panel_pivot(id_carga: int) -> None:
             # anterior, no hace falta que el widget se dibuje primero
             filtro_prod_key = f"pv_filtro_prod_{seccion}_{region}_{id_carga}"
             filtro_cli_key = f"pv_filtro_cli_{seccion}_{region}_{id_carga}"
+            filtro_est_key = f"pv_filtro_est_{seccion}_{region}_{id_carga}"
             productos_filtro_sel = st.session_state.get(filtro_prod_key, [])
             clientes_filtro_sel = st.session_state.get(filtro_cli_key, [])
+            estatus_filtro_sel = st.session_state.get(filtro_est_key, [])
 
             # única restricción de edición: una línea deja de ser editable en
             # cuanto se solicita autorización ("enviada") y mientras esté
@@ -1998,13 +2017,16 @@ def _panel_pivot(id_carga: int) -> None:
             # permanece editable en la tabla
             _CAMPOS_ID_BLOQUEADOS = {"producto_excel", "cliente_excel", "codigo_origen"}
             for c in cols_id:
-                gb.configure_column(
-                    c, headerName=c.replace("_excel", "").replace("_", " "),
+                col_kwargs = dict(
+                    headerName=c.replace("_excel", "").replace("_", " "),
                     editable=False if c in _CAMPOS_ID_BLOQUEADOS else editable_no_congelada,
                     width=130,
                     pinned="left",
                     hide=c in _COLS_OCULTAS_SI_VACIAS and _columna_vacia(c),
                 )
+                if c in ("cliente_excel", "producto_excel"):
+                    col_kwargs["cellStyle"] = _CELL_STYLE_PROSPECTO
+                gb.configure_column(c, **col_kwargs)
 
             gb.configure_column("_nueva", hide=True)
             gb.configure_column("_estatus_linea", hide=True)
@@ -2027,12 +2049,14 @@ def _panel_pivot(id_carga: int) -> None:
                 editable=False,
                 width=200,
                 pinned="left",
+                cellStyle=_CELL_STYLE_PROSPECTO,
             )
             gb.configure_column(
                 "estatus_excel", headerName="status", editable=editable_no_congelada, width=110,
                 pinned="left",
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["", "Budgeted", "Not in BGT", "Prospecto"]},
+                cellStyle=_CELL_STYLE_PROSPECTO,
             )
             gb.configure_column(
                 "precio",
@@ -2043,6 +2067,7 @@ def _panel_pivot(id_carga: int) -> None:
                 pinned="left",
                 type=["numericColumn"],
                 valueFormatter=_value_formatter_js(4),
+                cellStyle=_CELL_STYLE_PROSPECTO,
             )
             gb.configure_column(
                 "precio_venta",
@@ -2090,10 +2115,12 @@ def _panel_pivot(id_carga: int) -> None:
             gb.configure_column(
                 "total_kg_anio", headerName="Total Kg", editable=False, width=120,
                 type=["numericColumn"], valueFormatter=_value_formatter_js(4),
+                cellStyle=_CELL_STYLE_PROSPECTO,
             )
             gb.configure_column(
                 "total_usd_anio", headerName="Total USD", editable=False, width=120,
                 type=["numericColumn"], valueFormatter=_value_formatter_js(2),
+                cellStyle=_CELL_STYLE_PROSPECTO,
             )
 
             st.caption(
@@ -2102,7 +2129,8 @@ def _panel_pivot(id_carga: int) -> None:
                 " el registro  |  selecciona filas con el checkbox para eliminarlas o para solicitar su"
                 " autorización  |  🔵 captura 🟡 enviada 🟢 autorizada 🔴 rechazada — mientras esté en"
                 " captura o rechazada puedes editar company, estatus y los meses; una vez enviada o"
-                " autorizada ya no se puede editar nada"
+                " autorizada ya no se puede editar nada  |  🔷 fondo azul claro = línea de Proyectos"
+                " (estatus Prospecto)"
             )
 
             grid_response = AgGrid(
@@ -2350,7 +2378,11 @@ def _panel_pivot(id_carga: int) -> None:
                 sorted(work_df["cliente_excel"].astype(str).str.strip().replace("", pd.NA).dropna().unique())
                 if "cliente_excel" in work_df.columns else []
             )
-            col_f1, col_f2 = st.columns(2)
+            estatus_opciones_tab = (
+                sorted(work_df["estatus_excel"].astype(str).str.strip().replace("", pd.NA).dropna().unique())
+                if "estatus_excel" in work_df.columns else []
+            )
+            col_f1, col_f2, col_f3 = st.columns(3)
             with col_f1:
                 st.multiselect(
                     "filtrar por producto", options=productos_opciones_tab, key=filtro_prod_key,
@@ -2359,6 +2391,10 @@ def _panel_pivot(id_carga: int) -> None:
                 st.multiselect(
                     "filtrar por cliente", options=clientes_opciones_tab, key=filtro_cli_key,
                 )
+            with col_f3:
+                st.multiselect(
+                    "filtrar por estatus", options=estatus_opciones_tab, key=filtro_est_key,
+                )
 
             _tabla_filtrada_presupuesto(
                 work_df=work_df,
@@ -2366,6 +2402,7 @@ def _panel_pivot(id_carga: int) -> None:
                 meses_presentes=meses_presentes,
                 productos_sel=productos_filtro_sel,
                 clientes_sel=clientes_filtro_sel,
+                estatus_sel=estatus_filtro_sel,
                 anio_actual=anio_actual,
                 label_to_code=label_to_code,
                 clientes_set=clientes_set,
@@ -2377,6 +2414,7 @@ def _panel_pivot(id_carga: int) -> None:
                 anio_actual=anio_actual,
                 productos_sel=productos_filtro_sel,
                 clientes_sel=clientes_filtro_sel,
+                estatus_sel=estatus_filtro_sel,
                 label_to_code=label_to_code,
                 clientes_set=clientes_set,
                 region=region,

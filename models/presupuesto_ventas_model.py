@@ -945,9 +945,10 @@ def insertar_presupuesto_ventas_desde_df_model(
             insert into presupuesto_ventas (
                 id_carga, seccion, region, estatus_excel,
                 company, cliente_excel, codigo_origen, cve_clie, cve_prod, producto_excel,
+                linea_uid,
                 precio, precio_venta, anio, mes, valor, cantidad_kg, importe,
                 canal, comentario, estatus, usuario_id
-            ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+            ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
         """
         total = 0
         for _, row in df.iterrows():
@@ -962,6 +963,7 @@ def insertar_presupuesto_ventas_desde_df_model(
                 str(row.get("cve_clie") or "").strip() or None,
                 str(row.get("cve_prod") or "").strip() or None,
                 str(row.get("producto_excel") or "").strip() or None,
+                str(row.get("linea_uid") or "").strip(),
                 float(row.get("precio") or 0),
                 float(row.get("precio_venta") or 0),
                 int(row.get("anio") or 0),

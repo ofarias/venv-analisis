@@ -440,8 +440,15 @@ def _dedup_vendedor(registros: list[dict]) -> pd.DataFrame:
 
     df = pd.DataFrame(registros)
 
+    # estatus_excel y linea_uid entran en la llave: una misma combinación
+    # cliente/producto/mes puede venir como PRESUPUESTO en un bloque y como
+    # PROSPECTO en otro, o repetida con distinto precio/presentación (formato
+    # Rogelio) — son líneas distintas y no se deben sumar entre sí. El parser
+    # les asigna un linea_uid propio; aquí solo se colapsan filas verdaderamente
+    # idénticas (mismo renglón/mes repetido).
     KEY = ["seccion", "region", "anio", "mes", "company",
-           "cliente_excel", "codigo_origen", "producto_excel"]
+           "cliente_excel", "codigo_origen", "producto_excel", "estatus_excel",
+           "linea_uid"]
     key_presentes = [c for c in KEY if c in df.columns]
 
     _SEN = "\x00"
@@ -452,10 +459,10 @@ def _dedup_vendedor(registros: list[dict]) -> pd.DataFrame:
     for c in ("fila_excel", "estatus_excel", "canal", "cve_prod",
               "vendedor_excel", "unidad_negocio_excel", "linea_excel",
               "comentario", "precio", "precio_venta"):
-        if c in df.columns:
+        if c in df.columns and c not in key_presentes:
             agg[c] = "first"
     for c in ("valor", "cantidad_kg", "importe"):
-        if c in df.columns:
+        if c in df.columns and c not in key_presentes:
             agg[c] = "sum"
 
     df = df.groupby(key_presentes).agg(agg).reset_index()
@@ -798,6 +805,13 @@ def _parsear_rogelio(df: pd.DataFrame, anio: int) -> pd.DataFrame:
         return None
 
     registros: list[dict] = []
+    # cada renglón del Excel es una línea propia. Si el mismo cliente/producto
+    # ya apareció en un renglón anterior (p.ej. el mismo SKU capturado dos veces
+    # con distinto precio o presentación, o una fila PRESUPUESTO y otra PROSPECTO),
+    # este renglón recibe un linea_uid propio para que NO se fusione con el
+    # anterior al de-duplicar ni al insertar. El primero de cada identidad queda
+    # con linea_uid = '' (comportamiento normal de carga de Excel).
+    _lineas_por_ident: dict[tuple, int] = {}
 
     for h_num, header_i in enumerate(header_rows):
         header = df.iloc[header_i].tolist()
@@ -858,6 +872,14 @@ def _parsear_rogelio(df: pd.DataFrame, anio: int) -> pd.DataFrame:
 
             estatus = "Prospecto" if tipo == "PROSPECTO" else "Presupuesto"
 
+            # linea_uid propio a partir del 2º renglón con la misma identidad de
+            # destino (cliente + código + producto). "f<fila_excel>" es estable
+            # entre recargas del mismo archivo.
+            _ident = (codigo_origen, cliente, producto)
+            _n = _lineas_por_ident.get(_ident, 0)
+            _lineas_por_ident[_ident] = _n + 1
+            linea_uid = "" if _n == 0 else f"f{row_i + 1}"
+
             for col_idx, mes in month_cols:
                 valor = _float(_obtener(row, col_idx))
                 if valor == 0:
@@ -868,6 +890,7 @@ def _parsear_rogelio(df: pd.DataFrame, anio: int) -> pd.DataFrame:
                     "seccion": "KG",
                     "region": "MEXICO",
                     "estatus_excel": estatus,
+                    "linea_uid": linea_uid,
                     "company": None,
                     "canal": None,
                     "cliente_excel": cliente or None,
