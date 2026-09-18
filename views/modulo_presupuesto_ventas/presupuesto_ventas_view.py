@@ -55,6 +55,7 @@ from controllers.presupuesto_compras_controller import (
 from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
 from controllers.usuario_controller import get_usuarios
 from utils.envio_correo import enviar_correo
+from utils.preferencias_columnas import guardar_columnas_ocultas, obtener_columnas_ocultas
 
 
 # ── constantes ────────────────────────────────────────────────────────────────
@@ -1997,8 +1998,25 @@ def _panel_pivot(id_carga: int) -> None:
             editable_no_congelada = JsCode(f"function(params) {{ return {_NOT_FROZEN}; }}")
 
             gb = GridOptionsBuilder.from_dataframe(work_df)
-            gb.configure_default_column(editable=False, resizable=True, width=100)
+            # a algunos usuarios AG Grid les compacta todas las columnas al
+            # ancho disponible cuando el navegador dispara un resize después
+            # del montaje inicial (ignora los `width` fijos de cada columna
+            # aunque fit_columns_on_grid_load=False, porque ese flag solo
+            # aplica al primer render, no al recálculo por resize) —
+            # suppressSizeToFit va en defaultColDef (por columna), NO como
+            # opción de nivel raíz del grid, donde no tiene ningún efecto
+            gb.configure_default_column(
+                editable=False, resizable=True, width=100, suppressSizeToFit=True,
+            )
             gb.configure_selection("multiple", use_checkbox=True, header_checkbox=True)
+            # panel lateral nativo de AG Grid para mostrar/ocultar columnas a
+            # gusto de cada usuario (útil en pantallas angostas) — la
+            # preferencia se guarda por usuario en ui_columnas_ocultas
+            gb.configure_side_bar()
+            grid_key_prefs = f"presupuesto_ventas_{seccion}"
+            columnas_ocultas_usuario = set(
+                obtener_columnas_ocultas(_get_usuario_id(), grid_key_prefs)
+            )
 
             # columnas sin ningún dato capturado (todo vacío/NaN en la carga
             # actual) se ocultan — p.ej. "company" o "código origen" cuando
@@ -2016,12 +2034,17 @@ def _panel_pivot(id_carga: int) -> None:
             # agregarlo, código origen viene de SAE) — solo "company"
             # permanece editable en la tabla
             _CAMPOS_ID_BLOQUEADOS = {"producto_excel", "cliente_excel", "codigo_origen"}
+            # solo producto y cliente quedan fijos (pinned) al hacer scroll
+            # horizontal por los meses — con ~12 columnas fijas, en pantallas
+            # o ventanas angostas AG Grid las comprimía a un mínimo compartido
+            # (~36px, ilegibles) para que alcanzaran a caber todas
+            _COLS_FIJAS = {"producto_excel", "cliente_excel"}
             for c in cols_id:
                 col_kwargs = dict(
                     headerName=c.replace("_excel", "").replace("_", " "),
                     editable=False if c in _CAMPOS_ID_BLOQUEADOS else editable_no_congelada,
                     width=130,
-                    pinned="left",
+                    pinned="left" if c in _COLS_FIJAS else False,
                     hide=c in _COLS_OCULTAS_SI_VACIAS and _columna_vacia(c),
                 )
                 if c in ("cliente_excel", "producto_excel"):
@@ -2033,12 +2056,10 @@ def _panel_pivot(id_carga: int) -> None:
             gb.configure_column(LINEA_KEY, hide=True)
             gb.configure_column(
                 "_estatus_linea_badge", headerName="autorización", editable=False, width=120,
-                pinned="left",
                 headerTooltip="🔵 captura  |  🟡 enviada (esperando autorización)  |  🟢 autorizada  |  🔴 rechazada",
             )
             gb.configure_column(
                 "_status", headerName="SAE", editable=False, width=70,
-                pinned="left",
                 headerTooltip="🟢 producto en catálogo SAE  |  🟠 no encontrado en SAE",
             )
             gb.configure_column(
@@ -2053,7 +2074,6 @@ def _panel_pivot(id_carga: int) -> None:
             )
             gb.configure_column(
                 "estatus_excel", headerName="status", editable=editable_no_congelada, width=110,
-                pinned="left",
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["", "Budgeted", "Not in BGT", "Prospecto"]},
                 cellStyle=_CELL_STYLE_PROSPECTO,
@@ -2064,7 +2084,6 @@ def _panel_pivot(id_carga: int) -> None:
                 # precio: viene de SAE al agregar el registro, no editable en la tabla
                 editable=False,
                 width=110,
-                pinned="left",
                 type=["numericColumn"],
                 valueFormatter=_value_formatter_js(4),
                 cellStyle=_CELL_STYLE_PROSPECTO,
@@ -2075,7 +2094,6 @@ def _panel_pivot(id_carga: int) -> None:
                 # precio_venta: lo captura el usuario a mano en la tabla
                 editable=editable_no_congelada,
                 width=120,
-                pinned="left",
                 type=["numericColumn"],
                 cellEditor="agNumberCellEditor",
                 valueFormatter=_value_formatter_js(3),
@@ -2133,16 +2151,34 @@ def _panel_pivot(id_carga: int) -> None:
                 " (estatus Prospecto)"
             )
 
+            grid_options_built = gb.build()
+            if columnas_ocultas_usuario:
+                for coldef in grid_options_built.get("columnDefs", []):
+                    if (coldef.get("field") or coldef.get("colId")) in columnas_ocultas_usuario:
+                        coldef["hide"] = True
+
             grid_response = AgGrid(
                 work_df_mostrar,
-                gridOptions=gb.build(),
-                update_on=[("cellValueChanged", 600), "selectionChanged"],
+                gridOptions=grid_options_built,
+                update_on=[("cellValueChanged", 600), "selectionChanged", "columnVisible"],
                 data_return_mode=DataReturnMode.AS_INPUT,
                 fit_columns_on_grid_load=False,
                 allow_unsafe_jscode=True,
+                enable_enterprise_modules=True,
                 height=min(56 + len(work_df) * 35, 680),
                 key=f"pv_pivot_{seccion}_{region}_{id_carga}_{st.session_state[ver_key]}_{st.session_state[grid_nonce_key]}",
             )
+
+            # persistir qué columnas ocultó el usuario a mano (panel lateral),
+            # para que la próxima vez que entre no vuelvan a aparecer todas
+            columnas_state = grid_response.columns_state
+            if columnas_state:
+                hidden_ahora = {
+                    c.get("colId") for c in columnas_state if c.get("hide")
+                }
+                if hidden_ahora != columnas_ocultas_usuario:
+                    guardar_columnas_ocultas(_get_usuario_id(), grid_key_prefs, sorted(hidden_ahora))
+
             edited = pd.DataFrame(grid_response.get("data", []))
             edited = edited.drop(columns=["total_kg_anio", "total_usd_anio"], errors="ignore")
 
@@ -2876,7 +2912,9 @@ def _panel_autorizaciones() -> None:
     meses_presentes_aut = [m for m in _MESES.values() if m in df_pendientes_mostrar.columns]
 
     gb = GridOptionsBuilder.from_dataframe(df_pendientes_mostrar)
-    gb.configure_default_column(editable=False, resizable=True, width=110)
+    gb.configure_default_column(
+        editable=False, resizable=True, width=110, suppressSizeToFit=True,
+    )
     gb.configure_selection("multiple", use_checkbox=True, header_checkbox=True)
     gb.configure_column("usuario", headerName="Usuario", width=140, pinned="left")
     gb.configure_column("presupuesto", headerName="Presupuesto", width=220, pinned="left")

@@ -31,6 +31,7 @@ from controllers.presupuesto_compras_controller import (
 from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
 from utils.banxico import obtener_tipo_cambio_fix_banxico
 from utils.envio_correo import enviar_correo
+from utils.preferencias_columnas import guardar_columnas_ocultas, obtener_columnas_ocultas
 
 
 # ── constantes ────────────────────────────────────────────────────────────────
@@ -45,7 +46,7 @@ _TABS_PIVOT = [
     ("KG México",        "KG",  "MEXICO"),
 ]
 
-_COLS_ID = ["company", "cliente_excel", "codigo_origen", "producto_excel"]
+_COLS_ID = ["company", "cliente_excel", "codigo_origen", "producto_excel", "region"]
 # discriminador de línea (ver presupuesto_ventas_view): '' = fila de Excel/legacy,
 # uuid = línea capturada a mano. Clave extra local, no va en _COLS_ID.
 LINEA_KEY = "linea_uid"
@@ -404,6 +405,7 @@ _ENCABEZADOS_EXPORT = {
     "cliente_excel": "Cliente",
     "codigo_origen": "Código origen",
     "producto_excel": "Producto",
+    "region": "Región",
     "_cve_prod_label": "Cve prod / SAE",
     "_status": "En catálogo SAE",
     "estatus_excel": "Estatus",
@@ -625,11 +627,14 @@ def _guardar_pivot(
             meta = {
                 "id_carga": id_carga,
                 "seccion": seccion,
-                "region": region,
                 "anio": anio,
                 LINEA_KEY: linea_uid,
                 **{c: edited.iloc[i].get(c) for c in cols_id},
             }
+            # si la fila trae su propia región (captura manual la asigna a
+            # MEXICO por default), se respeta; si no, cae al default de la
+            # pestaña — evita insertar region=None/"" por una fila sin ese dato
+            meta["region"] = meta.get("region") or region
         else:
             row_key = tuple(str(orig.iloc[i].get(c) or "") for c in grp)
             meta = dict(row_meta.get(row_key, {}))
@@ -1051,6 +1056,9 @@ def _form_agregar_registro(
                 "cliente_excel": cliente.strip(),
                 "codigo_origen": codigo_origen.strip(),
                 "producto_excel": producto_excel.strip(),
+                # las filas capturadas a mano no tienen selector de región —
+                # se asignan a la región por default de la pestaña (MEXICO)
+                "region": region or "MEXICO",
                 # cada línea capturada a mano es independiente
                 LINEA_KEY: uuid.uuid4().hex,
                 "_status": "🟢" if code in sae_set else "🟠",
@@ -1255,8 +1263,10 @@ def _panel_pivot(id_carga: int) -> None:
                 mask = pd.Series(True, index=df_all.index)
                 if "seccion" in df_all.columns:
                     mask &= df_all["seccion"].astype(str) == seccion
-                if region and "region" in df_all.columns:
-                    mask &= df_all["region"].astype(str) == region
+                # nota: no se filtra por región — la pestaña muestra todas las
+                # regiones de la sección (MEXICO y CAM & Caribe), distinguidas
+                # por la columna "region" que ahora es parte de la identidad
+                # de la fila (ver _COLS_ID)
                 df_sec_exp = df_all[mask].copy()
                 pivot_exp, _, _ = _construir_pivot(df_sec_exp, sae_set, code_to_label)
                 hojas.append((label, seccion, pivot_exp))
@@ -1302,8 +1312,10 @@ def _panel_pivot(id_carga: int) -> None:
                 mask = pd.Series(True, index=df_all.index)
                 if "seccion" in df_all.columns:
                     mask &= df_all["seccion"].astype(str) == seccion
-                if region and "region" in df_all.columns:
-                    mask &= df_all["region"].astype(str) == region
+                # no se filtra por región: la pestaña muestra MEXICO y CAM &
+                # Caribe juntos, distinguidos por la columna "region" (ver
+                # _COLS_ID) — `region` sigue usándose como valor por default
+                # al capturar una fila nueva a mano
                 df_sec = df_all[mask].copy()
 
                 cols_id_reload = [c for c in _COLS_ID if c in df_all.columns]
@@ -1331,7 +1343,11 @@ def _panel_pivot(id_carga: int) -> None:
                         estatus_por_linea[clave] = str(r.get("estatus") or "captura")
 
                 def _estatus_linea_de(row):
-                    clave = tuple(str(row.get(c) or "") for c in list(cols_id_reload) + [LINEA_KEY])
+                    # ojo: usa clave_linea_cols (sin "region"), NO cols_id_reload —
+                    # presupuesto_compras_lineas no tiene columna region, la
+                    # autorización es por producto/cliente/company sin importar
+                    # la región (ver tabla presupuesto_compras_lineas)
+                    clave = tuple(str(row.get(c) or "") for c in clave_linea_cols)
                     return estatus_por_linea.get(clave, "captura")
 
                 pivot_db["_estatus_linea"] = (
@@ -1399,8 +1415,25 @@ def _panel_pivot(id_carga: int) -> None:
             editable_no_congelada = JsCode(f"function(params) {{ return {_NOT_FROZEN}; }}")
 
             gb = GridOptionsBuilder.from_dataframe(work_df)
-            gb.configure_default_column(editable=False, resizable=True, width=100)
+            # a algunos usuarios AG Grid les compacta todas las columnas al
+            # ancho disponible cuando el navegador dispara un resize después
+            # del montaje inicial (ignora los `width` fijos de cada columna
+            # aunque fit_columns_on_grid_load=False, porque ese flag solo
+            # aplica al primer render, no al recálculo por resize) —
+            # suppressSizeToFit va en defaultColDef (por columna), NO como
+            # opción de nivel raíz del grid, donde no tiene ningún efecto
+            gb.configure_default_column(
+                editable=False, resizable=True, width=100, suppressSizeToFit=True,
+            )
             gb.configure_selection("multiple", use_checkbox=True, header_checkbox=True)
+            # panel lateral nativo de AG Grid para mostrar/ocultar columnas a
+            # gusto de cada usuario (útil en pantallas angostas) — la
+            # preferencia se guarda por usuario en ui_columnas_ocultas
+            gb.configure_side_bar()
+            grid_key_prefs = f"presupuesto_compras_{seccion}"
+            columnas_ocultas_usuario = set(
+                obtener_columnas_ocultas(_get_usuario_id(), grid_key_prefs)
+            )
 
             # columnas sin ningún dato capturado (todo vacío/NaN en la carga
             # actual) se ocultan — p.ej. "company" o "código origen" cuando
@@ -1416,14 +1449,21 @@ def _panel_pivot(id_carga: int) -> None:
             # cliente, producto y código origen quedan fijos una vez
             # capturado el registro (cliente y producto se definen al
             # agregarlo, código origen viene de SAE) — solo "company"
-            # permanece editable en la tabla
-            _CAMPOS_ID_BLOQUEADOS = {"producto_excel", "cliente_excel", "codigo_origen"}
+            # permanece editable en la tabla. "region" tampoco se edita en la
+            # tabla: solo identifica si la fila es MEXICO o CAM & Caribe (ver
+            # _COLS_ID), reasignarla no está soportado por el flujo de guardado
+            _CAMPOS_ID_BLOQUEADOS = {"producto_excel", "cliente_excel", "codigo_origen", "region"}
+            # solo producto y cliente quedan fijos (pinned) al hacer scroll
+            # horizontal por los meses — con ~10 columnas fijas, en pantallas
+            # o ventanas angostas AG Grid las comprimía a un mínimo compartido
+            # (~36px, ilegibles) para que alcanzaran a caber todas
+            _COLS_FIJAS = {"producto_excel", "cliente_excel"}
             for c in cols_id:
                 gb.configure_column(
                     c, headerName=c.replace("_excel", "").replace("_", " "),
                     editable=False if c in _CAMPOS_ID_BLOQUEADOS else editable_no_congelada,
                     width=130,
-                    pinned="left",
+                    pinned="left" if c in _COLS_FIJAS else False,
                     hide=c in _COLS_OCULTAS_SI_VACIAS and _columna_vacia(c),
                 )
 
@@ -1432,12 +1472,10 @@ def _panel_pivot(id_carga: int) -> None:
             gb.configure_column(LINEA_KEY, hide=True)
             gb.configure_column(
                 "_estatus_linea_badge", headerName="autorización", editable=False, width=120,
-                pinned="left",
                 headerTooltip="🔵 captura  |  🟡 enviada (esperando autorización)  |  🟢 autorizada  |  🔴 rechazada",
             )
             gb.configure_column(
                 "_status", headerName="SAE", editable=False, width=70,
-                pinned="left",
                 headerTooltip="🟢 producto en catálogo SAE  |  🟠 no encontrado en SAE",
             )
             gb.configure_column(
@@ -1451,7 +1489,6 @@ def _panel_pivot(id_carga: int) -> None:
             )
             gb.configure_column(
                 "estatus_excel", headerName="status", editable=editable_no_congelada, width=110,
-                pinned="left",
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["", "Budgeted", "Not in BGT", "Prospecto"]},
             )
@@ -1461,7 +1498,6 @@ def _panel_pivot(id_carga: int) -> None:
                 # costo: ult_costo SAE / tipo de cambio Banxico al agregar el registro, no editable en la tabla
                 editable=False,
                 width=110,
-                pinned="left",
                 type=["numericColumn"],
                 valueFormatter=_value_formatter_js(4),
             )
@@ -1511,16 +1547,34 @@ def _panel_pivot(id_carga: int) -> None:
                 " autorizada ya no se puede editar nada"
             )
 
+            grid_options_built = gb.build()
+            if columnas_ocultas_usuario:
+                for coldef in grid_options_built.get("columnDefs", []):
+                    if (coldef.get("field") or coldef.get("colId")) in columnas_ocultas_usuario:
+                        coldef["hide"] = True
+
             grid_response = AgGrid(
                 work_df_mostrar,
-                gridOptions=gb.build(),
-                update_on=[("cellValueChanged", 600), "selectionChanged"],
+                gridOptions=grid_options_built,
+                update_on=[("cellValueChanged", 600), "selectionChanged", "columnVisible"],
                 data_return_mode=DataReturnMode.AS_INPUT,
                 fit_columns_on_grid_load=False,
                 allow_unsafe_jscode=True,
+                enable_enterprise_modules=True,
                 height=min(56 + len(work_df) * 35, 680),
                 key=f"pc_pivot_{seccion}_{region}_{id_carga}_{st.session_state[ver_key]}_{st.session_state[grid_nonce_key]}",
             )
+
+            # persistir qué columnas ocultó el usuario a mano (panel lateral),
+            # para que la próxima vez que entre no vuelvan a aparecer todas
+            columnas_state = grid_response.columns_state
+            if columnas_state:
+                hidden_ahora = {
+                    c.get("colId") for c in columnas_state if c.get("hide")
+                }
+                if hidden_ahora != columnas_ocultas_usuario:
+                    guardar_columnas_ocultas(_get_usuario_id(), grid_key_prefs, sorted(hidden_ahora))
+
             edited = pd.DataFrame(grid_response.get("data", []))
             edited = edited.drop(columns=["total_kg_anio", "total_usd_anio"], errors="ignore")
 
@@ -1646,7 +1700,7 @@ def _panel_pivot(id_carga: int) -> None:
                             n = eliminar_registro_presupuesto_compras_ctrl(
                                 id_carga=id_carga,
                                 seccion=seccion,
-                                region=region,
+                                region=fila.get("region") or region,
                                 producto_excel=str(fila.get("producto_excel") or ""),
                                 cliente_excel=fila.get("cliente_excel") or None,
                                 codigo_origen=fila.get("codigo_origen") or None,
