@@ -74,6 +74,16 @@ def _value_formatter_js(decimales: int) -> JsCode:
     """)
 
 
+def _value_formatter_miles_js() -> JsCode:
+    """Sin decimales y con separador de miles (ej. Total USD)."""
+    return JsCode("""
+    function(params) {
+        if (params.value === null || params.value === undefined || params.value === '') return '';
+        return Number(params.value).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+    }
+    """)
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _get_usuario_id() -> int:
@@ -1535,7 +1545,7 @@ def _panel_pivot(id_carga: int) -> None:
             )
             gb.configure_column(
                 "total_usd_anio", headerName="Total USD", editable=False, width=120,
-                type=["numericColumn"], valueFormatter=_value_formatter_js(2),
+                type=["numericColumn"], valueFormatter=_value_formatter_miles_js(),
             )
 
             st.caption(
