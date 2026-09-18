@@ -215,12 +215,14 @@ def _color_valor_mes(valor) -> str:
 
 
 def _formatear_numeros(estilo, df_mostrado: pd.DataFrame, meses_cols: list[str]):
-    """Aplica formato de miles/decimales a "Precio" y "Total USD Año" (con $
-    y 2 decimales), "Total Kilos Año" (miles y 2 decimales) y a los meses
-    (miles y 3 decimales, igual que en la tabla de presupuesto)."""
-    for col in ("Precio", "Total USD Año"):
-        if col in df_mostrado.columns:
-            estilo = estilo.format("${:,.2f}", subset=[col])
+    """Aplica formato de miles/decimales a "Precio" (con $ y 2 decimales),
+    "Total USD Año" (con $, sin decimales), "Total Kilos Año" (miles y 2
+    decimales) y a los meses (miles y 3 decimales, igual que en la tabla de
+    presupuesto)."""
+    if "Precio" in df_mostrado.columns:
+        estilo = estilo.format("${:,.2f}", subset=["Precio"])
+    if "Total USD Año" in df_mostrado.columns:
+        estilo = estilo.format("${:,.0f}", subset=["Total USD Año"])
     if "Total Kilos Año" in df_mostrado.columns:
         estilo = estilo.format("{:,.2f}", subset=["Total Kilos Año"])
     if meses_cols:
@@ -2680,6 +2682,26 @@ def _panel_ver_todos() -> None:
     )
     df_show = pivote[[c for c in col_order if c in pivote.columns]]
     df_renombrado = df_show.rename(columns=encabezados_pivote)
+
+    # esta tabla es un st.dataframe (no AgGrid), así que el "ver/ocultar
+    # columnas" se resuelve con un multiselect — misma persistencia por
+    # usuario (ui_columnas_ocultas) que el panel lateral de AG Grid
+    usuario_id_vt = _get_usuario_id()
+    grid_key_vt = "presupuesto_ventas_ver_todos"
+    todas_las_columnas = list(df_renombrado.columns)
+    ocultas_guardadas = set(obtener_columnas_ocultas(usuario_id_vt, grid_key_vt))
+    with st.expander("👁️ columnas visibles"):
+        columnas_sel = st.multiselect(
+            "elige qué columnas mostrar",
+            options=todas_las_columnas,
+            default=[c for c in todas_las_columnas if c not in ocultas_guardadas],
+            key="pvt_columnas_visibles",
+        )
+    columnas_sel = [c for c in todas_las_columnas if c in columnas_sel] or todas_las_columnas
+    nuevas_ocultas = set(todas_las_columnas) - set(columnas_sel)
+    if nuevas_ocultas != ocultas_guardadas:
+        guardar_columnas_ocultas(usuario_id_vt, grid_key_vt, sorted(nuevas_ocultas))
+    df_renombrado = df_renombrado[columnas_sel]
 
     estilo = df_renombrado.style
     if "Autorización" in df_renombrado.columns:
