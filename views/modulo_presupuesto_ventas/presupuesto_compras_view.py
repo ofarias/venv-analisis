@@ -30,6 +30,7 @@ from controllers.presupuesto_compras_controller import (
 )
 from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
 from utils.banxico import obtener_tipo_cambio_fix_banxico
+from utils.deeplink_tokens import build_links_autorizacion_presupuesto
 from utils.envio_correo import enviar_correo
 from utils.preferencias_columnas import guardar_columnas_ocultas, obtener_columnas_ocultas
 
@@ -194,6 +195,22 @@ def _enviar_notificacion_autorizador_compras(
         f"<td>{l.get('cliente_excel', '') or ''}</td></tr>"
         for l in lineas
     )
+    links = build_links_autorizacion_presupuesto(id_carga=id_carga, tipo="compra", nombre_rol=nombre_rol)
+    if links.get("ok"):
+        links_html = f"""
+        <p style="margin:14px 0">
+          <a href="{links['approve']}"
+             style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            autorizar
+          </a>
+          <a href="{links['reject']}"
+             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            rechazar
+          </a>
+        </p>
+        """
+    else:
+        links_html = ""
     asunto = f"Presupuesto de compra {anio} — solicitud de autorización (carga {id_carga})"
     cuerpo_html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 14px; color: #111;">
@@ -205,38 +222,13 @@ def _enviar_notificacion_autorizador_compras(
             </tr>
             {filas_html}
         </table>
-        <p>Entra a la app, módulo <b>Presupuesto de Ventas → Presupuesto Compra → ✅ autorizaciones</b>,
+        {links_html}
+        <p>O entra a la app, módulo <b>Presupuesto de Ventas → Presupuesto Compra → ✅ autorizaciones</b>,
         para autorizar o rechazar.</p>
     </div>
     """
     return enviar_correo(
         destinatario=destinatarios, asunto=asunto, cuerpo_html=cuerpo_html,
-        token=token, remitente=remitente,
-    )
-
-
-def _enviar_notificacion_vendedor_compras(
-    *, destinatario: str, aprobado: bool, id_carga: int, anio: int,
-    producto_excel: str, motivo: Optional[str], token, remitente: str,
-) -> tuple[bool, str]:
-    if not destinatario:
-        return False, "sin correo del vendedor"
-    asunto = (
-        f"Presupuesto de compra {anio} — línea {'autorizada' if aprobado else 'rechazada'}"
-    )
-    motivo_html = f"<p><b>Motivo:</b> {motivo}</p>" if (not aprobado and motivo) else ""
-    cuerpo_html = f"""
-    <div style="font-family: Arial, sans-serif; font-size: 14px; color: #111;">
-        <p>La línea <b>{producto_excel}</b> del presupuesto de compra {anio}
-        (carga {id_carga}) fue
-        <b style="color:{'#16a34a' if aprobado else '#dc2626'}">
-            {'AUTORIZADA' if aprobado else 'RECHAZADA'}
-        </b>.</p>
-        {motivo_html}
-    </div>
-    """
-    return enviar_correo(
-        destinatario=destinatario, asunto=asunto, cuerpo_html=cuerpo_html,
         token=token, remitente=remitente,
     )
 

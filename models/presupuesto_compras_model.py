@@ -871,3 +871,38 @@ def obtener_presupuesto_compras_lineas_pendientes_model() -> pd.DataFrame:
             conn.close()
         except Exception:
             pass
+
+
+def obtener_presupuesto_compras_lineas_resueltas_model(usuario_id: int, limit: int = 300) -> pd.DataFrame:
+    """Historial de líneas que usuario_id autorizó o rechazó (según
+    presupuesto_compras_lineas_estatus), con datos de la carga — para que
+    quien autoriza pueda ver lo que ya resolvió (deja de aparecer en
+    pendientes en cuanto se resuelve)."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select
+                e.id as estatus_id, e.linea_id, e.estatus_anterior, e.estatus_nuevo,
+                e.comentario, e.fecha,
+                l.id_carga, l.company, l.cliente_excel, l.codigo_origen,
+                l.producto_excel, l.linea_uid,
+                c.nombre_archivo, c.anio, c.version, c.comentarios,
+                c.usuario_id as carga_usuario_id
+            from presupuesto_compras_lineas_estatus e
+            join presupuesto_compras_lineas l on l.id = e.linea_id
+            join presupuesto_compras_cargas c on c.id_carga = l.id_carga
+            where e.usuario_id = %s and e.estatus_nuevo in ('autorizada', 'rechazada')
+            order by e.fecha desc
+            limit %s
+            """,
+            (int(usuario_id), int(limit)),
+        )
+        rows = cur.fetchall() or []
+        return pd.DataFrame(rows)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

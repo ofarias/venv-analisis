@@ -20,6 +20,7 @@ from models.presupuesto_compras_model import (
     obtener_cargas_presupuesto_compras_model,
     obtener_presupuesto_compras_lineas_model,
     obtener_presupuesto_compras_lineas_pendientes_model,
+    obtener_presupuesto_compras_lineas_resueltas_model,
     obtener_presupuesto_compras_model,
     upsert_presupuesto_compras_linea_model,
 )
@@ -363,3 +364,7 @@ def obtener_presupuesto_compras_lineas_ctrl(id_carga: int) -> pd.DataFrame:
 
 def obtener_presupuesto_compras_lineas_pendientes_ctrl() -> pd.DataFrame:
     return obtener_presupuesto_compras_lineas_pendientes_model()
+
+
+def obtener_presupuesto_compras_lineas_resueltas_ctrl(usuario_id: int, limit: int = 300) -> pd.DataFrame:
+    return obtener_presupuesto_compras_lineas_resueltas_model(usuario_id=usuario_id, limit=limit)

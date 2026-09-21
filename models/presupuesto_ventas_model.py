@@ -1349,6 +1349,80 @@ def eliminar_presupuesto_ventas_por_registro_model(
             pass
 
 
+def copiar_carga_presupuesto_ventas_model(id_carga_origen: int, anio_destino: int) -> tuple[int, int]:
+    """Crea una carga nueva (misma nombre/hoja/versión/usuario que la
+    original) con las líneas activas de id_carga_origen copiadas al año
+    anio_destino. No copia presupuesto_ventas_lineas: la carga nueva
+    arranca en estatus de autorización "captura" para todas sus líneas,
+    igual que cualquier carga recién capturada."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+
+        cur.execute(
+            """
+            select nombre_archivo, hoja_origen, version, comentarios, usuario_id
+            from presupuesto_ventas_cargas
+            where id_carga = %s
+            """,
+            (int(id_carga_origen),),
+        )
+        origen = cur.fetchone()
+        if not origen:
+            raise ValueError(f"no existe la carga {id_carga_origen}")
+
+        cur.execute(
+            """
+            insert into presupuesto_ventas_cargas (
+                nombre_archivo, hoja_origen, anio, version, comentarios, usuario_id
+            )
+            values (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                f"{origen['nombre_archivo']} (copia {anio_destino})",
+                origen["hoja_origen"],
+                int(anio_destino),
+                origen["version"],
+                origen["comentarios"],
+                int(origen["usuario_id"]),
+            ),
+        )
+        id_carga_nuevo = int(cur.lastrowid or 0)
+
+        cur.execute(
+            """
+            insert into presupuesto_ventas (
+                id_carga, seccion, region, estatus_excel, anio, mes,
+                id_unidad_negocio, id_linea, id_vendedor, id_cliente, id_producto,
+                cve_prod, cve_clie, cve_vend, cve_linea,
+                cantidad_kg, precio, precio_venta, importe, valor,
+                company, codigo_origen, canal, comentario, estatus, usuario_id,
+                cliente_excel, producto_excel, linea_uid
+            )
+            select
+                %s, seccion, region, estatus_excel, %s, mes,
+                id_unidad_negocio, id_linea, id_vendedor, id_cliente, id_producto,
+                cve_prod, cve_clie, cve_vend, cve_linea,
+                cantidad_kg, precio, precio_venta, importe, valor,
+                company, codigo_origen, canal, comentario, 'activo', usuario_id,
+                cliente_excel, producto_excel, linea_uid
+            from presupuesto_ventas
+            where id_carga = %s and estatus = 'activo'
+            """,
+            (id_carga_nuevo, int(anio_destino), int(id_carga_origen)),
+        )
+        total_lineas = cur.rowcount
+
+        conn.commit()
+        return id_carga_nuevo, total_lineas
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def eliminar_presupuesto_ventas_por_carga_model(id_carga: int) -> bool:
     conn = obtener_conexion()
     try:
@@ -1564,6 +1638,41 @@ def obtener_presupuesto_ventas_lineas_pendientes_model() -> pd.DataFrame:
             where l.estatus = 'enviada'
             order by l.fecha_actualizacion asc
             """
+        )
+        rows = cur.fetchall() or []
+        return pd.DataFrame(rows)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def obtener_presupuesto_ventas_lineas_resueltas_model(usuario_id: int, limit: int = 300) -> pd.DataFrame:
+    """Historial de líneas que usuario_id autorizó o rechazó (según
+    presupuesto_ventas_lineas_estatus), con datos de la carga — para que
+    quien autoriza pueda ver lo que ya resolvió (deja de aparecer en
+    pendientes en cuanto se resuelve)."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select
+                e.id as estatus_id, e.linea_id, e.estatus_anterior, e.estatus_nuevo,
+                e.comentario, e.fecha,
+                l.id_carga, l.company, l.cliente_excel, l.codigo_origen,
+                l.producto_excel, l.linea_uid,
+                c.nombre_archivo, c.anio, c.version, c.comentarios,
+                c.usuario_id as carga_usuario_id
+            from presupuesto_ventas_lineas_estatus e
+            join presupuesto_ventas_lineas l on l.id = e.linea_id
+            join presupuesto_ventas_cargas c on c.id_carga = l.id_carga
+            where e.usuario_id = %s and e.estatus_nuevo in ('autorizada', 'rechazada')
+            order by e.fecha desc
+            limit %s
+            """,
+            (int(usuario_id), int(limit)),
         )
         rows = cur.fetchall() or []
         return pd.DataFrame(rows)

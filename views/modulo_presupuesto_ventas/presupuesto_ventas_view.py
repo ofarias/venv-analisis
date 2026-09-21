@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
 from typing import Optional
 
@@ -14,6 +14,7 @@ from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, JsCode
 
 from controllers.presupuesto_ventas_controller import (
     cargar_excel_directo_presupuesto_ventas_ctrl,
+    copiar_carga_presupuesto_ventas_ctrl,
     eliminar_carga_completa_presupuesto_ventas_ctrl,
     eliminar_registro_presupuesto_ventas_ctrl,
     guardar_presupuesto_ventas_batch_ctrl,
@@ -26,13 +27,13 @@ from controllers.presupuesto_ventas_controller import (
     obtener_presupuesto_ventas_ctrl,
     obtener_presupuesto_ventas_lineas_ctrl,
     obtener_presupuesto_ventas_lineas_pendientes_ctrl,
+    obtener_presupuesto_ventas_lineas_resueltas_ctrl,
     obtener_ultimo_precio_venta_ctrl,
     obtener_ventas_reales_sae_pv_ctrl,
     registrar_carga_presupuesto_ventas_ctrl,
     upsert_presupuesto_ventas_linea_ctrl,
 )
 from views.modulo_presupuesto_ventas.presupuesto_compras_view import (
-    _enviar_notificacion_vendedor_compras,
     _panel_carga as _panel_carga_compras,
     _panel_crear_manual as _panel_crear_manual_compras,
     _panel_gestionar_cargas as _panel_gestionar_cargas_compras,
@@ -50,11 +51,13 @@ from controllers.presupuesto_compras_controller import (
     insertar_presupuesto_compras_linea_estatus_ctrl,
     obtener_presupuesto_compras_ctrl,
     obtener_presupuesto_compras_lineas_pendientes_ctrl,
+    obtener_presupuesto_compras_lineas_resueltas_ctrl,
     upsert_presupuesto_compras_linea_ctrl,
 )
 from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
 from controllers.usuario_controller import get_usuarios
-from utils.envio_correo import enviar_correo
+from utils.deeplink_tokens import build_links_autorizacion_presupuesto, get_app_link_cfg, verify_token
+from utils.envio_correo import enviar_correo, enviar_correo_sistema
 from utils.preferencias_columnas import guardar_columnas_ocultas, obtener_columnas_ocultas
 
 
@@ -299,6 +302,22 @@ def _enviar_notificacion_autorizador_ventas(
         f"<td>{l.get('cliente_excel', '') or ''}</td></tr>"
         for l in lineas
     )
+    links = build_links_autorizacion_presupuesto(id_carga=id_carga, tipo="venta", nombre_rol=nombre_rol)
+    if links.get("ok"):
+        links_html = f"""
+        <p style="margin:14px 0">
+          <a href="{links['approve']}"
+             style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            autorizar
+          </a>
+          <a href="{links['reject']}"
+             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            rechazar
+          </a>
+        </p>
+        """
+    else:
+        links_html = ""
     asunto = f"Presupuesto de ventas {anio} — solicitud de autorización (carga {id_carga})"
     cuerpo_html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 14px; color: #111;">
@@ -310,7 +329,8 @@ def _enviar_notificacion_autorizador_ventas(
             </tr>
             {filas_html}
         </table>
-        <p>Entra a la app, módulo <b>Presupuesto de Ventas → ✅ autorizaciones</b>,
+        {links_html}
+        <p>O entra a la app, módulo <b>Presupuesto de Ventas → ✅ autorizaciones</b>,
         para autorizar o rechazar.</p>
     </div>
     """
@@ -320,26 +340,45 @@ def _enviar_notificacion_autorizador_ventas(
     )
 
 
-def _enviar_notificacion_vendedor_ventas(
-    *, destinatario: str, aprobado: bool, id_carga: int, anio: int,
-    producto_excel: str, motivo: Optional[str], token, remitente: str,
+def _enviar_notificacion_vendedor_lote(
+    *, tipo: str, destinatario: str, aprobado: bool, id_carga: int, anio: int,
+    lineas: list[dict], motivo: Optional[str], token, remitente: str,
 ) -> tuple[bool, str]:
+    """Un solo correo por carga con todas las líneas que se autorizaron o
+    rechazaron juntas en esta acción — en vez de un correo por línea (si se
+    autorizan 50 líneas de la misma carga, sale 1 correo, no 50)."""
     if not destinatario:
         return False, "sin correo del vendedor"
+    etiqueta_tipo = "venta" if tipo == "venta" else "compra"
+    verbo = "AUTORIZADA(S)" if aprobado else "RECHAZADA(S)"
     asunto = (
-        f"Presupuesto de ventas {anio} — línea {'autorizada' if aprobado else 'rechazada'}"
+        f"Presupuesto de {etiqueta_tipo} {anio} — {len(lineas)} línea(s) "
+        f"{'autorizada(s)' if aprobado else 'rechazada(s)'} (carga {id_carga})"
+    )
+    filas_html = "".join(
+        f"<tr><td>{l.get('producto_excel', '')}</td><td>{l.get('company', '') or ''}</td>"
+        f"<td>{l.get('cliente_excel', '') or ''}</td></tr>"
+        for l in lineas
     )
     motivo_html = f"<p><b>Motivo:</b> {motivo}</p>" if (not aprobado and motivo) else ""
     cuerpo_html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 14px; color: #111;">
-        <p>La línea <b>{producto_excel}</b> del presupuesto de ventas {anio}
-        (carga {id_carga}) fue
-        <b style="color:{'#16a34a' if aprobado else '#dc2626'}">
-            {'AUTORIZADA' if aprobado else 'RECHAZADA'}
-        </b>.</p>
+        <p>{len(lineas)} línea(s) del presupuesto de {etiqueta_tipo} {anio}
+        (carga {id_carga}) fueron
+        <b style="color:{'#16a34a' if aprobado else '#dc2626'}">{verbo}</b>.</p>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse;">
+            <tr style="background:#1F4E78; color:#fff;">
+                <th>Producto</th><th>Company</th><th>Cliente</th>
+            </tr>
+            {filas_html}
+        </table>
         {motivo_html}
     </div>
     """
+    # sin token de Microsoft Graph (acción ejecutada desde el link de correo,
+    # sin sesión iniciada) se manda por SMTP con la cuenta de sistema
+    if not token:
+        return enviar_correo_sistema(destinatario=destinatario, asunto=asunto, cuerpo_html=cuerpo_html)
     return enviar_correo(
         destinatario=destinatario, asunto=asunto, cuerpo_html=cuerpo_html,
         token=token, remitente=remitente,
@@ -2486,14 +2525,45 @@ def _panel_gestionar_cargas() -> None:
                     if c in df.columns]
     st.dataframe(df[cols_mostrar], use_container_width=True, hide_index=True)
 
-    st.divider()
-    st.markdown("#### eliminar carga")
-    st.caption("esto borra la carga, sus registros de presupuesto y el staging asociado de forma permanente")
-
     opciones = {
         f"{r['id_carga']} | {r['nombre_archivo']} | {r['anio']} | {r.get('version', '')}": int(r["id_carga"])
         for r in df.to_dict(orient="records")
     }
+
+    st.divider()
+    st.markdown("#### copiar a otro año")
+    st.caption(
+        "crea una carga nueva con las mismas líneas de la carga seleccionada pero para el año indicado — "
+        "la carga nueva arranca sin autorizaciones (todas sus líneas en estatus 'captura')"
+    )
+
+    label_copia = st.selectbox(
+        "selecciona la carga a copiar", options=list(opciones.keys()), key="pv_gc_select_copia",
+    )
+    id_carga_copia = opciones[label_copia]
+    anio_origen_copia = int(df.loc[df["id_carga"] == id_carga_copia, "anio"].iloc[0])
+    anio_destino = st.number_input(
+        "año destino", min_value=2020, max_value=2100,
+        value=anio_origen_copia + 1, step=1, key="pv_gc_anio_destino",
+    )
+
+    if st.button("📋 copiar al año", key="pv_gc_btn_copiar"):
+        try:
+            res = copiar_carga_presupuesto_ventas_ctrl(
+                id_carga_origen=id_carga_copia, anio_destino=int(anio_destino),
+            )
+            st.success(
+                f"carga {res['id_carga_nuevo']} creada con {res['total_lineas']} línea(s) "
+                f"para el año {res['anio']}"
+            )
+            st.rerun()
+        except Exception as e:
+            st.error(f"error al copiar: {e}")
+
+    st.divider()
+    st.markdown("#### eliminar carga")
+    st.caption("esto borra la carga, sus registros de presupuesto y el staging asociado de forma permanente")
+
     label = st.selectbox("selecciona la carga a eliminar", options=list(opciones.keys()), key="pv_gc_select")
     id_sel = opciones[label]
 
@@ -2739,22 +2809,17 @@ def _puede_autorizar_lineas() -> bool:
     })
 
 
-def _resolver_linea_autorizacion(
-    fila: dict, estatus_nuevo: str, usuario: dict, token, remitente: str,
-    correo_vendedor: str, motivo: Optional[str],
-) -> tuple[bool, str]:
-    """Aplica el nuevo estatus a una línea y notifica al vendedor.
-
-    Devuelve (ok_mail, msg_mail) — el llamador es responsable de mostrar el
-    resumen (útil para autorizar/rechazar en lote sin un st.success por fila).
-    """
+def _aplicar_estatus_linea_autorizacion(
+    fila: dict, estatus_nuevo: str, usuario: dict, motivo: Optional[str],
+) -> None:
+    """Aplica el nuevo estatus a una línea (autoriza/rechaza) y registra el
+    cambio en el historial. No envía correo — el llamador agrupa las líneas
+    por carga y notifica una sola vez por carga (ver _procesar_lote)."""
     usuario_id = int(usuario.get("id") or 0)
     usuario_nombre = str(usuario.get("nombre") or usuario.get("username") or "").strip()
     usuario_email = str(usuario.get("email") or "").strip()
     id_carga = int(fila["id_carga"])
-    anio = int(fila.get("anio") or 0)
     producto_excel = str(fila.get("producto_excel") or "")
-
     linea_uid = str(fila.get(LINEA_KEY) or "")
 
     if fila["tipo"] == "venta":
@@ -2770,11 +2835,6 @@ def _resolver_linea_autorizacion(
             usuario_id=usuario_id, usuario_nombre=usuario_nombre, usuario_email=usuario_email,
             comentario=motivo,
         )
-        ok_mail, msg_mail = _enviar_notificacion_vendedor_ventas(
-            destinatario=correo_vendedor, aprobado=(estatus_nuevo == "autorizada"),
-            id_carga=id_carga, anio=anio, producto_excel=producto_excel,
-            motivo=motivo, token=token, remitente=remitente,
-        )
     else:
         linea_id, estatus_anterior = upsert_presupuesto_compras_linea_ctrl(
             id_carga=id_carga, company=fila.get("company") or None,
@@ -2788,13 +2848,6 @@ def _resolver_linea_autorizacion(
             usuario_id=usuario_id, usuario_nombre=usuario_nombre, usuario_email=usuario_email,
             comentario=motivo,
         )
-        ok_mail, msg_mail = _enviar_notificacion_vendedor_compras(
-            destinatario=correo_vendedor, aprobado=(estatus_nuevo == "autorizada"),
-            id_carga=id_carga, anio=anio, producto_excel=producto_excel,
-            motivo=motivo, token=token, remitente=remitente,
-        )
-
-    return ok_mail, msg_mail
 
 
 def _agregar_meses_pendientes(pendientes: pd.DataFrame) -> pd.DataFrame:
@@ -2861,6 +2914,147 @@ def _agregar_meses_pendientes(pendientes: pd.DataFrame) -> pd.DataFrame:
     return resultado.reset_index(drop=True)
 
 
+def mostrar_autorizacion_presupuesto_link() -> None:
+    """Página independiente (sin sesión/login) para el link de correo
+    ?pv_carga=&pv_tipo=venta|compra&pv_action=approve|reject&pv_t= generado
+    por _enviar_notificacion_autorizador_ventas/_compras — el token HMAC
+    firmado ES la autorización, igual que el link externo de Solicitudes
+    (views/modulo_solicitudes/tab_solicitud_gastos_view.py, sección
+    "autorización externa"): "autorizar" se aplica de inmediato al abrir el
+    link; "rechazar" pide motivo antes de aplicarse. No requiere que quien
+    hace clic tenga sesión iniciada en la app."""
+    st.subheader("autorización de presupuesto")
+
+    qp = st.query_params
+    pv_carga = (qp.get("pv_carga") or "").strip()
+    pv_tipo = (qp.get("pv_tipo") or "").strip().lower()
+    pv_action = (qp.get("pv_action") or "").strip().lower()
+    pv_t = (qp.get("pv_t") or "").strip()
+
+    if not (pv_carga and pv_tipo and pv_t):
+        st.error("link inválido.")
+        return
+
+    try:
+        id_carga = int(pv_carga)
+    except Exception:
+        st.error("link inválido.")
+        return
+
+    if pv_tipo not in ("venta", "compra"):
+        st.error("link inválido.")
+        return
+
+    _, secret = get_app_link_cfg()
+    if not secret:
+        st.error("falta APP_LINK_SECRET en secrets.toml")
+        return
+
+    payload = verify_token(pv_t, secret)
+    if not payload:
+        st.error("link inválido o expirado.")
+        return
+
+    exp = int(payload.get("exp") or 0)
+    if exp <= 0 or int(datetime.utcnow().timestamp()) > exp:
+        st.error("link expirado.")
+        return
+
+    if int(payload.get("pv_carga") or 0) != id_carga or str(payload.get("pv_tipo") or "") != pv_tipo:
+        st.error("link inválido.")
+        return
+
+    if pv_action not in ("approve", "reject"):
+        st.error("link inválido.")
+        return
+
+    autoriza_rol = str(payload.get("autoriza_rol") or "").strip()
+    actor = {"id": 0, "nombre": autoriza_rol or "Autorización externa", "email": ""}
+
+    obtener_pendientes = (
+        obtener_presupuesto_ventas_lineas_pendientes_ctrl if pv_tipo == "venta"
+        else obtener_presupuesto_compras_lineas_pendientes_ctrl
+    )
+    pendientes = obtener_pendientes()
+    if pendientes is not None and not pendientes.empty:
+        pendientes = pendientes[pendientes["id_carga"].astype(int) == id_carga].copy()
+    if pendientes is None or pendientes.empty:
+        st.info("ya no hay líneas pendientes de esa carga — puede que ya se hayan resuelto.")
+        return
+    pendientes["tipo"] = pv_tipo
+    filas_link = pendientes.to_dict("records")
+
+    etiqueta_tipo = "venta" if pv_tipo == "venta" else "compra"
+    st.info(f"presupuesto de {etiqueta_tipo} — carga {id_carga} — {len(filas_link)} línea(s) pendiente(s)")
+
+    # sin sesión no hay token de Microsoft Graph para mandar el correo como
+    # el usuario logueado — _enviar_notificacion_vendedor_lote cae a SMTP
+    # (enviar_correo_sistema) cuando token es None
+    if pv_action == "approve":
+        n, fallos = _autorizar_o_rechazar_lineas(filas_link, "autorizada", actor, None, None, "")
+        st.success(f"{n} línea(s) autorizada(s) correctamente.")
+        if fallos:
+            st.warning("no se pudo notificar por correo a: " + "; ".join(fallos))
+        return
+
+    st.markdown(f"folio de carga: **{id_carga}**")
+    motivo = st.text_area("motivo del rechazo", key=f"pv_link_motivo_{pv_tipo}_{id_carga}")
+    if st.button("confirmar rechazo", type="primary", key=f"pv_link_btn_rechazo_{pv_tipo}_{id_carga}"):
+        if not motivo.strip():
+            st.warning("captura el motivo del rechazo.")
+        else:
+            n, fallos = _autorizar_o_rechazar_lineas(filas_link, "rechazada", actor, motivo.strip(), None, "")
+            st.success(f"{n} línea(s) rechazada(s) correctamente.")
+            if fallos:
+                st.warning("no se pudo notificar por correo a: " + "; ".join(fallos))
+
+
+def _autorizar_o_rechazar_lineas(
+    filas: list[dict], estatus_nuevo: str, usuario: dict, motivo: Optional[str],
+    token, remitente: str,
+) -> tuple[int, list[str]]:
+    """Aplica estatus_nuevo a cada línea (deduplicando por identidad, ya que
+    una línea puede repetirse en varias filas de la tabla si tiene datos en
+    más de un bloque sección/región) y notifica al dueño de cada carga en un
+    solo correo por carga. Devuelve (n_procesadas, fallos_mail)."""
+    vistas: set = set()
+    unicas: list[dict] = []
+    for fila in filas:
+        clave = (
+            fila.get("tipo"), fila.get("id_carga"), fila.get("company"),
+            fila.get("cliente_excel"), fila.get("codigo_origen"), fila.get("producto_excel"),
+            fila.get(LINEA_KEY),
+        )
+        if clave in vistas:
+            continue
+        vistas.add(clave)
+        unicas.append(fila)
+
+    for fila in unicas:
+        _aplicar_estatus_linea_autorizacion(fila, estatus_nuevo, usuario, motivo)
+
+    # un correo por carga (no por línea): agrupa las líneas ya resueltas
+    # por (tipo, id_carga) y notifica una sola vez al dueño de esa carga
+    grupos: dict[tuple, list[dict]] = {}
+    for fila in unicas:
+        grupos.setdefault((fila.get("tipo"), int(fila["id_carga"])), []).append(fila)
+
+    fallos_mail: list[str] = []
+    for (tipo, id_carga), lineas_carga in grupos.items():
+        primera = lineas_carga[0]
+        dueño = obtener_usuario_por_id_ctrl(int(primera.get("carga_usuario_id") or 0)) or {}
+        correo_vendedor = str(dueño.get("email") or "").strip()
+        ok_mail, msg_mail = _enviar_notificacion_vendedor_lote(
+            tipo=tipo, destinatario=correo_vendedor, aprobado=(estatus_nuevo == "autorizada"),
+            id_carga=id_carga, anio=int(primera.get("anio") or 0), lineas=lineas_carga,
+            motivo=motivo, token=token, remitente=remitente,
+        )
+        if not ok_mail:
+            fallos_mail.append(f"carga {id_carga} ({msg_mail})")
+
+    return len(unicas), fallos_mail
+
+
 def _panel_autorizaciones() -> None:
     usuario = st.session_state.get("usuario") or {}
     roles_viewer = set(_norm_roles_list(usuario.get("roles")))
@@ -2875,6 +3069,77 @@ def _panel_autorizaciones() -> None:
         )
         return
 
+    tab_pendientes, tab_resueltas = st.tabs(["⏳ pendientes", "📜 ya autorizadas / rechazadas"])
+    with tab_pendientes:
+        _panel_autorizaciones_pendientes(usuario, es_superadmin, es_gerente, es_jefe)
+    with tab_resueltas:
+        _panel_autorizaciones_resueltas(usuario)
+
+
+def _panel_autorizaciones_resueltas(usuario: dict) -> None:
+    """Historial de líneas que el usuario en sesión ya autorizó o rechazó —
+    una vez resuelta, una línea desaparece de "pendientes", así que sin esto
+    quien autoriza no tenía forma de volver a ver lo que ya resolvió."""
+    usuario_id = int(usuario.get("id") or 0)
+    if not usuario_id:
+        st.info("no se pudo identificar tu usuario.")
+        return
+
+    resueltas_ventas = obtener_presupuesto_ventas_lineas_resueltas_ctrl(usuario_id=usuario_id)
+    if resueltas_ventas is not None and not resueltas_ventas.empty:
+        resueltas_ventas = resueltas_ventas.copy()
+        resueltas_ventas["tipo"] = "venta"
+
+    resueltas_compras = obtener_presupuesto_compras_lineas_resueltas_ctrl(usuario_id=usuario_id)
+    if resueltas_compras is not None and not resueltas_compras.empty:
+        resueltas_compras = resueltas_compras.copy()
+        resueltas_compras["tipo"] = "compra"
+
+    partes = [df for df in (resueltas_ventas, resueltas_compras) if df is not None and not df.empty]
+    if not partes:
+        st.info("aún no has autorizado ni rechazado ninguna línea.")
+        return
+
+    resueltas = pd.concat(partes, ignore_index=True)
+    resueltas = resueltas.sort_values("fecha", ascending=False).reset_index(drop=True)
+
+    nombre_por_usuario: dict[int, str] = {}
+    for uid in resueltas["carga_usuario_id"].dropna().unique():
+        u = obtener_usuario_por_id_ctrl(int(uid)) or {}
+        nombre_por_usuario[int(uid)] = str(u.get("nombre") or u.get("email") or "").strip()
+    resueltas["usuario"] = resueltas["carga_usuario_id"].apply(
+        lambda uid: nombre_por_usuario.get(int(uid), "") if pd.notna(uid) else ""
+    )
+    resueltas["estatus_badge"] = (
+        resueltas["estatus_nuevo"].map(_ESTATUS_LINEA_BADGE).fillna(resueltas["estatus_nuevo"])
+    )
+
+    st.caption(f"{len(resueltas):,} línea(s) que autorizaste o rechazaste")
+
+    cols_mostrar = [c for c in [
+        "fecha", "tipo", "usuario", "id_carga", "anio", "company", "cliente_excel",
+        "producto_excel", "estatus_badge", "comentario",
+    ] if c in resueltas.columns]
+    encabezados = {
+        "fecha": "Fecha", "tipo": "Tipo", "usuario": "Usuario", "id_carga": "Carga",
+        "anio": "Año", "company": "Company", "cliente_excel": "Cliente",
+        "producto_excel": "Producto", "estatus_badge": "Estatus", "comentario": "Comentario",
+    }
+    df_show = resueltas[cols_mostrar].rename(columns=encabezados)
+
+    estilo = df_show.style
+    if "Estatus" in df_show.columns:
+        estilo = estilo.map(_color_fondo_autorizacion, subset=["Estatus"])
+
+    st.dataframe(
+        estilo, use_container_width=True, hide_index=True,
+        height=min(56 + len(df_show) * 35, 520),
+    )
+
+
+def _panel_autorizaciones_pendientes(
+    usuario: dict, es_superadmin: bool, es_gerente: bool, es_jefe: bool,
+) -> None:
     pendientes_ventas = obtener_presupuesto_ventas_lineas_pendientes_ctrl()
     if pendientes_ventas is not None and not pendientes_ventas.empty:
         pendientes_ventas = pendientes_ventas.copy()
@@ -2913,6 +3178,10 @@ def _panel_autorizaciones() -> None:
         return
 
     pendientes = pendientes.sort_values("fecha_actualizacion").reset_index(drop=True)
+
+    token = st.session_state.get("microsoft_token")
+    remitente = str(usuario.get("email") or "").strip()
+
     pendientes = _agregar_meses_pendientes(pendientes)
 
     # "usuario" (dueño de la carga) y "presupuesto" (comentarios de la carga)
@@ -2999,34 +3268,11 @@ def _panel_autorizaciones() -> None:
 
     st.caption(f"{n_lineas} línea(s) seleccionada(s)")
 
-    token = st.session_state.get("microsoft_token")
-    remitente = str(usuario.get("email") or "").strip()
-
     def _procesar_lote(estatus_nuevo: str, motivo: Optional[str]) -> None:
-        vistas: set = set()
-        unicas: list[dict] = []
-        for fila in filas_seleccionadas:
-            clave = (
-                fila.get("tipo"), fila.get("id_carga"), fila.get("company"),
-                fila.get("cliente_excel"), fila.get("codigo_origen"), fila.get("producto_excel"),
-                fila.get(LINEA_KEY),
-            )
-            if clave in vistas:
-                continue
-            vistas.add(clave)
-            unicas.append(fila)
-
-        fallos_mail: list[str] = []
-        for fila in unicas:
-            dueño = obtener_usuario_por_id_ctrl(int(fila.get("carga_usuario_id") or 0)) or {}
-            correo_vendedor = str(dueño.get("email") or "").strip()
-            ok_mail, msg_mail = _resolver_linea_autorizacion(
-                fila, estatus_nuevo, usuario, token, remitente, correo_vendedor, motivo,
-            )
-            if not ok_mail:
-                fallos_mail.append(f"{fila.get('producto_excel', '')} ({msg_mail})")
-
-        st.success(f"{len(unicas)} línea(s) — {estatus_nuevo}")
+        n, fallos_mail = _autorizar_o_rechazar_lineas(
+            filas_seleccionadas, estatus_nuevo, usuario, motivo, token, remitente,
+        )
+        st.success(f"{n} línea(s) — {estatus_nuevo}")
         if fallos_mail:
             st.warning("no se pudo notificar por correo a: " + "; ".join(fallos_mail))
 

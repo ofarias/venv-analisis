@@ -74,6 +74,11 @@ def _get_modulo_forzado_desde_deeplink() -> str | None:
     if (qp.get("rv") or "").strip():
         return "reporte_ventas"
 
+    # autorizar/rechazar presupuesto de ventas o compras desde el correo
+    # (ver views/modulo_presupuesto_ventas/presupuesto_ventas_view.py)
+    if (qp.get("pv_carga") or "").strip() and (qp.get("pv_t") or "").strip():
+        return "presupuesto_ventas_autorizacion"
+
     modulo_forzado = st.session_state.get("modulo_forzado")
     if modulo_forzado:
         return str(modulo_forzado)
@@ -83,7 +88,9 @@ def _get_modulo_forzado_desde_deeplink() -> str | None:
 
 modulo_forzado = _get_modulo_forzado_desde_deeplink()
 # permitir acceso por deeplink sin login
-if "usuario" not in st.session_state and modulo_forzado not in ("solicitudes", "reporte_ventas"):
+if "usuario" not in st.session_state and modulo_forzado not in (
+    "solicitudes", "reporte_ventas", "presupuesto_ventas_autorizacion",
+):
     mostrar_login()
 else:
     if "usuario" not in st.session_state:
@@ -158,6 +165,11 @@ else:
     if modulo_forzado == "reporte_ventas":
         from views.modulo_presupuesto_ventas.reporte_ventas_view import mostrar_reporte_publico
         mostrar_reporte_publico()
+        st.stop()
+
+    if modulo_forzado == "presupuesto_ventas_autorizacion":
+        from views.modulo_presupuesto_ventas.presupuesto_ventas_view import mostrar_autorizacion_presupuesto_link
+        mostrar_autorizacion_presupuesto_link()
         st.stop()
 
     if "SuperAdmin" in roles:

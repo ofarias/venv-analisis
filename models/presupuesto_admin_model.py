@@ -83,7 +83,11 @@ def obtener_presupuesto_ventas_compras_model(
     """Unión de presupuesto_ventas y presupuesto_compras, con el usuario
     dueño de la carga y el estatus de autorización de cada línea (captura
     por defecto si no tiene registro en *_lineas), para la pestaña de
-    solo-lectura "ver todos" (forecastAdmin / SuperAdmin)."""
+    solo-lectura "ver todos" (forecastAdmin / SuperAdmin).
+
+    Solo trae las líneas de sección KG — las de sección USD son un bloque
+    aparte del mismo Excel (turnover en dólares) y duplicarían las cifras
+    ya calculadas a partir de KG × precio."""
     conn = obtener_conexion()
     try:
         cur = conn.cursor(dictionary=True)
@@ -134,7 +138,7 @@ def obtener_presupuesto_ventas_compras_model(
                    and l.linea_uid = p.linea_uid
                 where p.estatus = 'activo'
             ) t
-            where 1 = 1
+            where t.seccion = 'KG'
         """
         params: list = []
 

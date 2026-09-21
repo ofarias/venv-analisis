@@ -2,6 +2,7 @@
 
 import smtplib
 from email.message import EmailMessage
+from email.mime.text import MIMEText
 import os
 from dotenv import load_dotenv
 #from email_validator import validate_email, EmailNotValidError
@@ -11,6 +12,42 @@ import json
 import streamlit as st
 # Carga las variables del archivo .env
 load_dotenv()
+
+
+def enviar_correo_sistema(*, destinatario, asunto: str, cuerpo_html: str) -> tuple[bool, str]:
+    """Envía por SMTP con la cuenta de sistema (SMTP_* en secrets.toml) en
+    vez de Microsoft Graph — para flujos sin sesión iniciada, como las
+    acciones ejecutadas desde un link de correo firmado (ver
+    utils/deeplink_tokens.py), donde no hay token de usuario disponible."""
+    try:
+        smtp_host = str(st.secrets.get("SMTP_HOST", "")).strip()
+        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
+        smtp_user = str(st.secrets.get("SMTP_USER", "")).strip()
+        smtp_pass = str(st.secrets.get("SMTP_PASS", "")).strip()
+        smtp_from = str(st.secrets.get("SMTP_FROM", smtp_user)).strip()
+
+        if not smtp_host or not smtp_user or not smtp_pass or not smtp_from:
+            return False, "faltan credenciales SMTP en secrets.toml"
+
+        destinatarios = destinatario if isinstance(destinatario, list) else [destinatario]
+        destinatarios = [str(d).strip() for d in destinatarios if str(d or "").strip()]
+        if not destinatarios:
+            return False, "sin destinatario"
+
+        msg = MIMEText(cuerpo_html, "html", "utf-8")
+        msg["Subject"] = asunto
+        msg["From"] = smtp_from
+        msg["To"] = ", ".join(destinatarios)
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_from, destinatarios, msg.as_string())
+
+        return True, "correo enviado"
+
+    except Exception as e:
+        return False, str(e)
 
 ## token= st.session_state["microsoft_token"]
 

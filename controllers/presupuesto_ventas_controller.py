@@ -14,6 +14,7 @@ from models.presupuesto_ventas_model import (
     actualizar_estatus_carga_presupuesto_ventas_model,
     actualizar_match_staging_presupuesto_ventas_model,
     actualizar_presupuesto_ventas_model,
+    copiar_carga_presupuesto_ventas_model,
     eliminar_carga_presupuesto_ventas_model,
     eliminar_presupuesto_ventas_por_carga_model,
     eliminar_presupuesto_ventas_por_registro_model,
@@ -29,6 +30,7 @@ from models.presupuesto_ventas_model import (
     obtener_cargas_presupuesto_ventas_model,
     obtener_presupuesto_ventas_lineas_model,
     obtener_presupuesto_ventas_lineas_pendientes_model,
+    obtener_presupuesto_ventas_lineas_resueltas_model,
     obtener_presupuesto_ventas_model,
     obtener_reporte_ventas_por_token_model,
     obtener_resumen_presupuesto_ventas_model,
@@ -672,6 +674,19 @@ def eliminar_carga_completa_presupuesto_ventas_ctrl(id_carga: int) -> dict:
     eliminar_staging_por_carga_presupuesto_ventas_model(id_carga)
     eliminar_carga_presupuesto_ventas_model(id_carga)
     return {"id_carga": id_carga, "eliminado": True}
+
+
+def copiar_carga_presupuesto_ventas_ctrl(id_carga_origen: int, anio_destino: int) -> dict:
+    id_carga_nuevo, total_lineas = copiar_carga_presupuesto_ventas_model(
+        id_carga_origen=id_carga_origen,
+        anio_destino=anio_destino,
+    )
+    return {
+        "id_carga_origen": id_carga_origen,
+        "id_carga_nuevo": id_carga_nuevo,
+        "anio": anio_destino,
+        "total_lineas": total_lineas,
+    }
 
 
 def obtener_cargas_presupuesto_ventas_ctrl(
@@ -1355,6 +1370,10 @@ def obtener_presupuesto_ventas_lineas_ctrl(id_carga: int) -> pd.DataFrame:
 
 def obtener_presupuesto_ventas_lineas_pendientes_ctrl() -> pd.DataFrame:
     return obtener_presupuesto_ventas_lineas_pendientes_model()
+
+
+def obtener_presupuesto_ventas_lineas_resueltas_ctrl(usuario_id: int, limit: int = 300) -> pd.DataFrame:
+    return obtener_presupuesto_ventas_lineas_resueltas_model(usuario_id=usuario_id, limit=limit)
 
 
 # ── reporte gerencial (link compartible) ──────────────────────────────────────
