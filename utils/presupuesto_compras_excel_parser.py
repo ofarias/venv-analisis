@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import datetime as dt
 import math
 import re
+import unicodedata
 from typing import Any
 
 import pandas as pd
@@ -9,10 +11,9 @@ import pandas as pd
 # Parser de Excel para "Presupuesto Compra" — mirror del formato "standard"
 # de utils/presupuesto_ventas_excel_parser.py (detector genérico de bloques
 # "TURNOVER in VOLUME KG" / "TURNOVER in USD" + región MEXICO/CAM & CARIBE +
-# columnas fijas por posición). No se replican los parsers específicos de
-# vendedor (baking/juice/brewing) porque son específicos de archivos de
-# ventas reales; si aparece un archivo de compras con un formato distinto,
-# se agrega su propio parser después.
+# columnas fijas por posición). También incluye parsers de formato "vendedor"
+# (archivos externos con layout propio, ver _detectar_formato_compras_vendedor)
+# para cuando llega un archivo de compras con un formato distinto al standard.
 
 MESES = {
     "JAN": 1, "JANUARY": 1, "ENE": 1, "ENERO": 1,
@@ -24,6 +25,7 @@ MESES = {
     "JUL": 7, "JULY": 7, "JULIO": 7,
     "AUG": 8, "AUGUST": 8, "AGO": 8, "AGOSTO": 8,
     "SEP": 9, "SEPT": 9, "SEPTEMBER": 9, "SEPTIEMBRE": 9,
+    "FEBRERO": 2, "MARZO": 3,
     "OCT": 10, "OCTOBER": 10, "OCTUBRE": 10,
     "NOV": 11, "NOVEMBER": 11, "NOVIEMBRE": 11,
     "DEC": 12, "DECEMBER": 12, "DIC": 12, "DICIEMBRE": 12,
@@ -51,6 +53,10 @@ def _norm(v: Any) -> str:
     return t.strip()
 
 
+def _sin_acentos(t: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c))
+
+
 def _float(v: Any) -> float:
     if v is None:
         return 0.0
@@ -71,6 +77,11 @@ def _float(v: Any) -> float:
 
 
 def _detectar_mes(texto: Any):
+    # encabezado de mes como fecha real de Excel (ej. datetime(2026,1,1) en
+    # vez del texto "Jan"/"Enero") — formato "Plan Demanda BIOTECSA"
+    if isinstance(texto, (dt.datetime, dt.date, pd.Timestamp)):
+        return texto.month
+
     t = _norm(texto)
 
     for alias, mes in MESES.items():
@@ -295,11 +306,18 @@ def normalizar_presupuesto_compras_excel_dinamico(
     if not registros:
         return pd.DataFrame(registros), tablas
 
-    df = pd.DataFrame(registros)
+    df = _dedup_compras(pd.DataFrame(registros))
 
-    # Si el Excel tiene más de una fila para la misma combinación
-    # (seccion, region, mes, producto, cliente, etc.), se suman para no
-    # violar la unique key de la tabla destino.
+    return df, tablas
+
+
+def _dedup_compras(df: pd.DataFrame) -> pd.DataFrame:
+    """Si el Excel tiene más de una fila para la misma combinación
+    (seccion, region, mes, producto, cliente, etc.), se suman para no
+    violar la unique key de la tabla destino."""
+    if df.empty:
+        return df
+
     KEY = ["seccion", "region", "anio", "mes", "company",
            "cliente_excel", "codigo_origen", "producto_excel"]
     key_presentes = [c for c in KEY if c in df.columns]
@@ -321,7 +339,241 @@ def normalizar_presupuesto_compras_excel_dinamico(
     for c in key_presentes:
         df[c] = df[c].replace(_SEN, None)
 
-    return df, tablas
+    return df
+
+
+# ── formatos "vendedor" (archivos externos con layout propio) ──────────────
+
+_LABELS_CVE_PLAN_DEMANDA = {"CODIGO BIOTECSA", "SKU"}
+
+
+def _fila_header_plan_demanda(row: list[Any]) -> bool:
+    """Encabezado del formato "Plan Demanda BIOTECSA" (ver _parsear_plan_demanda):
+    columna de clave (CÓDIGO BIOTECSA o SKU) + PRODUCTO + al menos un mes
+    (texto ES/EN o fecha real de Excel), todo en la misma fila."""
+    str_set = {_sin_acentos(_norm(v)) for v in row if pd.notna(v) and _txt(v)}
+    if not (str_set & _LABELS_CVE_PLAN_DEMANDA):
+        return False
+    if "PRODUCTO" not in str_set:
+        return False
+    return any(_detectar_mes(v) is not None for v in row)
+
+
+def _detectar_formato_compras_vendedor(df: pd.DataFrame) -> str:
+    """
+    Escanea hasta 40 filas para identificar un formato de compras distinto
+    al standard. Returns: 'sae_simple', 'plan_demanda' o 'standard'.
+    """
+    for i in range(min(len(df), 40)):
+        row = df.iloc[i].tolist()
+        str_set = {_sin_acentos(_norm(v)) for v in row if pd.notna(v) and _txt(v)}
+
+        # SAE_SIMPLE: columna "CODIGO SAE" (con o sin acento) + nombres de mes
+        # en la misma fila. Layout sin bloques de seccion/region ni proveedor:
+        # CODIGO SAE | <nombre producto> | <precio> | Ene..Dic (KG) | totales.
+        if "CODIGO SAE" in str_set:
+            if any(_detectar_mes(v) for v in row):
+                return "sae_simple"
+
+        if _fila_header_plan_demanda(row):
+            return "plan_demanda"
+
+    return "standard"
+
+
+def _parsear_sae_simple(df: pd.DataFrame, anio: int) -> pd.DataFrame:
+    """
+    Formato SAE_SIMPLE (ej. "AB BIOTECSA 2027- LEATHER con SAE.xlsx"):
+    CODIGO SAE | Product Code (en realidad es el NOMBRE del producto) |
+    Price <anio> | Ene..Dic (KILOGRAMOS) | Total Vol | Total Turn.
+    Sin columnas de proveedor/cliente/región/estatus — a pedido del usuario
+    (2026-09-14) se asume región MEXICO, sección KG y estatus "Budgeted"
+    para todas las filas. Las columnas de total se ignoran, se recalculan
+    (importe = kg * precio).
+    """
+    header_i = None
+    for i in range(min(len(df), 40)):
+        row = df.iloc[i].tolist()
+        str_set = {_sin_acentos(_norm(v)) for v in row if pd.notna(v) and _txt(v)}
+        if "CODIGO SAE" in str_set:
+            header_i = i
+            break
+
+    if header_i is None:
+        return pd.DataFrame()
+
+    header = df.iloc[header_i].tolist()
+
+    def _idx(label: str, exact: bool = True) -> int | None:
+        for j, v in enumerate(header):
+            t = _sin_acentos(_norm(v))
+            if (t == label) if exact else (label in t):
+                return j
+        return None
+
+    idx_cve = _idx("CODIGO SAE")
+    idx_producto = _idx("PRODUCT CODE")
+    idx_precio = _idx("PRICE", exact=False)
+
+    month_cols: list[tuple[int, int]] = []
+    for j, v in enumerate(header):
+        mes = _detectar_mes(v)
+        if mes:
+            month_cols.append((j, mes))
+
+    if idx_cve is None or idx_producto is None or not month_cols:
+        return pd.DataFrame()
+
+    registros: list[dict] = []
+    for row_i in range(header_i + 1, len(df)):
+        row = df.iloc[row_i].tolist()
+
+        cve_prod = _txt(_obtener(row, idx_cve))
+        if not cve_prod:
+            # fin de la tabla: fila de totales ("Result") o en blanco
+            break
+
+        producto = _txt(_obtener(row, idx_producto)) or cve_prod
+        precio = _float(_obtener(row, idx_precio)) if idx_precio is not None else 0.0
+
+        for col_idx, mes in month_cols:
+            valor = _float(_obtener(row, col_idx))
+            if valor == 0:
+                continue
+
+            registros.append({
+                "fila_excel": row_i + 1,
+                "seccion": "KG",
+                "region": "MEXICO",
+                "estatus_excel": "Budgeted",
+                "company": None,
+                "cliente_excel": None,
+                "codigo_origen": None,
+                "cve_prod": cve_prod,
+                "producto_excel": producto,
+                "precio": precio,
+                "anio": int(anio),
+                "mes": int(mes),
+                "cantidad_kg": valor,
+                "importe": round(valor * precio, 2),
+                "valor": valor,
+                "comentario": None,
+            })
+
+    if not registros:
+        return pd.DataFrame(registros)
+
+    return _dedup_compras(pd.DataFrame(registros))
+
+
+def _parsear_plan_demanda(df: pd.DataFrame, anio: int) -> pd.DataFrame:
+    """
+    Formato "Plan Demanda BIOTECSA - <línea> <proveedor> - <mes><año>.xlsx"
+    (Ricardo Rodríguez, compras — 5 líneas: Animal Co-Products, Bacterias
+    Envirozyme, Baking, Jugos, Textil, todas NOVO salvo Envirozyme):
+    CÓDIGO BIOTECSA (o SKU) | PRODUCTO | precio (el nombre de la columna
+    varía por archivo: "Precio", "PRECIO", "Precio USD <año>",
+    "<año> PRICE (USD/kg)") | meses (nombre ES/EN o fecha real de Excel del
+    primer día del mes) | columna(s) de total — se ignoran, se recalculan
+    igual que en sae_simple.
+
+    Sin proveedor/cliente/región/estatus en el archivo — se asume región
+    MEXICO, sección KG y estatus "Budgeted" para todas las filas. No todos
+    los archivos traen los 12 meses ni columna de total en USD (ej.
+    "Bacterias ENVIROZYME" solo mayo-diciembre, sin total USD) — solo se
+    usan los meses que sí aparecen en el encabezado. Alguna fila puede traer
+    PRODUCTO sin CÓDIGO BIOTECSA (fila de referencia sin clave, ej. "Aquazym
+    Ultra 1800 N" en el archivo de Textil) — esa fila se omite pero no
+    corta la tabla; el fin de la tabla es la primera fila con PRODUCTO
+    vacío (ahí empiezan los totales).
+    """
+    header_i = None
+    for i in range(min(len(df), 40)):
+        row = df.iloc[i].tolist()
+        if _fila_header_plan_demanda(row):
+            header_i = i
+            break
+
+    if header_i is None:
+        return pd.DataFrame()
+
+    header = df.iloc[header_i].tolist()
+
+    def _idx_en(labels: set[str]) -> int | None:
+        for j, v in enumerate(header):
+            if _sin_acentos(_norm(v)) in labels:
+                return j
+        return None
+
+    idx_cve = _idx_en(_LABELS_CVE_PLAN_DEMANDA)
+    idx_producto = _idx_en({"PRODUCTO"})
+
+    idx_precio = None
+    for j, v in enumerate(header):
+        t = _sin_acentos(_norm(v))
+        if t.startswith("PRECIO") or "PRICE" in t:
+            idx_precio = j
+            break
+
+    month_cols: list[tuple[int, int]] = []
+    for j, v in enumerate(header):
+        mes = _detectar_mes(v)
+        if mes:
+            month_cols.append((j, mes))
+
+    if idx_cve is None or idx_producto is None or not month_cols:
+        return pd.DataFrame()
+
+    registros: list[dict] = []
+    for row_i in range(header_i + 1, len(df)):
+        row = df.iloc[row_i].tolist()
+
+        producto = _txt(_obtener(row, idx_producto))
+        if not producto:
+            # fin de la tabla: fila en blanco antes de los totales
+            break
+
+        cve_prod = _txt(_obtener(row, idx_cve))
+        if not cve_prod:
+            # fila de referencia sin clave — se omite, no corta la tabla
+            continue
+
+        precio = _float(_obtener(row, idx_precio)) if idx_precio is not None else 0.0
+
+        for col_idx, mes in month_cols:
+            valor = _float(_obtener(row, col_idx))
+            if valor == 0:
+                continue
+
+            registros.append({
+                "fila_excel": row_i + 1,
+                "seccion": "KG",
+                "region": "MEXICO",
+                "estatus_excel": "Budgeted",
+                "company": None,
+                "cliente_excel": None,
+                "codigo_origen": None,
+                "cve_prod": cve_prod,
+                "producto_excel": producto,
+                "precio": precio,
+                "anio": int(anio),
+                "mes": int(mes),
+                "cantidad_kg": valor,
+                "importe": round(valor * precio, 2),
+                "valor": valor,
+                "comentario": None,
+            })
+
+    if not registros:
+        return pd.DataFrame(registros)
+
+    return _dedup_compras(pd.DataFrame(registros))
+
+
+_PARSERS_VENDEDOR_COMPRAS = {
+    "sae_simple": _parsear_sae_simple,
+    "plan_demanda": _parsear_plan_demanda,
+}
 
 
 def normalizar_presupuesto_compras_excel_auto(
@@ -329,6 +581,18 @@ def normalizar_presupuesto_compras_excel_auto(
     hoja: str,
     anio: int,
 ) -> tuple[pd.DataFrame, list[dict]]:
-    """Punto de entrada único: por ahora solo soporta el formato "standard"
-    (bloques TURNOVER in VOLUME KG / TURNOVER in USD + MEXICO / CAM & CARIBE)."""
-    return normalizar_presupuesto_compras_excel_dinamico(archivo, hoja, anio)
+    """Punto de entrada único: detecta primero los formatos "vendedor"
+    (ver _detectar_formato_compras_vendedor); si no coincide con ninguno,
+    cae al formato "standard" (bloques TURNOVER in VOLUME KG / TURNOVER in
+    USD + MEXICO / CAM & CARIBE)."""
+    archivo.seek(0)
+    raw = pd.read_excel(archivo, sheet_name=hoja, header=None, dtype=object)
+
+    formato = _detectar_formato_compras_vendedor(raw)
+
+    if formato == "standard":
+        return normalizar_presupuesto_compras_excel_dinamico(archivo, hoja, anio)
+
+    fn = _PARSERS_VENDEDOR_COMPRAS[formato]
+    result = fn(raw, anio)
+    return (result if result is not None else pd.DataFrame()), []
