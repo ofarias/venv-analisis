@@ -3096,7 +3096,7 @@ def mostrar_tab_solicitudes_gastos():
                 disabled=not puede_guardar_detalle
             ):
             rows_out = edited.to_dict(orient="records")
-            
+
             for r in rows_out:
                 r.pop("pagado_con", None)
                 r.pop("subtotal_xml_view", None)
@@ -3108,15 +3108,33 @@ def mostrar_tab_solicitudes_gastos():
                 r.pop("tiene_pdf", None)
                 r.pop("total_unidades", None)
                 r.pop("desviacion", None)
-            
-            res = guardar_detalle_ctrl(
-                solicitud_id=int(selected_id),
-                rows=rows_out,
-                deleted_ids=[int(x) for x in ids_a_borrar],
-                usuario_id=int(usuario["id"]),
-            )
 
-            if res.get("ok"):
+            # con UUID capturado pero sin total_xml (> 0) significa que el CFDI
+            # no se encontró o se leyó incompleto (ver búsqueda por UUID más
+            # arriba en este archivo) — no dejar guardar así, porque queda
+            # silenciosamente con datos fiscales en 0.
+            filas_uuid_sin_datos = [
+                (r.get("concepto") or f"renglón {i + 1}")
+                for i, r in enumerate(rows_out)
+                if _has_uuid(r.get("uuid")) and _to_float(r.get("total_xml")) <= 0
+            ]
+
+            if filas_uuid_sin_datos:
+                st.error(
+                    "no se pudo leer el CFDI de estos renglones (UUID capturado pero "
+                    "sin total en el XML) — vuelve a capturar/pegar el UUID: "
+                    + ", ".join(filas_uuid_sin_datos)
+                )
+                res = None
+            else:
+                res = guardar_detalle_ctrl(
+                    solicitud_id=int(selected_id),
+                    rows=rows_out,
+                    deleted_ids=[int(x) for x in ids_a_borrar],
+                    usuario_id=int(usuario["id"]),
+                )
+
+            if res is not None and res.get("ok"):
                 st.success(res.get("msg", "detalle guardado"))
                 st.session_state.pop("sg_det_df", None)
                 st.session_state.pop("sg_det_df_solicitud_id", None)
@@ -3124,7 +3142,7 @@ def mostrar_tab_solicitudes_gastos():
                 st.session_state["sg_uuid_cache"] = {}
                 st.session_state.pop("sg_det_editor", None)
                 st.rerun()
-            else:
+            elif res is not None:
                 msg = res.get("msg", "")
                 if "uuid" in msg.lower() and "ya fue usado" in msg.lower():
                     st.warning(msg)

@@ -1386,6 +1386,7 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         detalle_id = int(r.get("id") or 0)
         concepto = (r.get("concepto") or "").strip()
         uuid = (r.get("uuid") or "").strip()
+        total_xml = float(r.get("total_xml") or 0)
         precio_unitario = float(r.get("precio_unitario") or 0)
         fiscales = int(r.get("fiscales") or 0)
         tiene_pdf_uuid = int(r.get("tiene_pdf_uuid") or 0)
@@ -1413,6 +1414,12 @@ def validar_detalle_para_comprobacion(solicitud_id: int) -> dict:
         if uuid and not tiene_pdf_uuid:
             errores.append(
                 f"detalle {detalle_id} ({concepto}): no tiene PDF cargado en DATOSCFD_PDF para el UUID {uuid}"
+            )
+
+        if uuid and total_xml <= 0:
+            errores.append(
+                f"detalle {detalle_id} ({concepto}): no se pudo leer el CFDI del UUID {uuid} "
+                f"(total en 0) — vuelve a capturar el UUID"
             )
 
         if num_unidades <= 0:
