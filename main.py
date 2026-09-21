@@ -175,8 +175,9 @@ else:
         menu_opciones["Unidades de Negocio"] = "unidades"
         menu_opciones["Politicas Internas"] = "PolInt"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
-        menu_opciones[" Tablero CFDI"] = "tab_cfdi" 
-        
+        menu_opciones[" Tablero CFDI"] = "tab_cfdi"
+        menu_opciones["🧾 Descarga SAT CFDI"] = "sat_cfdi"
+
         menu_opciones["⚙️ Bridge COI - JAVA "] = "bridgeCJ"
         menu_opciones[" Prorrateo View"] = "prorrateo"
         menu_opciones[" Dashboard Prorrateos"] = "dash_prorrateos"
@@ -222,7 +223,8 @@ else:
 
     if "Contabilidad" in roles:
         menu_opciones["Dashboard Auxiliar Contable"] = "auxconta"
-        menu_opciones["Tablero CFDI"] = "tab_cfdi"        
+        menu_opciones["Tablero CFDI"] = "tab_cfdi"
+        menu_opciones["🧾 Descarga SAT CFDI"] = "sat_cfdi"
         menu_opciones[" Dashboard Prorrateos"] = "dash_prorrateos"
         menu_opciones["📥 Mis políticas"] = "mis_pendientes"
         menu_opciones["Solicitudes Contabilidad"] = "solicitudesConta"
@@ -358,6 +360,9 @@ else:
         elif modulo == 'tab_cfdi':
             from views.modulos_cfd.ada_view import pantalla_documentos_ada
             pantalla_documentos_ada()
+        elif modulo == 'sat_cfdi':
+            from views.modulo_sat_cfdi.sat_cfdi_view import mostrar_modulo_sat_cfdi
+            mostrar_modulo_sat_cfdi()
         elif modulo == 'PolInt':
             from views.modulos_politicas.politica_view import mostrar_pestanas_politicas
             mostrar_pestanas_politicas()
