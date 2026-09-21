@@ -226,18 +226,19 @@ def _resolver_cliente_sae(
     clientes_por_clave: dict[str, dict],
     clientes_por_nombre: dict[str, dict],
     resolver_por_nombre: bool = True,
-) -> tuple[Optional[str], Optional[str], bool]:
+) -> tuple[Optional[str], Optional[str], Optional[str], bool]:
     """Resuelve un cliente contra el catálogo de SAE.
 
     La clave de cliente que traen algunos Excel (p.ej. Rogelio) viene sin los
     ceros a la izquierda que usa SAE (28 en vez de 0028) — se prueba primero el
     match por código, rellenando a 4 dígitos, y si pega se usa el nombre de SAE
-    como definitivo (formato "clave - nombre - estado", igual que en la captura
-    manual), no el que haya escrito quien capturó el Excel.
+    como definitivo, no el que haya escrito quien capturó el Excel.
 
-    Retorna (cve_clie, cliente_excel_final, encontrado). cliente_excel_final es
-    None cuando no hubo match por código (se debe conservar el cliente_excel
-    original en ese caso).
+    Retorna (cve_clie, cliente_excel_final, planta, encontrado). planta es la
+    dirección de entrega (calle) del cliente en SAE — se resuelve siempre que
+    haya match, igual que en la captura manual (ver _catalogo_clientes_sae en
+    presupuesto_ventas_view.py). cliente_excel_final es None cuando no hubo
+    match por código (se debe conservar el cliente_excel original en ese caso).
     """
     codigo_txt = _clean_upper(codigo_origen)
     if codigo_txt.isdigit() and len(codigo_txt) < 4:
@@ -245,22 +246,22 @@ def _resolver_cliente_sae(
 
     if codigo_txt and codigo_txt in clientes_por_clave:
         cliente_sae = clientes_por_clave[codigo_txt]
-        partes = [
-            _clean_text(cliente_sae.get("clave")),
-            _clean_text(cliente_sae.get("nombre")),
-            _clean_text(cliente_sae.get("estado")),
-        ]
-        cliente_excel_final = " - ".join(p for p in partes if p)
-        return cliente_sae["clave"], cliente_excel_final, True
+        cliente_excel_final = _clean_text(cliente_sae.get("nombre")) or None
+        planta = _clean_text(cliente_sae.get("estado")) or None
+        return cliente_sae["clave"], cliente_excel_final, planta, True
 
     cliente_txt = _clean_upper(cliente_excel)
     if cliente_txt:
         if cliente_txt in clientes_por_clave:
-            return clientes_por_clave[cliente_txt]["clave"], None, True
+            cliente_sae = clientes_por_clave[cliente_txt]
+            planta = _clean_text(cliente_sae.get("estado")) or None
+            return cliente_sae["clave"], None, planta, True
         if resolver_por_nombre and cliente_txt in clientes_por_nombre:
-            return clientes_por_nombre[cliente_txt]["clave"], None, True
+            cliente_sae = clientes_por_nombre[cliente_txt]
+            planta = _clean_text(cliente_sae.get("estado")) or None
+            return cliente_sae["clave"], None, planta, True
 
-    return None, None, False
+    return None, None, None, False
 
 
 def _df_to_lookup(df: pd.DataFrame, key_col: str) -> dict[str, dict]:
@@ -454,6 +455,7 @@ def cargar_excel_a_staging_presupuesto_ventas_ctrl(
             linea_excel=reg.get("linea_excel"),
             producto_excel=reg.get("producto_excel"),
             precio=float(reg.get("precio") or 0),
+            precio_venta=float(reg.get("precio_venta") or 0),
             anio=int(reg.get("anio") or anio),
             mes=int(reg.get("mes") or 0),
             cantidad_kg=float(reg.get("cantidad_kg") or 0),
@@ -550,7 +552,7 @@ def validar_staging_presupuesto_ventas_con_sae_ctrl(
         else:
             observaciones.append("producto_sae_no_encontrado")
 
-        cve_clie, cliente_excel_final, cliente_ok = _resolver_cliente_sae(
+        cve_clie, cliente_excel_final, planta, cliente_ok = _resolver_cliente_sae(
             codigo_origen, cliente_excel, clientes_por_clave, clientes_por_nombre,
             resolver_por_nombre=resolver_por_nombre,
         )
@@ -588,6 +590,7 @@ def validar_staging_presupuesto_ventas_con_sae_ctrl(
             id_staging=id_staging,
             cve_prod=cve_prod,
             cve_clie=cve_clie,
+            planta=planta,
             cve_vend=cve_vend,
             cve_linea=cve_linea if cve_linea else None,
             cliente_excel=cliente_excel_final,

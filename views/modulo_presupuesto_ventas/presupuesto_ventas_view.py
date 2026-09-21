@@ -444,28 +444,36 @@ def _catalogo_sae() -> tuple[set, dict, dict, dict, dict, dict, dict, dict, list
     )
 
 
-def _catalogo_clientes_sae() -> tuple[set, list]:
+def _catalogo_clientes_sae() -> tuple[set, list, dict]:
     """Catálogo de clientes SAE (mismo que consume Solicitudes vía
-    buscar_clientes_sae_ctrl). Returns (clientes_set, opciones) donde cada
-    opción es "clave - nombre - estado", igual que en Solicitudes — usado
-    para exigir cliente de SAE cuando el estatus es "Budgeted"."""
+    buscar_clientes_sae_ctrl). Returns (clientes_set, opciones, label_to_partes):
+    - cada opción/label es "clave - nombre - calle", igual que en Solicitudes
+      — se sigue mostrando así en el selector/buscador para poder ubicar al
+      cliente, y se usa para exigir cliente de SAE cuando el estatus es
+      "Budgeted".
+    - label_to_partes mapea ese mismo label -> (clave, nombre, calle), para
+      separar los 3 datos en sus columnas correctas (cve_clie, cliente_excel,
+      planta) al guardar — "calle" es la dirección de la planta donde se
+      entrega el producto, no un domicilio genérico."""
     df = obtener_catalogo_clientes_pv_ctrl()
     if df is None or df.empty:
-        return set(), [""]
+        return set(), [""], {}
 
     labels = []
+    label_to_partes: dict = {}
     for r in df.to_dict("records"):
         clave = str(r.get("clave") or "").strip()
         nombre = str(r.get("nombre") or "").strip()
-        estado = str(r.get("estado") or "").strip()
-        partes = [p for p in (clave, nombre, estado) if p]
+        calle = str(r.get("estado") or "").strip()
+        partes = [p for p in (clave, nombre, calle) if p]
         label = " - ".join(partes)
         if label:
             labels.append(label)
+            label_to_partes[label] = (clave, nombre, calle)
 
     clientes_set = set(labels)
     opciones = [""] + sorted(labels, key=lambda s: s.lower())
-    return clientes_set, opciones
+    return clientes_set, opciones, label_to_partes
 
 
 def _construir_pivot(
@@ -481,7 +489,7 @@ def _construir_pivot(
 
     if df.empty:
         pivot_vacio = pd.DataFrame(
-            columns=cols_id + [LINEA_KEY, "_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"]
+            columns=cols_id + [LINEA_KEY, "_status", "_cve_prod_label", "cve_clie", "planta", "estatus_excel", "precio", "precio_venta"]
         )
         return pivot_vacio, {}, {}
 
@@ -500,7 +508,7 @@ def _construir_pivot(
 
     # row_meta: datos constantes por fila para insertar nuevos meses
     meta_cols = ["id_carga", "seccion", "region", "anio",
-                 "cve_prod", "estatus_excel", "precio", "precio_venta"] + grp
+                 "cve_prod", "cve_clie", "planta", "estatus_excel", "precio", "precio_venta"] + grp
     meta_cols = [c for c in meta_cols if c in df.columns]
     row_meta: dict = {}
     for _, row in df.iterrows():
@@ -509,7 +517,7 @@ def _construir_pivot(
             row_meta[key] = {c: row.get(c) for c in meta_cols}
 
     meta_map = df.groupby(grp, dropna=False)[
-        [c for c in ["precio", "precio_venta", "cve_prod", "estatus_excel"] if c in df.columns]
+        [c for c in ["precio", "precio_venta", "cve_prod", "cve_clie", "planta", "estatus_excel"] if c in df.columns]
     ].first().reset_index()
 
     pivot = df.pivot_table(
@@ -528,14 +536,14 @@ def _construir_pivot(
     def _status(cve):
         return "🟢" if str(cve or "").strip() in sae_set else "🟠"
 
-    def _label(cve):
-        code = str(cve or "").strip()
-        return code_to_label.get(code, code)  # fallback: raw code
-
     pivot["_status"] = pivot["cve_prod"].apply(_status) if "cve_prod" in pivot.columns else "🟠"
-    pivot["_cve_prod_label"] = pivot["cve_prod"].apply(_label) if "cve_prod" in pivot.columns else ""
+    # la columna de grilla solo muestra la clave — el nombre ya vive aparte en
+    # producto_excel, repetirlo ahí era redundante (código_to_label sigue
+    # usándose para el selector "producto SAE" del alta manual, donde sí
+    # ayuda a buscar)
+    pivot["_cve_prod_label"] = pivot["cve_prod"].fillna("").astype(str).str.strip() if "cve_prod" in pivot.columns else ""
 
-    col_order = cols_id + [LINEA_KEY, "_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"] + meses_presentes
+    col_order = cols_id + [LINEA_KEY, "_status", "_cve_prod_label", "cve_clie", "planta", "estatus_excel", "precio", "precio_venta"] + meses_presentes
     pivot = pivot[[c for c in col_order if c in pivot.columns]]
     return pivot, mapping, row_meta
 
@@ -611,10 +619,12 @@ def _agregar_totales_anio(pivote: pd.DataFrame) -> pd.DataFrame:
 
 _ENCABEZADOS_EXPORT = {
     "company": "Company",
-    "cliente_excel": "Cliente",
+    "cliente_excel": "Nombre Cliente",
+    "cve_clie": "Cve Cliente",
+    "planta": "Planta",
     "codigo_origen": "Código origen",
     "producto_excel": "Producto",
-    "_cve_prod_label": "Cve prod / SAE",
+    "_cve_prod_label": "Cve prod",
     "_status": "En catálogo SAE",
     "estatus_excel": "Estatus",
     "precio": "Precio USD/unidad",
@@ -643,7 +653,7 @@ def _pivot_a_excel_bytes(hojas: list[tuple[str, str, pd.DataFrame]]) -> bytes:
 
         cols_id = [c for c in _COLS_ID if c in df_export.columns]
         meses = [m for m in _MESES.values() if m in df_export.columns]
-        col_order = cols_id + ["_cve_prod_label", "_status", "estatus_excel", "precio", "precio_venta"] + meses
+        col_order = cols_id + ["_cve_prod_label", "cve_clie", "planta", "_status", "estatus_excel", "precio", "precio_venta"] + meses
         df_export = df_export[[c for c in col_order if c in df_export.columns]]
 
         columnas = list(df_export.columns)
@@ -882,6 +892,8 @@ def _guardar_pivot(
         if es_nueva:
             meta["cve_prod"] = cve_edit_cod
             meta["cve_linea"] = cve_linea_edit
+            meta["cve_clie"] = edited.iloc[i].get("cve_clie") or None
+            meta["planta"] = edited.iloc[i].get("planta") or None
             meta["estatus_excel"] = estatus_edit or None
         else:
             cve_orig_lbl = str(orig.iloc[i].get("_cve_prod_label") or "")
@@ -962,6 +974,8 @@ def _guardar_pivot(
                     "linea_uid": str(meta.get(LINEA_KEY) or ""),
                     "cve_prod": meta.get("cve_prod") or None,
                     "cve_linea": meta.get("cve_linea") or None,
+                    "cve_clie": meta.get("cve_clie") or None,
+                    "planta": meta.get("planta") or None,
                     "estatus_excel": meta.get("estatus_excel") or None,
                     "precio": precio_final,
                     "precio_venta": precio_venta_final,
@@ -996,11 +1010,12 @@ def _guardar_pivot(
 
 # ── panel: selector de carga ──────────────────────────────────────────────────
 
-def _selector_carga() -> Optional[int]:
+def _selector_carga(container=None) -> Optional[int]:
+    container = container if container is not None else st
     df = obtener_cargas_presupuesto_ventas_ctrl(limit=50, usuario_id=_get_usuario_id())
 
     if df is None or df.empty:
-        st.info("aún no hay presupuestos cargados")
+        container.info("aún no hay presupuestos cargados")
         return None
 
     opciones = {
@@ -1011,7 +1026,7 @@ def _selector_carga() -> Optional[int]:
     default = st.session_state.get("pv_id_carga")
     idx = next((i for i, l in enumerate(labels) if opciones[l] == default), 0)
 
-    label = st.selectbox("presupuesto", options=labels, index=idx, key="pv_select_carga")
+    label = container.selectbox("presupuesto", options=labels, index=idx, key="pv_select_carga")
     id_carga = opciones[label]
     st.session_state["pv_id_carga"] = id_carga
     return id_carga
@@ -1188,6 +1203,7 @@ def _form_agregar_registro(
     sae_set: set,
     clientes_set: set,
     clientes_opciones: list[str],
+    label_to_partes_cliente: dict,
 ) -> None:
     prefix = f"pv_man_{seccion}_{region}_{id_carga}"
     with st.expander("➕ agregar registro"):
@@ -1329,17 +1345,27 @@ def _form_agregar_registro(
                 )
                 return
             code = label_to_code.get(cve_label, cve_label.strip() or None)
+            # si el texto de "cliente" coincide con un cliente de SAE (se
+            # capturó igual al elegirlo del selector, "clave - nombre -
+            # calle"), se separa en sus 3 columnas reales; si es texto libre
+            # (Not in BGT / Prospecto sin match en SAE) solo se guarda el
+            # nombre, sin clave ni planta.
+            _cve_clie_val, _nombre_cliente_val, _planta_val = label_to_partes_cliente.get(
+                cliente.strip(), (None, cliente.strip(), None)
+            )
             fila = {c: "" for c in cols_id}
             fila.update({
                 "company": company.strip(),
-                "cliente_excel": cliente.strip(),
+                "cliente_excel": _nombre_cliente_val,
+                "cve_clie": _cve_clie_val,
+                "planta": _planta_val,
                 "codigo_origen": codigo_origen.strip(),
                 "producto_excel": producto_excel.strip(),
                 # cada línea capturada a mano es independiente aunque comparta
                 # producto/cliente con otra
                 LINEA_KEY: uuid.uuid4().hex,
                 "_status": "🟢" if code in sae_set else "🟠",
-                "_cve_prod_label": code_to_label.get(code, "") if code else "",
+                "_cve_prod_label": code or "",
                 "estatus_excel": estatus_excel,
                 "precio": float(precio),
                 "precio_venta": float(precio_venta),
@@ -1467,15 +1493,11 @@ def _panel_comparacion_sae_ventas(
             df_pv["_presupuesto_kg"] = 0.0
             df_pv["_presupuesto_usd"] = suma_meses
 
-        df_pv["_cve_art"] = df_pv.get("_cve_prod_label", "").astype(str).map(
-            lambda lbl: label_to_code.get(lbl, "") or ""
-        )
-
-        def _cve_clie_de(v) -> str:
-            v = str(v or "").strip()
-            return v.split(" - ", 1)[0].strip() if v in clientes_set and " - " in v else ""
-
-        df_pv["_cve_clie"] = df_pv.get("cliente_excel", "").apply(_cve_clie_de)
+        # _cve_prod_label ya es la clave sola (ver _construir_pivot) y cve_clie
+        # viene directo de su propia columna (ver _construir_pivot/_guardar_pivot)
+        # — antes se re-derivaban parseando texto combinado, ya no hace falta.
+        df_pv["_cve_art"] = df_pv.get("_cve_prod_label", "").astype(str).str.strip()
+        df_pv["_cve_clie"] = df_pv.get("cve_clie", "").astype(str).str.strip()
 
         grp_pv = df_pv.groupby(["_cve_art", "_cve_clie"], as_index=False).agg(
             producto=("producto_excel", "first"),
@@ -1752,15 +1774,9 @@ def _tabla_filtrada_presupuesto(
         df["total_usd_anio"] = suma_meses
 
     # venta real de Aspel SAE mes a mes — cruza por cliente + producto SAE
-    df["_cve_art"] = df.get("_cve_prod_label", "").astype(str).map(
-        lambda lbl: label_to_code.get(lbl, "") or ""
-    )
-
-    def _cve_clie_de(v) -> str:
-        v = str(v or "").strip()
-        return v.split(" - ", 1)[0].strip() if v in clientes_set and " - " in v else ""
-
-    df["_cve_clie"] = df.get("cliente_excel", "").apply(_cve_clie_de)
+    # (_cve_prod_label ya es la clave sola, cve_clie viene de su propia columna)
+    df["_cve_art"] = df.get("_cve_prod_label", "").astype(str).str.strip()
+    df["_cve_clie"] = df.get("cve_clie", "").astype(str).str.strip()
 
     col_real = "cantidad" if seccion == "KG" else "importe"
     real_por_mes: dict[int, dict] = {}
@@ -1831,7 +1847,7 @@ def _tabla_filtrada_presupuesto(
 
 # ── panel: tabla pivot ────────────────────────────────────────────────────────
 
-def _panel_pivot(id_carga: int) -> None:
+def _panel_pivot(id_carga: int, col_generar=None, col_descargar=None) -> None:
     df_all = obtener_presupuesto_ventas_ctrl(id_carga=id_carga)
     if df_all is None:
         df_all = pd.DataFrame()
@@ -1863,7 +1879,7 @@ def _panel_pivot(id_carga: int) -> None:
 
     # catálogo SAE (cacheado 1 hora)
     sae_set, code_to_label, label_to_code, code_to_desc, code_to_precio, code_to_linea, code_to_origen, code_to_unidad, sae_opciones = _catalogo_sae()
-    clientes_set, clientes_opciones = _catalogo_clientes_sae()
+    clientes_set, clientes_opciones, label_to_partes_cliente = _catalogo_clientes_sae()
 
     if "anio" in df_all.columns and not df_all.empty:
         anio_actual = int(df_all["anio"].iloc[0])
@@ -1874,9 +1890,11 @@ def _panel_pivot(id_carga: int) -> None:
     # capturar cualquier mes al agregar o completar un registro
     meses_todos = list(_MESES.values())
 
-    col_exp1, col_exp2 = st.columns([1, 3])
-    with col_exp1:
-        export_key = f"pv_export_bytes_{id_carga}"
+    col_generar = col_generar if col_generar is not None else st
+    col_descargar = col_descargar if col_descargar is not None else st
+
+    export_key = f"pv_export_bytes_{id_carga}"
+    with col_generar:
         if st.button("📊 generar Excel", key=f"pv_export_gen_{id_carga}", use_container_width=True):
             hojas = []
             for label, seccion, region in _TABS_PIVOT:
@@ -1887,10 +1905,18 @@ def _panel_pivot(id_carga: int) -> None:
                     mask &= df_all["region"].astype(str) == region
                 df_sec_exp = df_all[mask].copy()
                 pivot_exp, _, _ = _construir_pivot(df_sec_exp, sae_set, code_to_label)
+                # _construir_pivot solo genera columna para los meses que ya
+                # tienen algún registro en BD — si ningún producto tiene datos
+                # en, p.ej., enero, la columna "ene" no existe. El Excel debe
+                # traer los 12 meses siempre, con o sin datos.
+                for m in meses_todos:
+                    if m not in pivot_exp.columns:
+                        pivot_exp[m] = 0.0
                 hojas.append((label, seccion, pivot_exp))
             st.session_state[export_key] = _pivot_a_excel_bytes(hojas)
 
-        if st.session_state.get(export_key):
+    if st.session_state.get(export_key):
+        with col_descargar:
             st.download_button(
                 "⬇️ descargar Excel",
                 data=st.session_state[export_key],
@@ -1944,7 +1970,7 @@ def _panel_pivot(id_carga: int) -> None:
                         pivot_db[m] = 0.0
 
                 col_order = (
-                    cols_id_reload + [LINEA_KEY, "_status", "_cve_prod_label", "estatus_excel", "precio", "precio_venta"] + meses_todos
+                    cols_id_reload + [LINEA_KEY, "_status", "_cve_prod_label", "cve_clie", "planta", "estatus_excel", "precio", "precio_venta"] + meses_todos
                 )
                 pivot_db = pivot_db[[c for c in col_order if c in pivot_db.columns]]
                 pivot_db["_nueva"] = False
@@ -2011,6 +2037,7 @@ def _panel_pivot(id_carga: int) -> None:
                 sae_set=sae_set,
                 clientes_set=clientes_set,
                 clientes_opciones=clientes_opciones,
+                label_to_partes_cliente=label_to_partes_cliente,
             )
 
             work_df = st.session_state[work_key]
@@ -2090,9 +2117,10 @@ def _panel_pivot(id_carga: int) -> None:
             # o ventanas angostas AG Grid las comprimía a un mínimo compartido
             # (~36px, ilegibles) para que alcanzaran a caber todas
             _COLS_FIJAS = {"producto_excel", "cliente_excel"}
+            _HEADER_OVERRIDES = {"cliente_excel": "nombre cliente"}
             for c in cols_id:
                 col_kwargs = dict(
-                    headerName=c.replace("_excel", "").replace("_", " "),
+                    headerName=_HEADER_OVERRIDES.get(c, c.replace("_excel", "").replace("_", " ")),
                     editable=False if c in _CAMPOS_ID_BLOQUEADOS else editable_no_congelada,
                     width=130,
                     pinned="left" if c in _COLS_FIJAS else False,
@@ -2105,6 +2133,14 @@ def _panel_pivot(id_carga: int) -> None:
             gb.configure_column("_nueva", hide=True)
             gb.configure_column("_estatus_linea", hide=True)
             gb.configure_column(LINEA_KEY, hide=True)
+            # clave y planta del cliente: se separan de "nombre cliente" para no
+            # repetir el texto combinado en una sola celda — se fijan al elegir
+            # el cliente SAE al agregar el registro, no se reasignan después
+            gb.configure_column("cve_clie", headerName="cve cliente", editable=False, width=100)
+            gb.configure_column(
+                "planta", headerName="planta", editable=False, width=200,
+                hide=_columna_vacia("planta"),
+            )
             gb.configure_column(
                 "_estatus_linea_badge", headerName="autorización", editable=False, width=120,
                 headerTooltip="🔵 captura  |  🟡 enviada (esperando autorización)  |  🟢 autorizada  |  🔴 rechazada",
@@ -3401,14 +3437,16 @@ def mostrar_modulo_presupuesto_ventas() -> None:
         sub_ventas, sub_compras = st.tabs(["Ventas", "Compras"])
         with sub_ventas:
             _panel_crear_manual()
-            id_carga = _selector_carga()
+            col_sel, col_gen, col_desc = st.columns([3, 1, 1])
+            id_carga = _selector_carga(col_sel)
             if id_carga is not None:
-                _panel_pivot(id_carga)
+                _panel_pivot(id_carga, col_generar=col_gen, col_descargar=col_desc)
         with sub_compras:
             _panel_crear_manual_compras()
-            id_carga_compras = _selector_carga_compras()
+            col_sel_c, col_gen_c, col_desc_c = st.columns([3, 1, 1])
+            id_carga_compras = _selector_carga_compras(col_sel_c)
             if id_carga_compras is not None:
-                _panel_pivot_compras(id_carga_compras)
+                _panel_pivot_compras(id_carga_compras, col_generar=col_gen_c, col_descargar=col_desc_c)
 
     with tab_cargas:
         sub_ventas, sub_compras = st.tabs(["Ventas", "Compras"])

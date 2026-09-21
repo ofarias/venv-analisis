@@ -352,12 +352,20 @@ def _mes_desde_datetime(v: Any) -> int | None:
 def _detectar_formato_vendedor(df: pd.DataFrame) -> str:
     """
     Scan up to 40 rows to identify the vendedor format.
-    Returns: 'alimentos', 'baking', 'juice', 'brewing_dp3', or 'standard'
+    Returns: 'alimentos', 'baking', 'juice', 'brewing_dp3', 'rogelio',
+    'reimport' or 'standard'
     """
     for i in range(min(len(df), 40)):
         row = df.iloc[i].tolist()
         str_set = {_norm(v) for v in row if pd.notna(v) and _txt(v)}
         has_dt = any(_es_datetime(v) for v in row)
+
+        # REIMPORT: mismo Excel que genera el botón "generar Excel" de la
+        # pantalla de captura (encabezados de nombre fijo, ver
+        # _ENCABEZADOS_EXPORT en presupuesto_ventas_view.py) — se checa antes
+        # que nada porque su combinación de encabezados es única.
+        if {"NOMBRE CLIENTE", "CVE PROD", "PRECIO VENTA"} <= str_set:
+            return "reimport"
 
         # ALIMENTOS: datetime month columns + "CODIGO UNIVERSAL" or "MATERIAL" in same header row
         if has_dt:
@@ -402,6 +410,7 @@ def _base_reg(
     valor: float,
     estatus_excel: str | None,
     fila_excel: int,
+    precio_venta: float = 0.0,
 ) -> dict:
     cantidad_kg = valor if seccion == "KG" else 0.0
     importe = valor if seccion == "USD" else round(valor * precio, 2)
@@ -415,6 +424,7 @@ def _base_reg(
         "cliente_excel": cliente_excel or None,
         "codigo_origen": codigo_origen or None,
         "cve_prod": cve_prod or None,
+        "precio_venta": precio_venta or 0.0,
         "vendedor_excel": None,
         "unidad_negocio_excel": None,
         "linea_excel": None,
@@ -913,6 +923,98 @@ def _parsear_rogelio(df: pd.DataFrame, anio: int) -> pd.DataFrame:
     return _dedup_vendedor(registros)
 
 
+# ---------------------------------------------------------------------------
+# REIMPORT (mismo formato que genera el botón "generar Excel" de la pantalla
+# de captura — permite editar el presupuesto ya cargado fuera de la app y
+# volver a subirlo)
+# ---------------------------------------------------------------------------
+
+_ENCABEZADOS_REIMPORT = {
+    "COMPANY": "company",
+    "NOMBRE CLIENTE": "cliente_excel",
+    "CÓDIGO ORIGEN": "codigo_origen",
+    "CODIGO ORIGEN": "codigo_origen",  # por si se pierde el acento al reabrir/guardar
+    "PRODUCTO": "producto_excel",
+    "CVE PROD": "cve_prod",
+    "ESTATUS": "estatus_excel",
+    "PRECIO USD/UNIDAD": "precio",
+    "PRECIO VENTA": "precio_venta",
+}
+
+
+def _fila_header_reimport(row_values: list[Any]) -> bool:
+    str_set = {_norm(v) for v in row_values if pd.notna(v) and _txt(v)}
+    return {"NOMBRE CLIENTE", "CVE PROD", "PRECIO VENTA"} <= str_set
+
+
+def _parsear_reimport(df: pd.DataFrame, anio: int) -> pd.DataFrame:
+    """
+    Tabla plana con encabezados de nombre fijo (ver _ENCABEZADOS_REIMPORT),
+    sin bloques de sección/región — esta carga por ahora solo maneja
+    KG/MEXICO (ver _TABS_PIVOT en presupuesto_ventas_view.py), así que se fija
+    directo. cve_clie y planta del archivo se ignoran a propósito: se
+    re-resuelven contra SAE en la validación de staging (igual que cualquier
+    otro formato), así quedan actualizados aunque el archivo esté viejo.
+    """
+    header_i = None
+    for i in range(min(len(df), 10)):
+        if _fila_header_reimport(df.iloc[i].tolist()):
+            header_i = i
+            break
+
+    if header_i is None:
+        return pd.DataFrame()
+
+    header_values = df.iloc[header_i].tolist()
+    col_map: dict[str, int] = {}
+    meses_cols: list[tuple[int, int]] = []
+    for idx, val in enumerate(header_values):
+        norm = _norm(val)
+        if norm in _ENCABEZADOS_REIMPORT:
+            col_map[_ENCABEZADOS_REIMPORT[norm]] = idx
+            continue
+        mes = _detectar_mes(val)
+        if mes:
+            meses_cols.append((idx, mes))
+
+    if "producto_excel" not in col_map or not meses_cols:
+        return pd.DataFrame()
+
+    registros: list[dict] = []
+    for row_i in range(header_i + 1, len(df)):
+        row = df.iloc[row_i].tolist()
+        producto = _txt(_obtener(row, col_map.get("producto_excel")))
+        if not producto:
+            break
+
+        company = _txt(_obtener(row, col_map.get("company")))
+        cliente = _txt(_obtener(row, col_map.get("cliente_excel")))
+        codigo_origen = _txt(_obtener(row, col_map.get("codigo_origen")))
+        cve_prod = _txt(_obtener(row, col_map.get("cve_prod")))
+        estatus = _txt(_obtener(row, col_map.get("estatus_excel")))
+        precio = _float(_obtener(row, col_map.get("precio")))
+        precio_venta = _float(_obtener(row, col_map.get("precio_venta")))
+
+        for col_idx, mes in meses_cols:
+            valor = _float(_obtener(row, col_idx))
+            if valor == 0:
+                continue
+            registros.append(_base_reg(
+                seccion="KG", region="MEXICO", anio=anio, mes=mes,
+                company=company or None,
+                cliente_excel=cliente or None,
+                codigo_origen=codigo_origen or None,
+                cve_prod=cve_prod or None,
+                producto_excel=producto,
+                precio=precio, valor=valor,
+                estatus_excel=estatus or None,
+                fila_excel=row_i + 1,
+                precio_venta=precio_venta,
+            ))
+
+    return _dedup_vendedor(registros)
+
+
 def normalizar_presupuesto_vendedor_excel(
     archivo,
     hoja: str,
@@ -930,6 +1032,7 @@ def normalizar_presupuesto_vendedor_excel(
         "juice":       _parsear_juice,
         "brewing_dp3": _parsear_brewing_dp3,
         "rogelio":     _parsear_rogelio,
+        "reimport":    _parsear_reimport,
     }
 
     fn = parsers.get(formato)
@@ -963,6 +1066,7 @@ def normalizar_presupuesto_excel_auto(
         "juice":       _parsear_juice,
         "brewing_dp3": _parsear_brewing_dp3,
         "rogelio":     _parsear_rogelio,
+        "reimport":    _parsear_reimport,
     }
 
     fn = parsers[formato]

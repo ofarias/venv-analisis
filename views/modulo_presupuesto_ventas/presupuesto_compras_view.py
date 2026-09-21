@@ -789,11 +789,12 @@ def _guardar_pivot(
 
 # ── panel: selector de carga ──────────────────────────────────────────────────
 
-def _selector_carga() -> Optional[int]:
+def _selector_carga(container=None) -> Optional[int]:
+    container = container if container is not None else st
     df = obtener_cargas_presupuesto_compras_ctrl(limit=50, usuario_id=_get_usuario_id())
 
     if df is None or df.empty:
-        st.info("aún no hay presupuestos cargados")
+        container.info("aún no hay presupuestos cargados")
         return None
 
     opciones = {
@@ -804,7 +805,7 @@ def _selector_carga() -> Optional[int]:
     default = st.session_state.get("pc_id_carga")
     idx = next((i for i, l in enumerate(labels) if opciones[l] == default), 0)
 
-    label = st.selectbox("presupuesto", options=labels, index=idx, key="pc_select_carga")
+    label = container.selectbox("presupuesto", options=labels, index=idx, key="pc_select_carga")
     id_carga = opciones[label]
     st.session_state["pc_id_carga"] = id_carga
     return id_carga
@@ -1213,7 +1214,7 @@ def _panel_resumen_captura(
 
 # ── panel: tabla pivot ────────────────────────────────────────────────────────
 
-def _panel_pivot(id_carga: int) -> None:
+def _panel_pivot(id_carga: int, col_generar=None, col_descargar=None) -> None:
     df_all = obtener_presupuesto_compras_ctrl(id_carga=id_carga)
     if df_all is None:
         df_all = pd.DataFrame()
@@ -1256,9 +1257,11 @@ def _panel_pivot(id_carga: int) -> None:
     # capturar cualquier mes al agregar o completar un registro
     meses_todos = list(_MESES.values())
 
-    col_exp1, col_exp2 = st.columns([1, 3])
-    with col_exp1:
-        export_key = f"pc_export_bytes_{id_carga}"
+    col_generar = col_generar if col_generar is not None else st
+    col_descargar = col_descargar if col_descargar is not None else st
+
+    export_key = f"pc_export_bytes_{id_carga}"
+    with col_generar:
         if st.button("📊 generar Excel", key=f"pc_export_gen_{id_carga}", use_container_width=True):
             hojas = []
             for label, seccion, region in _TABS_PIVOT:
@@ -1271,10 +1274,18 @@ def _panel_pivot(id_carga: int) -> None:
                 # de la fila (ver _COLS_ID)
                 df_sec_exp = df_all[mask].copy()
                 pivot_exp, _, _ = _construir_pivot(df_sec_exp, sae_set, code_to_label)
+                # _construir_pivot solo genera columna para los meses que ya
+                # tienen algún registro en BD — si ningún producto tiene datos
+                # en, p.ej., enero, la columna "ene" no existe. El Excel debe
+                # traer los 12 meses siempre, con o sin datos.
+                for m in meses_todos:
+                    if m not in pivot_exp.columns:
+                        pivot_exp[m] = 0.0
                 hojas.append((label, seccion, pivot_exp))
             st.session_state[export_key] = _pivot_a_excel_bytes(hojas)
 
-        if st.session_state.get(export_key):
+    if st.session_state.get(export_key):
+        with col_descargar:
             st.download_button(
                 "⬇️ descargar Excel",
                 data=st.session_state[export_key],

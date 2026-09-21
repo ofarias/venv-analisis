@@ -191,6 +191,7 @@ def insertar_staging_presupuesto_ventas_model(
     mes: int,
     cantidad_kg: float,
     importe: float,
+    precio_venta: float | None = None,
     seccion: str | None = None,
     region: str | None = None,
     estatus_excel: str | None = None,
@@ -232,6 +233,7 @@ def insertar_staging_presupuesto_ventas_model(
                 linea_excel,
                 producto_excel,
                 precio,
+                precio_venta,
                 anio,
                 mes,
                 cantidad_kg,
@@ -245,11 +247,11 @@ def insertar_staging_presupuesto_ventas_model(
                 id_producto,
                 estatus_match,
                 observaciones
-            )       
+            )
             values (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
         """
         cur.execute(
@@ -269,6 +271,7 @@ def insertar_staging_presupuesto_ventas_model(
                 str(linea_excel).strip() if linea_excel else None,
                 str(producto_excel).strip(),
                 float(precio or 0),
+                float(precio_venta or 0),
                 int(anio),
                 int(mes),
                 float(cantidad_kg or 0),
@@ -301,6 +304,7 @@ def actualizar_match_staging_presupuesto_ventas_model(
     id_producto: int | None = None,
     cve_prod: str | None = None,
     cve_clie: str | None = None,
+    planta: str | None = None,
     cve_vend: str | None = None,
     cve_linea: str | None = None,
     cliente_excel: str | None = None,
@@ -341,6 +345,10 @@ def actualizar_match_staging_presupuesto_ventas_model(
         if cve_clie is not None:
             sets.append("cve_clie = %s")
             params.append(str(cve_clie).strip() if cve_clie else None)
+
+        if planta is not None:
+            sets.append("planta = %s")
+            params.append(str(planta).strip() if planta else None)
 
         if cve_vend is not None:
             sets.append("cve_vend = %s")
@@ -412,6 +420,7 @@ def obtener_staging_presupuesto_ventas_model(
                 linea_excel,
                 producto_excel,
                 precio,
+                precio_venta,
                 anio,
                 mes,
                 cantidad_kg,
@@ -425,6 +434,7 @@ def obtener_staging_presupuesto_ventas_model(
                 id_producto,
                 cve_prod,
                 cve_clie,
+                planta,
                 cve_vend,
                 cve_linea,
                 estatus_match,
@@ -613,10 +623,12 @@ def insertar_presupuesto_desde_staging_model(
                 id_producto,
                 cve_prod,
                 cve_clie,
+                planta,
                 cve_vend,
                 cve_linea,
                 cantidad_kg,
                 precio,
+                precio_venta,
                 importe,
                 valor,
                 company,
@@ -642,10 +654,12 @@ def insertar_presupuesto_desde_staging_model(
                 s.id_producto,
                 s.cve_prod,
                 s.cve_clie,
+                s.planta,
                 s.cve_vend,
                 s.cve_linea,
                 s.cantidad_kg,
                 s.precio,
+                s.precio_venta,
                 s.importe,
                 s.valor,
                 s.company,
@@ -1140,10 +1154,12 @@ def actualizar_cve_prod_presupuesto_ventas_model(
 
 
 def _cve_clie_desde_cliente_excel(cliente_excel) -> str | None:
-    """La captura manual guarda cliente_excel ya con el formato "clave - nombre -
-    estado" que trae el selector de clientes SAE (ver _catalogo_clientes_sae en
-    presupuesto_ventas_view.py) — se extrae la clave de ahí para llenar cve_clie,
-    que antes se quedaba vacío en los registros capturados a mano."""
+    """Fallback si el llamador no manda cve_clie explícito: la captura manual
+    guardaba cliente_excel con el formato "clave - nombre - calle" que traía
+    el selector de clientes SAE (ver _catalogo_clientes_sae en
+    presupuesto_ventas_view.py), así que se puede extraer la clave de ahí.
+    Desde que la vista separa clave/nombre/planta en sus propias columnas,
+    esto ya casi no debería activarse."""
     texto = str(cliente_excel or "").strip()
     if " - " not in texto:
         return None
@@ -1179,11 +1195,11 @@ def guardar_presupuesto_ventas_batch_model(
             sql_insert = """
                 insert into presupuesto_ventas (
                     id_carga, seccion, region, estatus_excel,
-                    company, cliente_excel, codigo_origen, cve_clie, cve_prod, cve_linea, producto_excel,
+                    company, cliente_excel, codigo_origen, cve_clie, planta, cve_prod, cve_linea, producto_excel,
                     linea_uid,
                     precio, precio_venta, anio, mes, valor, cantidad_kg, importe,
                     estatus, usuario_id
-                ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
+                ) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'activo',%s)
             """
             rows = [
                 (
@@ -1194,7 +1210,8 @@ def guardar_presupuesto_ventas_batch_model(
                     str(r.get("company")).strip() if r.get("company") else None,
                     str(r.get("cliente_excel")).strip() if r.get("cliente_excel") else None,
                     str(r.get("codigo_origen")).strip() if r.get("codigo_origen") else None,
-                    _cve_clie_desde_cliente_excel(r.get("cliente_excel")),
+                    str(r.get("cve_clie")).strip() if r.get("cve_clie") else _cve_clie_desde_cliente_excel(r.get("cliente_excel")),
+                    str(r.get("planta")).strip() if r.get("planta") else None,
                     str(r.get("cve_prod")).strip() if r.get("cve_prod") else None,
                     str(r.get("cve_linea")).strip() if r.get("cve_linea") else None,
                     str(r.get("producto_excel") or "").strip(),
