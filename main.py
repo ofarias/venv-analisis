@@ -255,6 +255,17 @@ else:
         menu_opciones["Solicitudes"] = "solicitudes"
         menu_opciones["Compras"] = "compras"
 
+    # Ventas x Unidad de Negocio (migrado del PHP legado) — acceso directo por
+    # rol, sin depender de los bloques de arriba (que usan los roles "legacy"
+    # tipo "Ventas"/"Admin"): así entran igual jefe/supervisor/gerente de
+    # ventas aunque no tengan asignado el rol legacy "Ventas".
+    _roles_norm_vxun = {str(r).strip().lower() for r in (roles or [])}
+    if _roles_norm_vxun & {
+        "ventas", "jefe de ventas", "supervisor de ventas",
+        "gerente de ventas", "admin", "superadmin",
+    }:
+        menu_opciones["📊 Ventas x Unidad de Negocio"] = "ventas_x_un"
+
     if "Formulas" in roles:
         menu_opciones["Formulas"] = "formulas"
     
@@ -393,6 +404,9 @@ else:
         elif modulo =="presupuestos_ventas":
             from views.modulo_presupuesto_ventas.presupuesto_ventas_view import mostrar_modulo_presupuesto_ventas
             mostrar_modulo_presupuesto_ventas()
+        elif modulo == "ventas_x_un":
+            from views.modulo_ventas_x_un.ventas_x_un_view import mostrar_modulo_ventas_x_un
+            mostrar_modulo_ventas_x_un()
         elif modulo =="formulas":
             from views.modulo_formulas.formulas_view import mostrar_modulo_formulas
             mostrar_modulo_formulas()
