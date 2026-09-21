@@ -110,6 +110,33 @@ def obtener_datoscfd_mysql_df(
     return df
 
 
+def obtener_conceptos_mysql_por_id_doctodig(id_doctodig: int) -> pd.DataFrame:
+    """Conceptos de CONCEPTOS (mysql) para un documento, con las mismas columnas
+    que devuelve obtener_conceptos_por_documento() de ADA (Firebird)."""
+    conn = obtener_conexion()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT
+                CLAVEPRODSERV, NO_IDENTIFICACION, DESCRIPCION,
+                CANTIDAD, CLAVEUNIDAD, UNIDAD,
+                VALORUNITARIO, DESCUENTO, IMPORTE,
+                OBJETOIMP, BASE_IVA, IVA, IEPS, IVA_RET, IEPS_RET, ISR
+            FROM CONCEPTOS
+            WHERE ID_DOCTODIG = %s
+            ORDER BY ID
+            """,
+            (int(id_doctodig),),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
 def obtener_detalle_datoscfd_mysql_df(
     id_docto_dig:int,
     uuid: Optional[str] = None,

@@ -9,8 +9,8 @@ from models.conta45_model import insertar_poliza_y_auxiliares
 from views.modulo_auxiliar_contable.tab_ada_insertaSAE_view import insertarSAE
 from controllers.ada_controller import (
     cargar_tipos,
-    cargar_documentos,
-    contar_documentos_cached,
+    cargar_documentos_con_mysql,
+    contar_documentos_combinado,
     exportar_excel,
     cargar_proveedores_activos,
     cargar_paga_por_fecha,     # snapshots sae por rango de fechas
@@ -100,7 +100,7 @@ def pantalla_documentos_ada():
 
         # contar
         try:
-            total = contar_documentos_cached(st.secrets, filtros)
+            total = contar_documentos_combinado(st.secrets, filtros)
         except Exception as e:
             st.error(f"error al contar documentos: {e}")
             return
@@ -118,9 +118,9 @@ def pantalla_documentos_ada():
 
         page_size = total if page_size_opt == "Todas" else int(page_size_opt)
 
-        # cargar ada
+        # cargar ada + mysql (unificado por uuid, prefiriendo ada)
         try:
-            df = cargar_documentos(st.secrets, filtros, page, page_size)
+            df = cargar_documentos_con_mysql(st.secrets, filtros, page, page_size)
         except Exception as e:
             st.error(f"error al cargar documentos: {e}")
             return
@@ -396,7 +396,7 @@ def pantalla_documentos_ada():
         visible_cols = [
             "DESTINO_SAE", "INSERTAR", "FECHA_EMISION", "CVE_PROV_MATCH", "CLAVE_PROV_SAE", "RFC_EMISOR", "NOMBRE_EMISOR", "SERIE", "FOLIO",
             "MONEDA", "TOTAL", "TIPOCAMBIO", "TOTAL_MXN", "USOCFDI_", "UUID",
-            "EN_SAE", "REFER_SAE", "NO_FACTURA_SAE", "ID_DOCTODIG"
+            "EN_SAE", "REFER_SAE", "NO_FACTURA_SAE", "ID_DOCTODIG", "FUENTE"
         ]
         visible_cols = [c for c in visible_cols if c in df_cmp.columns]
 
@@ -484,10 +484,14 @@ def pantalla_documentos_ada():
                     st.warning("no hay documentos para exportar con los filtros actuales.")
                 else:
                     all_conceptos = []
-                    for id_doc in docs_df["ID_DOCTODIG"].unique():
-                        det = cargar_conceptos_por_documento(st.secrets, int(id_doc))
+                    cols_clave = ["ID_DOCTODIG", "FUENTE"] if "FUENTE" in docs_df.columns else ["ID_DOCTODIG"]
+                    for _, clave in docs_df[cols_clave].drop_duplicates().iterrows():
+                        id_doc = int(clave["ID_DOCTODIG"])
+                        fuente_doc = clave.get("FUENTE")
+                        det = cargar_conceptos_por_documento(st.secrets, id_doc, fuente=fuente_doc)
                         if not det.empty:
-                            det["ID_DOCTODIG"] = int(id_doc)
+                            det["ID_DOCTODIG"] = id_doc
+                            det["FUENTE"] = fuente_doc
                             all_conceptos.append(det)
 
                     if not all_conceptos:
@@ -526,17 +530,29 @@ def pantalla_documentos_ada():
 
         if not df_cmp.empty:
             lista_docs = (
-                df_cmp[["ID_DOCTODIG", "UUID", "NOMBRE_EMISOR", "FOLIO"]]
+                df_cmp[["UUID", "NOMBRE_EMISOR", "FOLIO", "ID_DOCTODIG"]]
                 .astype(str)
-                .apply(lambda x: f"{x['ID_DOCTODIG']} | {x['NOMBRE_EMISOR']} | folio {x['FOLIO']} | {x['UUID']}", axis=1)
+                .apply(lambda x: f"{x['UUID']} | {x['NOMBRE_EMISOR']} | folio {x['FOLIO']} | doc {x['ID_DOCTODIG']}", axis=1)
                 .tolist()
             )
 
             sel_doc = st.selectbox("selecciona un documento", options=lista_docs, key="docs_sel_doc_conceptos")
 
+            fila_doc = pd.DataFrame()
             if sel_doc:
-                id_docto_dig = int(sel_doc.split("|")[0].strip())
-                df_det = cargar_conceptos_por_documento(st.secrets, id_docto_dig)
+                uuid_sel = sel_doc.split("|")[0].strip().upper()
+                # UUID es único tras el merge (ada+mysql se deduplican por _UUID_NORM),
+                # a diferencia de ID_DOCTODIG que es un autoincremental independiente
+                # en cada fuente y puede repetirse entre ada y mysql.
+                fila_doc = df_cmp[df_cmp["UUID"].astype(str).str.strip().str.upper() == uuid_sel]
+
+            if fila_doc.empty:
+                st.info("no se encontró el documento seleccionado.")
+            else:
+                row_sel = fila_doc.iloc[0]
+                id_docto_dig = int(row_sel["ID_DOCTODIG"])
+                fuente_sel = row_sel.get("FUENTE") if "FUENTE" in df_cmp.columns else None
+                df_det = cargar_conceptos_por_documento(st.secrets, id_docto_dig, fuente=fuente_sel)
 
                 if df_det.empty:
                     st.info("no se encontraron conceptos para este documento.")
@@ -575,69 +591,66 @@ def pantalla_documentos_ada():
 
                     st.markdown("### conceptos sae detectados para este documento")
 
-                    fila_doc = df_cmp[df_cmp["ID_DOCTODIG"] == id_docto_dig]
-                    if fila_doc.empty:
-                        st.info("no se encontró el documento en el dataframe base.")
-                    else:
-                        r = fila_doc.iloc[0]
-                        col_uso_local = next(
-                            (c for c in ["uso_cfdi", "USO_CFDI", "USOCFDI", "USOCFDI_"] if c in fila_doc.columns),
-                            None,
+                    # ya tenemos la fila correcta en row_sel (localizada por uuid arriba)
+                    r = row_sel
+                    col_uso_local = next(
+                        (c for c in ["uso_cfdi", "USO_CFDI", "USOCFDI", "USOCFDI_"] if c in fila_doc.columns),
+                        None,
+                    )
+                    uso_cfdi_val = str(r.get(col_uso_local, "") or "").strip()
+
+                    rfc_receptor = str(r.get("RFC_RECEPTOR", "") or "").strip()
+                    clave_prov = str(r.get("CVE_PROV_MATCH", "") or "").strip()
+                    serie = str(r.get("SERIE", "") or "").strip()
+                    folio_doc = str(r.get("FOLIO", "") or "").strip()
+                    total_mxn = r.get("TOTAL_MXN", 0.0)
+                    try:
+                        total_mxn = float(str(total_mxn).replace(",", "").replace("$", ""))
+                    except Exception:
+                        total_mxn = 0.0
+
+                    try:
+                        res_cptos = buscar_en_paga_g03(
+                            st.secrets,
+                            uso_cfdi_val,
+                            rfc_receptor,
+                            clave_prov,
+                            serie,
+                            folio_doc,
+                            total_mxn,
                         )
-                        uso_cfdi_val = str(r.get(col_uso_local, "") or "").strip()
+                    except Exception as e:
+                        st.error(f"error al detectar conceptos en sae: {e}")
+                        res_cptos = None
 
-                        rfc_receptor = str(r.get("RFC_RECEPTOR", "") or "").strip()
-                        clave_prov = str(r.get("CVE_PROV_MATCH", "") or "").strip()
-                        serie = str(r.get("SERIE", "") or "").strip()
-                        folio_doc = str(r.get("FOLIO", "") or "").strip()
-                        total_mxn = r.get("TOTAL_MXN", 0.0)
-                        try:
-                            total_mxn = float(str(total_mxn).replace(",", "").replace("$", ""))
-                        except Exception:
-                            total_mxn = 0.0
+                    if isinstance(res_cptos, pd.DataFrame):
+                        df_cptos = res_cptos.copy()
+                    elif isinstance(res_cptos, (list, tuple)):
+                        df_cptos = pd.DataFrame(res_cptos)
+                    elif isinstance(res_cptos, dict):
+                        df_cptos = pd.DataFrame([res_cptos])
+                    else:
+                        df_cptos = pd.DataFrame()
 
-                        try:
-                            res_cptos = buscar_en_paga_g03(
-                                st.secrets,
-                                uso_cfdi_val,
-                                rfc_receptor,
-                                clave_prov,
-                                serie,
-                                folio_doc,
-                                total_mxn,
-                            )
-                        except Exception as e:
-                            st.error(f"error al detectar conceptos en sae: {e}")
-                            res_cptos = None
+                    if df_cptos.empty:
+                        st.info("no se encontraron conceptos de sae para este documento.")
+                    else:
+                        nombre_col = None
+                        if "NOMBRE_CPTO" in df_cptos.columns:
+                            nombre_col = "NOMBRE_CPTO"
+                        elif "DESCR" in df_cptos.columns:
+                            nombre_col = "DESCR"
 
-                        if isinstance(res_cptos, pd.DataFrame):
-                            df_cptos = res_cptos.copy()
-                        elif isinstance(res_cptos, (list, tuple)):
-                            df_cptos = pd.DataFrame(res_cptos)
-                        elif isinstance(res_cptos, dict):
-                            df_cptos = pd.DataFrame([res_cptos])
-                        else:
-                            df_cptos = pd.DataFrame()
+                        if "NUM_CPTO" in df_cptos.columns:
+                            num = df_cptos.iloc[0]["NUM_CPTO"]
+                            desc = df_cptos.iloc[0].get(nombre_col, "")
+                            st.caption(f"concepto principal sugerido: {num} - {desc}")
 
-                        if df_cptos.empty:
-                            st.info("no se encontraron conceptos de sae para este documento.")
-                        else:
-                            nombre_col = None
-                            if "NOMBRE_CPTO" in df_cptos.columns:
-                                nombre_col = "NOMBRE_CPTO"
-                            elif "DESCR" in df_cptos.columns:
-                                nombre_col = "DESCR"
-
-                            if "NUM_CPTO" in df_cptos.columns:
-                                num = df_cptos.iloc[0]["NUM_CPTO"]
-                                desc = df_cptos.iloc[0].get(nombre_col, "")
-                                st.caption(f"concepto principal sugerido: {num} - {desc}")
-
-                            st.dataframe(
-                                df_cptos,
-                                use_container_width=True,
-                                hide_index=True,
-                            )
+                        st.dataframe(
+                            df_cptos,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
     with tab_conceptos:
         st.markdown("### conceptos por proveedor (paga_m01 → conp01 → prov01)")

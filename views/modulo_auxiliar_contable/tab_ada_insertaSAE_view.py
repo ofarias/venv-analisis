@@ -296,7 +296,7 @@ def insertarSAE():
     with c2:
         page = st.number_input("página", min_value=1, value=1, step=1, disabled=(page_size_opt == "Todas"))
     with c3:
-        if st.button("buscar", use_container_width=True, key="btn_buscar"):
+        if st.button("buscar", use_container_width=True, key="insertasae_btn_buscar"):
             st.cache_data.clear()
 
     page_size = total if page_size_opt == "Todas" else int(page_size_opt)
@@ -535,7 +535,7 @@ def insertarSAE():
         hide_index=True,
         use_container_width=True,
         disabled=disabled_cols,
-        key="ada_editor_insercion",
+        key="insertasae_ada_editor_insercion",
         height=min(900, 120 + 34 * len(df_cmp)),
     )
 
@@ -755,14 +755,14 @@ def insertarSAE():
     st.divider()
     col_ref, _ = st.columns([1, 5])
     with col_ref:
-        if st.button("🔄 refrescar datos", key="btn_refrescar_despues"):
+        if st.button("🔄 refrescar datos", key="insertasae_btn_refrescar_despues"):
             st.cache_data.clear()
             st.rerun()
 
     # exportar
     col_a, _ = st.columns([1,3])
     with col_a:
-        if st.button("exportar a excel", key="btn_exportar"):
+        if st.button("exportar a excel", key="insertasae_btn_exportar"):
             try:
                 df_export = df_cmp[visible_cols].copy()
                 xlsx = exportar_excel(df_export)
@@ -771,7 +771,7 @@ def insertarSAE():
                     data=xlsx,
                     file_name="documentos_ada.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="btn_descarga_xlsx"
+                    key="insertasae_btn_descarga_xlsx"
                 )
             except Exception as e:
                 st.error(f"no se pudo exportar: {e}")

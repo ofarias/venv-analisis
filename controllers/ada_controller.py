@@ -219,7 +219,6 @@ def preparar_docs_ada_con_mysql(
     except Exception:
         df_mysql = pd.DataFrame()
 
-    st.write(f"Documentos ADA: {len(df_ada_u)} | Documentos MySQL: {len(df_mysql)}")
     if df_mysql is not None and not df_mysql.empty:
         df_mysql = _upper_cols(df_mysql)
         df_mysql = _ensure_usocfdi(df_mysql)
@@ -346,19 +345,18 @@ def cargar_compc_por_fecha(_secrets, f_ini, f_fin):
 # ==================================================
 # api nueva para que el view no manipule nada
 # ==================================================
-@st.cache_data(ttl=60, show_spinner=False)
-def cargar_documentos_con_mysql(_secrets, filtros: Dict[str, Any], page: int, page_size: int) -> pd.DataFrame:
+def _combinar_ada_mysql_completo(_secrets, filtros: Dict[str, Any]) -> pd.DataFrame:
     """
-    reemplazo directo de cargar_documentos en la vista.
-    - carga docs ada por filtros/paginación
-    - trae mysql por rango de fechas
-    - une por uuid sin duplicar (preferir ada)
-    - deja usocfdi_ y tipocambio listos
+    trae TODO ada + TODO mysql para los filtros (sin paginar) y los une por uuid
+    (preferir ada), ya ordenado. es la base tanto para contar como para paginar
+    el combinado — si en vez de esto se paginara solo del lado ada y se le pegaran
+    encima TODAS las filas de mysql en cada página, las filas mysql-only saldrían
+    repetidas página tras página y el total no cuadraría con lo que se ve.
     """
-    offset = (page - 1) * page_size
-    df_ada = buscar_documentos(_secrets, filtros, (offset, page_size))
+    total_ada = contar_documentos(_secrets, filtros)
+    df_ada = buscar_documentos(_secrets, filtros, (0, total_ada)) if total_ada else pd.DataFrame()
 
-    df_out = preparar_docs_ada_con_mysql(
+    out = preparar_docs_ada_con_mysql(
         _secrets,
         df_ada,
         fecha_desde=filtros.get("fecha_desde"),
@@ -366,6 +364,31 @@ def cargar_documentos_con_mysql(_secrets, filtros: Dict[str, Any], page: int, pa
         limit=None,
         filtros=filtros,
     )
+
+    if not out.empty and "FECHA_EMISION" in out.columns:
+        out = out.sort_values("FECHA_EMISION", ascending=False, na_position="last").reset_index(drop=True)
+
+    return out
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def contar_documentos_combinado(_secrets, filtros: Dict[str, Any]) -> int:
+    return len(_combinar_ada_mysql_completo(_secrets, filtros))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cargar_documentos_con_mysql(_secrets, filtros: Dict[str, Any], page: int, page_size: int) -> pd.DataFrame:
+    """
+    reemplazo directo de cargar_documentos en la vista.
+    - arma el combinado completo (ada+mysql, deduplicado por uuid, preferir ada)
+    - recorta la página pedida sobre ESE combinado ya armado
+    - deja usocfdi_ y tipocambio listos
+    """
+    df_out = _combinar_ada_mysql_completo(_secrets, filtros)
+
+    if not df_out.empty:
+        offset = (page - 1) * page_size
+        df_out = df_out.iloc[offset: offset + page_size].reset_index(drop=True)
 
     # si quieres que aquí mismo se filtre a g03 (y ya no en el view), descomenta:
     # if df_out is not None and not df_out.empty and "USOCFDI_" in df_out.columns:
@@ -511,8 +534,18 @@ def cargar_vista_paga_prov_cpto(_secrets, f_ini=None, f_fin=None):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def cargar_conceptos_por_documento(_secrets, id_docto_dig: int) -> pd.DataFrame:
-    """Carga los conceptos (detalles) de un documento fiscal de ADA."""
+def cargar_conceptos_por_documento(_secrets, id_docto_dig: int, fuente: str | None = None) -> pd.DataFrame:
+    """
+    Carga los conceptos (detalles) de un documento fiscal.
+    `fuente` viene de la columna FUENTE que arma unir_datoscfd_sin_duplicar_preferir_ada
+    (ADA/MYSQL/AMBOS) — id_docto_dig es un autoincremental independiente en cada lado,
+    así que sin la fuente dos documentos de distinto origen podrían compartir el mismo
+    número y mostrar los conceptos equivocados.
+    """
+    if (fuente or "").strip().upper() == "MYSQL":
+        from models.datoscfd_mysql_model import obtener_conceptos_mysql_por_id_doctodig
+        return obtener_conceptos_mysql_por_id_doctodig(id_docto_dig)
+
     from models.ada_model import obtener_conceptos_por_documento
     return obtener_conceptos_por_documento(_secrets, id_docto_dig)
 

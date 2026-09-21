@@ -187,6 +187,129 @@ def _sum_impuestos(root: ET.Element) -> Dict[str, float]:
     return out
 
 
+def _get_ns_from_root(root: ET.Element) -> Dict[str, str]:
+    if root.tag.startswith("{"):
+        uri = root.tag.split("}")[0].strip("{")
+        return {"cfdi": uri}
+    return {}
+
+
+def _sum_impuestos_concepto(concepto_el: ET.Element, ns: Dict[str, str]) -> Dict[str, float]:
+    out = {"base_iva": 0.0, "iva": 0.0, "ieps": 0.0, "iva_ret": 0.0, "ieps_ret": 0.0, "isr_ret": 0.0}
+    imp = concepto_el.find("cfdi:Impuestos", ns)
+    if imp is None:
+        return out
+
+    for t in imp.findall(".//cfdi:Traslado", ns):
+        impuesto = _to_str(t.attrib.get("Impuesto"))
+        importe = _to_float(t.attrib.get("Importe")) or 0.0
+        base = _to_float(t.attrib.get("Base")) or 0.0
+        if impuesto == "002":
+            out["iva"] += importe
+            out["base_iva"] += base
+        elif impuesto == "003":
+            out["ieps"] += importe
+
+    for r in imp.findall(".//cfdi:Retencion", ns):
+        impuesto = _to_str(r.attrib.get("Impuesto"))
+        importe = _to_float(r.attrib.get("Importe")) or 0.0
+        if impuesto == "001":
+            out["isr_ret"] += importe
+        elif impuesto == "002":
+            out["iva_ret"] += importe
+        elif impuesto == "003":
+            out["ieps_ret"] += importe
+
+    return out
+
+
+def parse_conceptos_to_rows(xml_bytes: bytes) -> List[Dict[str, Any]]:
+    """Extrae los <Conceptos><Concepto> del CFDI para la tabla CONCEPTOS (copia de ADA)."""
+    root, _version = _get_root_and_version(xml_bytes)
+    ns = _get_ns_from_root(root)
+
+    conceptos_el = root.find("cfdi:Conceptos", ns)
+    if conceptos_el is None:
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for c in conceptos_el.findall("cfdi:Concepto", ns):
+        tax = _sum_impuestos_concepto(c, ns)
+        objetoimp = _to_str(c.attrib.get("ObjetoImp"))
+        rows.append({
+            "claveprodserv": _to_str(c.attrib.get("ClaveProdServ")),
+            "cantidad": _to_float(c.attrib.get("Cantidad")),
+            "claveunidad": _to_str(c.attrib.get("ClaveUnidad")),
+            "unidad": _to_str(c.attrib.get("Unidad")),
+            "descripcion": _to_str(c.attrib.get("Descripcion")),
+            "valorunitario": _to_float(c.attrib.get("ValorUnitario")),
+            "importe": _to_float(c.attrib.get("Importe")),
+            "objetoimp": int(objetoimp) if objetoimp and objetoimp.isdigit() else None,
+            "no_identificacion": _to_str(c.attrib.get("NoIdentificacion")),
+            "descuento": _to_float(c.attrib.get("Descuento")) or 0.0,
+            "base_iva": tax["base_iva"],
+            "iva": tax["iva"],
+            "ieps": tax["ieps"],
+            "iva_ret": tax["iva_ret"],
+            "ieps_ret": tax["ieps_ret"],
+            "isr": tax["isr_ret"],
+        })
+    return rows
+
+
+def guardar_conceptos(id_doctodig: int, uuid: str, conceptos: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Reemplaza los conceptos guardados de un documento (delete + insert, idempotente)."""
+    conn = None
+    cursor = None
+    try:
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM CONCEPTOS WHERE ID_DOCTODIG = %s", (id_doctodig,))
+
+        if conceptos:
+            sql = """
+                INSERT INTO CONCEPTOS (
+                    ID_DOCTODIG, UUID, CLAVEPRODSERV, CANTIDAD, CLAVEUNIDAD, UNIDAD,
+                    DESCRIPCION, VALORUNITARIO, IMPORTE, OBJETOIMP, NO_IDENTIFICACION,
+                    DESCUENTO, BASE_IVA, IVA, IEPS, IVA_RET, IEPS_RET, ISR
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+            """
+            params = [
+                (
+                    id_doctodig, uuid,
+                    c.get("claveprodserv"), c.get("cantidad"), c.get("claveunidad"), c.get("unidad"),
+                    c.get("descripcion"), c.get("valorunitario"), c.get("importe"), c.get("objetoimp"),
+                    c.get("no_identificacion"), c.get("descuento"), c.get("base_iva"), c.get("iva"),
+                    c.get("ieps"), c.get("iva_ret"), c.get("ieps_ret"), c.get("isr"),
+                )
+                for c in conceptos
+            ]
+            cursor.executemany(sql, params)
+
+        conn.commit()
+        return {"ok": True, "n": len(conceptos)}
+    except Exception as e:
+        try:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            pass
+        return {"ok": False, "error": str(e)}
+    finally:
+        try:
+            if cursor is not None:
+                cursor.close()
+        except Exception:
+            pass
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
 def parse_cfdi_to_datoscfd(xml_bytes: bytes) -> Dict[str, Any]:
     root, version = _get_root_and_version(xml_bytes)
 
@@ -491,7 +614,14 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
         else:
             status = "duplicated"
 
-        return {"ok": True, "uuid": data.get("uuid"), "status": status}
+        # INSERT ... ON DUPLICATE KEY UPDATE no deja un lastrowid confiable en el
+        # caso de update, así que resolvemos el ID_DOCTODIG con un select aparte
+        # (lo necesita guardar_conceptos para ligar la tabla CONCEPTOS).
+        cursor.execute("SELECT ID_DOCTODIG FROM DATOSCFD WHERE UUID = %s", (data.get("uuid"),))
+        row = cursor.fetchone()
+        id_doctodig = row[0] if row else None
+
+        return {"ok": True, "uuid": data.get("uuid"), "status": status, "id_doctodig": id_doctodig}
 
     except Exception as e:
         try:
@@ -517,7 +647,16 @@ def upsert_datoscfd(data: Dict[str, Any]) -> Dict[str, Any]:
 def importar_cfdi_xml_a_mysql(xml_bytes: bytes) -> Dict[str, Any]:
     try:
         data = parse_cfdi_to_datoscfd(xml_bytes)
-        return upsert_datoscfd(data)
+        resultado = upsert_datoscfd(data)
+
+        if resultado.get("ok") and resultado.get("id_doctodig"):
+            conceptos = parse_conceptos_to_rows(xml_bytes)
+            r_conceptos = guardar_conceptos(resultado["id_doctodig"], data.get("uuid"), conceptos)
+            resultado["conceptos"] = r_conceptos.get("n") if r_conceptos.get("ok") else None
+            if not r_conceptos.get("ok"):
+                resultado["error_conceptos"] = r_conceptos.get("error")
+
+        return resultado
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
