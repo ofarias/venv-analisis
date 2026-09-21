@@ -1998,7 +1998,8 @@ def insertar_poliza_solicitud_gasto_desglosada(
 
         #fecha_src = detalle[0].get("fecha") or solicitud.get("fecha_inicio") or datetime.now()
         #fecha = _as_date(fecha_src)
-        fecha_src = solicitud.get("fecha_inicio")
+        # fecha de cierre de la solicitud (fin del viaje/evento), no la de inicio
+        fecha_src = solicitud.get("fecha_fin")
         fecha = _as_date(fecha_src)
 
         periodo, ejercicio = _periodo_y_ejercicio(fecha)
