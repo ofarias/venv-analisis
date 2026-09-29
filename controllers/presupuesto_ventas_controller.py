@@ -736,32 +736,6 @@ def obtener_resumen_staging_presupuesto_ventas_ctrl(
     return obtener_resumen_staging_presupuesto_ventas_model(id_carga=id_carga)
 
 
-def obtener_presupuesto_ventas_ctrl(
-    anio: Optional[int] = None,
-    mes: Optional[int] = None,
-    id_unidad_negocio: Optional[int] = None,
-    cve_linea: Optional[str] = None,
-    cve_vend: Optional[str] = None,
-    cve_clie: Optional[str] = None,
-    cve_prod: Optional[str] = None,
-    id_carga: Optional[int] = None,
-    estatus: str = "activo",
-    limit: int = 10000,
-) -> pd.DataFrame:
-    return obtener_presupuesto_ventas_model(
-        anio=anio,
-        mes=mes,
-        id_unidad_negocio=id_unidad_negocio,
-        cve_linea=cve_linea,
-        cve_vend=cve_vend,
-        cve_clie=cve_clie,
-        cve_prod=cve_prod,
-        id_carga=id_carga,
-        estatus=estatus,
-        limit=limit,
-    )
-
-
 def obtener_resumen_presupuesto_ventas_ctrl(
     anio: Optional[int] = None,
     id_unidad_negocio: Optional[int] = None,

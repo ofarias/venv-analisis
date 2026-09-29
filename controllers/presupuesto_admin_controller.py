@@ -24,10 +24,10 @@ def obtener_usuario_por_id_ctrl(usuario_id: int) -> dict | None:
 
 def obtener_presupuesto_ventas_compras_ctrl(
     anio: int | None = None,
-    usuario_id: int | None = None,
-    cve_prod: str | None = None,
-    tipo: str | None = None,
-    estatus_autorizacion: str | None = None,
+    usuario_id: int | list[int] | None = None,
+    cve_prod: str | list[str] | None = None,
+    tipo: str | list[str] | None = None,
+    estatus_autorizacion: str | list[str] | None = None,
     limit: int = 50000,
 ) -> pd.DataFrame:
     return obtener_presupuesto_ventas_compras_model(

@@ -38,11 +38,8 @@ def _calcular_datos_reporte(id_carga: int, anio: int) -> Optional[dict]:
     df["mes"] = pd.to_numeric(df["mes"], errors="coerce").fillna(0).astype(int)
     df["valor"] = pd.to_numeric(df["valor"], errors="coerce").fillna(0.0)
     df["importe"] = pd.to_numeric(df["importe"], errors="coerce").fillna(0.0)
-    df["cve_clie"] = df["cliente_excel"].astype(str).str.split(" - ", n=1).str[0].str.strip()
-    df["cliente_nombre"] = (
-        df["cliente_excel"].astype(str).str.split(" - ", n=1).str[1]
-        .fillna(df["cliente_excel"]).astype(str).str.strip()
-    )
+    df["cve_clie"] = df["cve_clie"].astype(str).str.strip()
+    df["cliente_nombre"] = df["cliente_excel"].astype(str).str.strip()
 
     real = obtener_ventas_reales_sae_pv_ctrl(int(anio))
     if real is None:
@@ -92,7 +89,7 @@ def _calcular_datos_reporte(id_carga: int, anio: int) -> Optional[dict]:
     )
     top_cli = grp_cli.merge(real_cli, on="cve_clie", how="left").fillna({"real_kg": 0.0, "real_usd": 0.0})
     top_cli["cumpl"] = (top_cli["real_usd"] / top_cli["pres_usd"].replace(0, pd.NA) * 100).round(1)
-    top_cli = top_cli.sort_values("pres_usd", ascending=False)
+    top_cli = top_cli.sort_values("cumpl", ascending=False, na_position="last")
 
     grp_prod = df.groupby(["cve_prod", "producto_excel"], as_index=False).agg(
         pres_kg=("valor", "sum"), pres_usd=("importe", "sum"),
@@ -104,7 +101,7 @@ def _calcular_datos_reporte(id_carga: int, anio: int) -> Optional[dict]:
     )
     top_prod = grp_prod.merge(real_prod, left_on="cve_prod", right_on="cve_art", how="left").fillna({"real_kg": 0.0, "real_usd": 0.0})
     top_prod["cumpl"] = (top_prod["real_usd"] / top_prod["pres_usd"].replace(0, pd.NA) * 100).round(1)
-    top_prod = top_prod.sort_values("pres_usd", ascending=False)
+    top_prod = top_prod.sort_values("cumpl", ascending=False, na_position="last")
 
     pres_transc_usd = float(df[df["mes"].isin(meses_transc)]["importe"].sum())
     real_transc_usd = float(real_f[real_f["mes"].isin(meses_transc)]["importe"].sum()) if not real_f.empty else 0.0

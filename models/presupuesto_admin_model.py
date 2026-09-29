@@ -72,12 +72,32 @@ def obtener_usuarios_presupuesto_model() -> pd.DataFrame:
             pass
 
 
+def _in_clause(sql: str, params: list, columna: str, valor) -> str:
+    """Agrega "and columna in (...)" (o "= %s" si es un solo valor) al SQL,
+    aceptando tanto un escalar como una lista/tupla — así los filtros de la
+    pestaña "ver todos" pueden ser selección múltiple sin duplicar la
+    función para cada caso."""
+    if valor is None:
+        return sql
+    if isinstance(valor, (list, tuple, set)):
+        valores = [v for v in valor if v not in (None, "")]
+        if not valores:
+            return sql
+        placeholders = ", ".join(["%s"] * len(valores))
+        sql += f" and {columna} in ({placeholders})"
+        params.extend(valores)
+        return sql
+    sql += f" and {columna} = %s"
+    params.append(valor)
+    return sql
+
+
 def obtener_presupuesto_ventas_compras_model(
     anio: int | None = None,
-    usuario_id: int | None = None,
-    cve_prod: str | None = None,
-    tipo: str | None = None,
-    estatus_autorizacion: str | None = None,
+    usuario_id: int | list[int] | None = None,
+    cve_prod: str | list[str] | None = None,
+    tipo: str | list[str] | None = None,
+    estatus_autorizacion: str | list[str] | None = None,
     limit: int = 50000,
 ) -> pd.DataFrame:
     """Unión de presupuesto_ventas y presupuesto_compras, con el usuario
@@ -146,21 +166,25 @@ def obtener_presupuesto_ventas_compras_model(
             sql += " and t.anio = %s"
             params.append(int(anio))
 
-        if usuario_id is not None:
-            sql += " and t.usuario_id = %s"
-            params.append(int(usuario_id))
+        if isinstance(usuario_id, (list, tuple, set)):
+            sql = _in_clause(sql, params, "t.usuario_id", [int(v) for v in usuario_id])
+        elif usuario_id is not None:
+            sql = _in_clause(sql, params, "t.usuario_id", int(usuario_id))
 
-        if cve_prod:
-            sql += " and t.cve_prod = %s"
-            params.append(str(cve_prod).strip())
+        if isinstance(cve_prod, (list, tuple, set)):
+            sql = _in_clause(sql, params, "t.cve_prod", [str(v).strip() for v in cve_prod])
+        elif cve_prod:
+            sql = _in_clause(sql, params, "t.cve_prod", str(cve_prod).strip())
 
-        if tipo:
-            sql += " and t.tipo = %s"
-            params.append(str(tipo).strip())
+        if isinstance(tipo, (list, tuple, set)):
+            sql = _in_clause(sql, params, "t.tipo", [str(v).strip() for v in tipo])
+        elif tipo:
+            sql = _in_clause(sql, params, "t.tipo", str(tipo).strip())
 
-        if estatus_autorizacion:
-            sql += " and t.estatus_autorizacion = %s"
-            params.append(str(estatus_autorizacion).strip())
+        if isinstance(estatus_autorizacion, (list, tuple, set)):
+            sql = _in_clause(sql, params, "t.estatus_autorizacion", [str(v).strip() for v in estatus_autorizacion])
+        elif estatus_autorizacion:
+            sql = _in_clause(sql, params, "t.estatus_autorizacion", str(estatus_autorizacion).strip())
 
         sql += " order by t.anio desc, t.mes desc, t.id_presupuesto desc limit %s"
         params.append(int(limit))

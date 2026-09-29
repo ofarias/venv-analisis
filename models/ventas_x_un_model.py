@@ -65,10 +65,10 @@ def obtener_ventas_x_un_model(
                 coalesce(l.desc_lin, d.lin_prod) as un_desc,
                 f.lote as lote,
                 iif(e.cantidad is null, c.cant, e.cantidad) as cantidad,
-                c.prec / c.tip_cam as precio_mn,
+                c.prec as precio_mn,
                 a.num_moned as moneda,
                 a.tipcamb as tc,
-                ((iif(e.cantidad is null, c.cant, e.cantidad) * c.prec) / a.tipcamb) as precio_usd,
+                ((iif(e.cantidad is null, c.cant, e.cantidad) * c.prec) / nullif(a.tipcamb, 0)) as precio_usd,
                 (c.tot_partida * (iif(e.cantidad is null, c.cant, e.cantidad) / c.cant)) as subtotal,
                 (c.totimp4 * (iif(e.cantidad is null, c.cant, e.cantidad) / c.cant)) as iva,
                 ((c.tot_partida * (iif(e.cantidad is null, c.cant, e.cantidad) / c.cant))

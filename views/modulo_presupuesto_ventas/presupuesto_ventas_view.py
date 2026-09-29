@@ -5,6 +5,7 @@ from datetime import date, datetime
 from io import BytesIO
 from typing import Optional
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from openpyxl import Workbook
@@ -2671,6 +2672,129 @@ def _tabla_generica_a_excel_bytes(nombre_hoja: str, df: pd.DataFrame, encabezado
     return output.getvalue()
 
 
+_FORMATO_NUM_GRAFICA = {"usd": "$,.0f", "cantidad": ",.0f"}
+
+
+def _grafica_barras(
+    df: pd.DataFrame, categoria: str, valor: str, tipo_valor: str,
+    height: int = 280, horizontal: bool = False,
+) -> None:
+    """Barra con eje y tooltip (mouseover) formateados: importes con $ y
+    cantidades (kg, líneas) con separador de miles — ambos sin decimales."""
+    fmt = _FORMATO_NUM_GRAFICA.get(tipo_valor, ",.0f")
+    if horizontal:
+        eje_x = alt.X(f"{valor}:Q", title=None, axis=alt.Axis(format=fmt))
+        eje_y = alt.Y(f"{categoria}:N", sort="-x", title=None)
+    else:
+        eje_x = alt.X(f"{categoria}:N", title=None)
+        eje_y = alt.Y(f"{valor}:Q", title=None, axis=alt.Axis(format=fmt))
+
+    chart = alt.Chart(df).mark_bar().encode(
+        x=eje_x,
+        y=eje_y,
+        tooltip=[
+            alt.Tooltip(f"{categoria}:N", title=categoria),
+            alt.Tooltip(f"{valor}:Q", format=fmt, title=valor),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
+    """KPIs y gráficas de lo filtrado — es lo primero que ve un directivo en
+    "ver todos"; el detalle línea por línea queda en un expander debajo,
+    en segundo nivel."""
+    meses_cols = [m for m in _MESES.values() if m in pivote.columns]
+    total_kg = float(pivote["total_kg_anio"].sum()) if "total_kg_anio" in pivote.columns else 0.0
+    total_usd = float(pivote["total_usd_anio"].sum()) if "total_usd_anio" in pivote.columns else 0.0
+    num_clientes = (
+        int(pivote.loc[pivote["cliente_excel"].astype(str).str.strip() != "", "cliente_excel"].nunique())
+        if "cliente_excel" in pivote.columns else 0
+    )
+    num_productos = (
+        int(pivote.loc[pivote["cve_prod"].astype(str).str.strip() != "", "cve_prod"].nunique())
+        if "cve_prod" in pivote.columns else 0
+    )
+
+    st.markdown("#### 📊 Resumen de lo filtrado")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Líneas", f"{len(pivote):,}")
+    c2.metric("Total USD año", f"${total_usd:,.0f}")
+    c3.metric("Total kg año", f"{total_kg:,.0f} kg")
+    c4.metric("Clientes", f"{num_clientes:,}")
+    c5.metric("Productos", f"{num_productos:,}")
+
+    if not meses_cols:
+        return
+
+    # precio efectivo por línea (precio venta si ya se capturó, si no el de
+    # SAE) — mismo criterio que _agregar_totales_anio, aplicado mes a mes
+    # para la gráfica de USD; esta pestaña solo trae la sección KG.
+    precio_col = pd.to_numeric(pivote.get("precio", 0.0), errors="coerce").fillna(0.0)
+    if "precio_venta" in pivote.columns:
+        precio_venta_col = pd.to_numeric(pivote["precio_venta"], errors="coerce").fillna(0.0)
+        precio_col = precio_venta_col.where(precio_venta_col > 0, precio_col)
+
+    df_mes_usd = pd.DataFrame({
+        "mes": [m.upper() for m in meses_cols],
+        "USD": [float((pd.to_numeric(pivote[m], errors="coerce").fillna(0.0) * precio_col).sum()) for m in meses_cols],
+    })
+    df_mes_kg = pd.DataFrame({
+        "mes": [m.upper() for m in meses_cols],
+        "kg": [float(pd.to_numeric(pivote[m], errors="coerce").fillna(0.0).sum()) for m in meses_cols],
+    })
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        st.caption("USD por mes")
+        _grafica_barras(df_mes_usd, categoria="mes", valor="USD", tipo_valor="usd", height=280)
+    with col_g2:
+        st.caption("Kilos por mes")
+        _grafica_barras(df_mes_kg, categoria="mes", valor="kg", tipo_valor="cantidad", height=280)
+
+    col_g3, col_g4 = st.columns(2)
+    with col_g3:
+        if "tipo" in pivote.columns and pivote["tipo"].nunique() > 1:
+            df_tipo = pivote.groupby("tipo", as_index=False).agg(usd=("total_usd_anio", "sum"))
+            st.caption("USD por tipo (venta / compra)")
+            _grafica_barras(df_tipo, categoria="tipo", valor="usd", tipo_valor="usd", height=240)
+    with col_g4:
+        if "estatus_autorizacion_badge" in pivote.columns:
+            df_estatus = pivote.groupby("estatus_autorizacion_badge", as_index=False).agg(
+                lineas=("total_usd_anio", "count"),
+            )
+            st.caption("Líneas por estatus de autorización")
+            _grafica_barras(df_estatus, categoria="estatus_autorizacion_badge", valor="lineas", tipo_valor="cantidad", height=240)
+
+    top_n = 10
+    col_g5, col_g6 = st.columns(2)
+    with col_g5:
+        if "cliente_excel" in pivote.columns:
+            top_cli = (
+                pivote[pivote["cliente_excel"].astype(str).str.strip() != ""]
+                .groupby("cliente_excel", as_index=False).agg(usd=("total_usd_anio", "sum"))
+                .sort_values("usd", ascending=False).head(top_n)
+            )
+            if not top_cli.empty:
+                st.caption(f"top {len(top_cli)} clientes por USD")
+                _grafica_barras(
+                    top_cli, categoria="cliente_excel", valor="usd", tipo_valor="usd", height=280, horizontal=True,
+                )
+    with col_g6:
+        if "producto_excel" in pivote.columns:
+            top_prod = (
+                pivote[pivote["producto_excel"].astype(str).str.strip() != ""]
+                .groupby("producto_excel", as_index=False).agg(usd=("total_usd_anio", "sum"))
+                .sort_values("usd", ascending=False).head(top_n)
+            )
+            if not top_prod.empty:
+                st.caption(f"top {len(top_prod)} productos por USD")
+                _grafica_barras(
+                    top_prod, categoria="producto_excel", valor="usd", tipo_valor="usd", height=280, horizontal=True,
+                )
+
+    st.divider()
+
+
 def _panel_ver_todos() -> None:
     st.caption(
         "Presupuestos de ventas y compras de todos los usuarios — solo lectura. "
@@ -2685,65 +2809,86 @@ def _panel_ver_todos() -> None:
     )
 
     df_usuarios = obtener_usuarios_presupuesto_ctrl()
-    usuarios_opciones = {"(todos)": None}
+    usuarios_opciones: dict[str, int] = {}
     if df_usuarios is not None and not df_usuarios.empty:
         for r in df_usuarios.to_dict("records"):
             nombre = str(r.get("usuario_nombre") or f"usuario {r.get('usuario_id')}").strip()
             usuarios_opciones[nombre] = int(r["usuario_id"])
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    with col1:
+    col_anio, col_btn, col_usuario, col_tipo, col_linea, col_producto, col_estatus = st.columns(
+        [1.1, 0.9, 1.3, 1.0, 1.3, 1.5, 1.3], vertical_alignment="bottom",
+    )
+    with col_anio:
         anio_sel = st.number_input(
             "año", min_value=2020, max_value=2100,
             value=int(date.today().year), step=1, key="pvt_anio",
         )
         filtrar_anio = st.checkbox("filtrar por año", value=True, key="pvt_filtrar_anio")
-    with col2:
-        usuario_label = st.selectbox("usuario", list(usuarios_opciones.keys()), key="pvt_usuario")
-    with col3:
-        tipo_sel = st.selectbox("tipo", ["(todos)", "venta", "compra"], key="pvt_tipo")
-    with col4:
-        linea_sel = st.selectbox("línea de producto", ["(todas)"] + lineas_disponibles, key="pvt_linea")
-    with col5:
+    with col_btn:
+        disparar_filtro = st.button(
+            "🔍 Filtrar", key="pvt_btn_filtrar", type="primary", use_container_width=True,
+        )
+    with col_usuario:
+        usuarios_sel = st.multiselect("usuario", list(usuarios_opciones.keys()), key="pvt_usuario")
+    with col_tipo:
+        tipo_sel = st.multiselect("tipo", ["venta", "compra"], key="pvt_tipo")
+    with col_linea:
+        linea_sel = st.multiselect("línea de producto", lineas_disponibles, key="pvt_linea")
+    with col_producto:
         df_cat_prod = df_cat
-        if df_cat_prod is not None and not df_cat_prod.empty and linea_sel != "(todas)" and "linea" in df_cat_prod.columns:
-            df_cat_prod = df_cat_prod[df_cat_prod["linea"].astype(str).str.strip() == linea_sel]
-        productos_opciones = {"(todos)": None}
+        if df_cat_prod is not None and not df_cat_prod.empty and linea_sel and "linea" in df_cat_prod.columns:
+            df_cat_prod = df_cat_prod[df_cat_prod["linea"].astype(str).str.strip().isin(linea_sel)]
+        productos_opciones: dict[str, str] = {}
         if df_cat_prod is not None and not df_cat_prod.empty:
             for r in df_cat_prod.to_dict("records"):
                 cve = str(r.get("cve_prod") or "").strip()
                 desc = str(r.get("descr") or "").strip()
                 if cve:
                     productos_opciones[f"{cve} - {desc}" if desc else cve] = cve
-        producto_label = st.selectbox("producto", list(productos_opciones.keys()), key="pvt_producto")
-    with col6:
-        estatus_aut_opciones = ["(todos)"] + list(_ESTATUS_LINEA_BADGE.keys())
-        estatus_aut_sel = st.selectbox(
-            "autorización", estatus_aut_opciones,
+        producto_sel = st.multiselect("producto", list(productos_opciones.keys()), key="pvt_producto")
+    with col_estatus:
+        estatus_aut_sel = st.multiselect(
+            "autorización", list(_ESTATUS_LINEA_BADGE.keys()),
             format_func=lambda k: _ESTATUS_LINEA_BADGE.get(k, k),
             key="pvt_estatus_aut",
         )
 
-    df = obtener_presupuesto_ventas_compras_ctrl(
-        anio=int(anio_sel) if filtrar_anio else None,
-        usuario_id=usuarios_opciones[usuario_label],
-        cve_prod=productos_opciones[producto_label],
-        tipo=None if tipo_sel == "(todos)" else tipo_sel,
-        estatus_autorizacion=None if estatus_aut_sel == "(todos)" else estatus_aut_sel,
-    )
+    # no se consulta nada hasta que se presiona "Filtrar" — al entrar a la
+    # pestaña, o al cambiar un filtro sin volver a presionar el botón, se
+    # sigue mostrando el último resultado disparado (o nada, la primera vez)
+    if disparar_filtro:
+        usuario_ids = [usuarios_opciones[n] for n in usuarios_sel if n in usuarios_opciones]
+        cve_prods = [productos_opciones[p] for p in producto_sel if p in productos_opciones]
+        with st.spinner("consultando…"):
+            df_resultado = obtener_presupuesto_ventas_compras_ctrl(
+                anio=int(anio_sel) if filtrar_anio else None,
+                usuario_id=usuario_ids or None,
+                cve_prod=cve_prods or None,
+                tipo=tipo_sel or None,
+                estatus_autorizacion=estatus_aut_sel or None,
+            )
+            if (
+                linea_sel and df_cat is not None and not df_cat.empty
+                and df_resultado is not None and not df_resultado.empty
+                and "cve_prod" in df_resultado.columns
+            ):
+                cve_de_linea = set(
+                    df_cat.loc[df_cat["linea"].astype(str).str.strip().isin(linea_sel), "cve_prod"]
+                    .astype(str).str.strip()
+                )
+                df_resultado = df_resultado[df_resultado["cve_prod"].astype(str).str.strip().isin(cve_de_linea)]
+        st.session_state["pvt_vt_resultado"] = {
+            "df": df_resultado, "anio_sel": int(anio_sel), "filtrar_anio": bool(filtrar_anio),
+        }
 
-    if df is None or df.empty:
-        st.info("sin resultados para los filtros seleccionados")
+    resultado = st.session_state.get("pvt_vt_resultado")
+    if resultado is None:
+        st.info("Ajusta los filtros y presiona **🔍 Filtrar** para ver los resultados.")
         return
 
-    if linea_sel != "(todas)" and df_cat is not None and not df_cat.empty and "cve_prod" in df.columns:
-        cve_de_linea = set(
-            df_cat.loc[df_cat["linea"].astype(str).str.strip() == linea_sel, "cve_prod"]
-            .astype(str).str.strip()
-        )
-        df = df[df["cve_prod"].astype(str).str.strip().isin(cve_de_linea)]
+    df, anio_sel, filtrar_anio = resultado["df"], resultado["anio_sel"], resultado["filtrar_anio"]
 
-    if df.empty:
+    if df is None or df.empty:
         st.info("sin resultados para los filtros seleccionados")
         return
 
@@ -2778,7 +2923,8 @@ def _panel_ver_todos() -> None:
     pivote = _pivotear_meses(df, cols_grupo_pivot + cols_extra, col_valor="valor")
     pivote = _agregar_totales_anio(pivote)
 
-    st.caption(f"{len(pivote):,} línea(s)  |  🔵 captura 🟡 enviada 🟢 autorizada 🔴 rechazada")
+    # ── directivos primero ven KPIs + gráficas; el detalle queda abajo ──
+    _panel_resumen_ver_todos(pivote)
 
     encabezados_pivote = {**_ENCABEZADOS_VER_TODOS, **{m: m.upper() for m in _MESES.values()}}
     col_order = (
@@ -2789,49 +2935,51 @@ def _panel_ver_todos() -> None:
     df_show = pivote[[c for c in col_order if c in pivote.columns]]
     df_renombrado = df_show.rename(columns=encabezados_pivote)
 
-    # esta tabla es un st.dataframe (no AgGrid), así que el "ver/ocultar
-    # columnas" se resuelve con un multiselect — misma persistencia por
-    # usuario (ui_columnas_ocultas) que el panel lateral de AG Grid
-    usuario_id_vt = _get_usuario_id()
-    grid_key_vt = "presupuesto_ventas_ver_todos"
-    todas_las_columnas = list(df_renombrado.columns)
-    ocultas_guardadas = set(obtener_columnas_ocultas(usuario_id_vt, grid_key_vt))
-    with st.expander("👁️ columnas visibles"):
+    with st.expander(f"📋 Detalle — {len(pivote):,} línea(s)", expanded=False):
+        st.caption("🔵 captura 🟡 enviada 🟢 autorizada 🔴 rechazada")
+
+        # esta tabla es un st.dataframe (no AgGrid), así que el "ver/ocultar
+        # columnas" se resuelve con un multiselect — misma persistencia por
+        # usuario (ui_columnas_ocultas) que el panel lateral de AG Grid
+        usuario_id_vt = _get_usuario_id()
+        grid_key_vt = "presupuesto_ventas_ver_todos"
+        todas_las_columnas = list(df_renombrado.columns)
+        ocultas_guardadas = set(obtener_columnas_ocultas(usuario_id_vt, grid_key_vt))
         columnas_sel = st.multiselect(
-            "elige qué columnas mostrar",
+            "columnas visibles",
             options=todas_las_columnas,
             default=[c for c in todas_las_columnas if c not in ocultas_guardadas],
             key="pvt_columnas_visibles",
         )
-    columnas_sel = [c for c in todas_las_columnas if c in columnas_sel] or todas_las_columnas
-    nuevas_ocultas = set(todas_las_columnas) - set(columnas_sel)
-    if nuevas_ocultas != ocultas_guardadas:
-        guardar_columnas_ocultas(usuario_id_vt, grid_key_vt, sorted(nuevas_ocultas))
-    df_renombrado = df_renombrado[columnas_sel]
+        columnas_sel = [c for c in todas_las_columnas if c in columnas_sel] or todas_las_columnas
+        nuevas_ocultas = set(todas_las_columnas) - set(columnas_sel)
+        if nuevas_ocultas != ocultas_guardadas:
+            guardar_columnas_ocultas(usuario_id_vt, grid_key_vt, sorted(nuevas_ocultas))
+        df_renombrado = df_renombrado[columnas_sel]
 
-    estilo = df_renombrado.style
-    if "Autorización" in df_renombrado.columns:
-        estilo = estilo.map(_color_fondo_autorizacion, subset=["Autorización"])
-    meses_upper = [m.upper() for m in _MESES.values() if m.upper() in df_renombrado.columns]
-    if meses_upper:
-        estilo = estilo.map(_color_valor_mes, subset=meses_upper)
-    estilo = _formatear_numeros(estilo, df_renombrado, meses_upper)
+        estilo = df_renombrado.style
+        if "Autorización" in df_renombrado.columns:
+            estilo = estilo.map(_color_fondo_autorizacion, subset=["Autorización"])
+        meses_upper = [m.upper() for m in _MESES.values() if m.upper() in df_renombrado.columns]
+        if meses_upper:
+            estilo = estilo.map(_color_valor_mes, subset=meses_upper)
+        estilo = _formatear_numeros(estilo, df_renombrado, meses_upper)
 
-    st.dataframe(
-        estilo,
-        use_container_width=True,
-        hide_index=True,
-        height=min(56 + len(df_show) * 35, 680),
-    )
+        st.dataframe(
+            estilo,
+            use_container_width=True,
+            hide_index=True,
+            height=min(56 + len(df_show) * 35, 680),
+        )
 
-    xlsx_bytes = _tabla_generica_a_excel_bytes("presupuesto ventas y compras", df_show, encabezados_pivote)
-    st.download_button(
-        "⬇️ descargar Excel",
-        data=xlsx_bytes,
-        file_name=f"presupuesto_ventas_compras_{anio_sel if filtrar_anio else 'todos'}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="pvt_dl_excel",
-    )
+        xlsx_bytes = _tabla_generica_a_excel_bytes("presupuesto ventas y compras", df_show, encabezados_pivote)
+        st.download_button(
+            "⬇️ descargar Excel",
+            data=xlsx_bytes,
+            file_name=f"presupuesto_ventas_compras_{anio_sel if filtrar_anio else 'todos'}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="pvt_dl_excel",
+        )
 
 
 # ── panel: autorizaciones (Jefe de Ventas / Gerente de Ventas / SuperAdmin) ────
