@@ -43,6 +43,7 @@ from models.solicitudes_model import (
     get_comprobantes_by_detalle_ids,
     get_comprobantes_by_solicitud,
     get_correos_usuarios_por_rol_model,
+    get_roles_por_usuario_id_model,
     eliminar_detalles_sin_monto_model,
     get_estatus_actual_solicitud,
     insertar_solicitud_estatus,
@@ -471,6 +472,12 @@ def get_comprobantes_solicitud_ctrl(solicitud_id: int):
 def get_datoscfd_by_uuids_ctrl(uuids: list[str]) -> list[dict]:
     return get_datoscfd_by_uuids(uuids)
 
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_roles_por_usuario_id_ctrl() -> Dict[int, List[str]]:
+    """roles reales (usuarios_roles) por id de usuario, en minúsculas."""
+    return get_roles_por_usuario_id_model()
 
 def get_correos_usuarios_por_rol_ctrl(nombre_rol: str) -> list[str]:
     return get_correos_usuarios_por_rol_model(nombre_rol)

@@ -15,13 +15,14 @@ def mostrar_modulo_solicitudes_gastos():
     usuario = st.session_state.get("usuario") or {}
     roles = [str(x).strip().lower() for x in (usuario.get("roles", []) or [])]
 
+    # debe coincidir con el gate de mostrar_tab_autorizaciones_solicitudes(),
+    # si no el usuario ve la pestaña y adentro le sale "sin acceso"
     puede_ver_aut = any(r in roles for r in [
         "admin",
         "gerente de ventas",
         "jefe de ventas",
-        "supervisor de ventas",
         "contabilidad",
-        "compras",
+        "dispersion compras",
     ])
     puede_ver_rev_conta = any(r in roles for r in ["admin", "contabilidad"])
     puede_ver_dashboard = any(r in roles for r in ["financiero", "direccion", "admin", "gerente de ventas", "jefe de ventas", "supervisor de ventas"])

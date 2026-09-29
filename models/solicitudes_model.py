@@ -297,7 +297,7 @@ def get_solicitudes_df(
         sql = f"""
             select
               id, folio, anio, consecutivo,
-              empleado_nombre, clientes, ciudades,
+              empleado_id, empleado_nombre, clientes, ciudades,
               fecha_inicio, fecha_fin, hora_salida, hora_regreso,
               estatus, fecha_creacion
             from solicitudes
@@ -1882,3 +1882,54 @@ def listar_solicitud_estatus(solicitud_id: int) -> list[dict]:
         return cur.fetchall() or []
     finally:
         cn.close()
+
+def get_roles_por_usuario_id_model() -> dict[int, list[str]]:
+    """
+    roles reales de cada usuario activo, tomados de usuarios_roles.
+
+    ojo: usuarios.rol es un enum legado ('Admin','Logistica','Ventas') que no
+    refleja los roles del sistema; para decidir quién autoriza una solicitud
+    hay que leer usuarios_roles.
+    """
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+
+        sql = """
+            select
+                u.id as usuario_id,
+                r.nombre as rol
+            from usuarios u
+            inner join usuarios_roles ur
+                on ur.username = u.username
+            inner join roles r
+                on r.id = ur.id_rol
+            where r.status = 1
+        """
+
+        cur.execute(sql)
+        rows = cur.fetchall() or []
+        cur.close()
+
+        out: dict[int, list[str]] = {}
+        for r in rows:
+            try:
+                uid = int(r.get("usuario_id") or 0)
+            except Exception:
+                continue
+
+            rol = str(r.get("rol") or "").strip().lower()
+            if not uid or not rol:
+                continue
+
+            lista = out.setdefault(uid, [])
+            if rol not in lista:
+                lista.append(rol)
+
+        return out
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

@@ -13,9 +13,6 @@ from typing import Optional
 #from engineio import payload
 import pandas as pd
 import streamlit as st
-## para envio de correo sin auth
-import smtplib
-from email.mime.text import MIMEText
 
 from controllers.datoscfd_controller import registrar_cfdi_desde_xml
 from controllers.sepomex_controller import get_sepomex_ciudades_catalogo_ctrl
@@ -42,10 +39,11 @@ from controllers.solicitudes_controller import (
     get_comprobante_detalle_ctrl,
     get_comprobantes_solicitud_ctrl,
     get_correos_usuarios_por_rol_ctrl,
+    get_roles_por_usuario_id_ctrl,
     eliminar_detalles_sin_monto_ctrl,
 )
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
-from utils.envio_correo import enviar_correo
+from utils.envio_correo import enviar_correo, enviar_correo_sistema
 
 
 MODO_PRUEBA_CORREOS = False
@@ -149,36 +147,11 @@ def _enviar_cierre_link_correo_sistema(
     </div>
     """
 
-    return _enviar_correo_sistema(
+    return enviar_correo_sistema(
         destinatario=destinatario,
         asunto=asunto,
         cuerpo_html=cuerpo_html,
     )
-def _enviar_correo_sistema(*, destinatario: str, asunto: str, cuerpo_html: str) -> tuple[bool, str]:
-    try:
-        smtp_host = str(st.secrets.get("SMTP_HOST", "")).strip()
-        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
-        smtp_user = str(st.secrets.get("SMTP_USER", "")).strip()
-        smtp_pass = str(st.secrets.get("SMTP_PASS", "")).strip()
-        smtp_from = str(st.secrets.get("SMTP_FROM", smtp_user)).strip()
-
-        if not smtp_host or not smtp_user or not smtp_pass or not smtp_from:
-            return False, "faltan credenciales SMTP en secrets.toml"
-
-        msg = MIMEText(cuerpo_html, "html", "utf-8")
-        msg["Subject"] = asunto
-        msg["From"] = smtp_from
-        msg["To"] = destinatario
-
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_from, [destinatario], msg.as_string())
-
-        return True, "correo enviado"
-
-    except Exception as e:
-        return False, str(e)
 
 def _enviar_autorizacion_link_correo_sistema(
         *,
@@ -223,7 +196,7 @@ def _enviar_autorizacion_link_correo_sistema(
     </div>
     """
 
-    return _enviar_correo_sistema(
+    return enviar_correo_sistema(
         destinatario=destinatario,
         asunto=asunto,
         cuerpo_html=cuerpo_html,
@@ -951,7 +924,7 @@ def _enviar_cierre_aprobado_contabilidad_correo_sistema(*, solicitud: dict, esta
     errores = []
 
     for dest in destinatarios:
-        ok, msg = _enviar_correo_sistema(
+        ok, msg = enviar_correo_sistema(
             destinatario=dest,
             asunto=asunto,
             cuerpo_html=cuerpo_html,
@@ -985,15 +958,32 @@ def _norm_roles_list(values) -> list[str]:
 
 
 def _roles_usuario_por_id(usuario_id: int) -> list[str]:
-    usuarios = get_usuarios_activos_ctrl() or []
+    try:
+        uid = int(usuario_id or 0)
+    except Exception:
+        return []
 
-    for u in usuarios:
+    if not uid:
+        return []
+
+    # los roles del sistema viven en usuarios_roles; usuarios.rol es un enum
+    # legado ('Admin','Logistica','Ventas') que no sirve para saber quién
+    # autoriza, así que solo se usa como respaldo si no hay roles asignados.
+    try:
+        roles = list(get_roles_por_usuario_id_ctrl().get(uid) or [])
+    except Exception:
+        roles = []
+
+    if roles:
+        return list(dict.fromkeys(_norm_roles_list(roles)))
+
+    for u in (get_usuarios_activos_ctrl() or []):
         try:
-            if int(u.get("id") or 0) == int(usuario_id):
-                roles = []
-                roles.extend(_norm_roles_list(u.get("roles")))
-                roles.extend(_norm_roles_list(u.get("rol")))
-                return list(dict.fromkeys(roles))
+            if int(u.get("id") or 0) == uid:
+                legacy = []
+                legacy.extend(_norm_roles_list(u.get("roles")))
+                legacy.extend(_norm_roles_list(u.get("rol")))
+                return list(dict.fromkeys(legacy))
         except Exception:
             pass
 
@@ -1340,7 +1330,7 @@ def _enviar_rechazo_link_correo_sistema(
     </div>
     """
 
-    return _enviar_correo_sistema(
+    return enviar_correo_sistema(
         destinatario=destinatario,
         asunto=asunto,
         cuerpo_html=cuerpo_html,
