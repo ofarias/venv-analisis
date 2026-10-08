@@ -134,34 +134,63 @@ def _metodos_opciones(usuario_datos_id: int, tipo: str) -> dict:
     - compra: manual + "todas las cargas del año" + una opción por cada
       carga de presupuesto de compras del dueño de la versión.
     - venta: manual + una opción por cada carga de presupuesto de ventas del
-      dueño de la versión, identificada por su comentario/industria."""
+      dueño de la versión, identificada por su comentario/industria.
+
+    SuperAdmin ve además el presupuesto autorizado de cualquier usuario (no
+    solo el propio o el del usuario elegido en el panel de soporte), para no
+    tener que cambiar de "actuar como" solo para vincular un presupuesto."""
+    es_superadmin = _tiene_rol((st.session_state.get("usuario") or {}).get("roles"), "superadmin")
+
     if tipo == "compra":
         opciones = dict(_METODOS_LABEL_COMPRA)
         try:
-            df_cargas_pc = obtener_cargas_presupuesto_compras_ctrl(limit=50, usuario_id=usuario_datos_id)
+            if es_superadmin:
+                df_cargas_pc = obtener_cargas_presupuesto_compras_ctrl(limit=200, solo_autorizados=True)
+            else:
+                df_cargas_pc = obtener_cargas_presupuesto_compras_ctrl(limit=50, usuario_id=usuario_datos_id)
         except Exception:
             df_cargas_pc = None
         if df_cargas_pc is not None and not df_cargas_pc.empty:
             for r in df_cargas_pc.to_dict("records"):
                 id_carga = int(r["id_carga"])
-                opciones[f"pc_carga:{id_carga}"] = f"Presupuesto Compras — {_etiqueta_carga(r)}"
+                etiqueta = _etiqueta_carga(r)
+                if es_superadmin and r.get("propietario"):
+                    etiqueta = f"{etiqueta} — {r['propietario']}"
+                opciones[f"pc_carga:{id_carga}"] = f"Presupuesto Compras — {etiqueta}"
         return opciones
 
     opciones = dict(_METODOS_LABEL_VENTA)
     try:
-        df_cargas_pv = obtener_cargas_presupuesto_ventas_ctrl(limit=50, usuario_id=usuario_datos_id)
+        if es_superadmin:
+            df_cargas_pv = obtener_cargas_presupuesto_ventas_ctrl(limit=200, solo_autorizados=True)
+        else:
+            df_cargas_pv = obtener_cargas_presupuesto_ventas_ctrl(limit=50, usuario_id=usuario_datos_id)
     except Exception:
         df_cargas_pv = None
     if df_cargas_pv is not None and not df_cargas_pv.empty:
         for r in df_cargas_pv.to_dict("records"):
             id_carga = int(r["id_carga"])
-            opciones[f"pv_carga:{id_carga}"] = f"Presupuesto Ventas — {_etiqueta_carga(r)}"
+            etiqueta = _etiqueta_carga(r)
+            if es_superadmin and r.get("propietario"):
+                etiqueta = f"{etiqueta} — {r['propietario']}"
+            opciones[f"pv_carga:{id_carga}"] = f"Presupuesto Ventas — {etiqueta}"
     return opciones
 
 
-def _get_usuario_id() -> int:
+def _usuario_real_id() -> int:
     u = st.session_state.get("usuario") or {}
     return int(u.get("id") or u.get("id_usuario") or 0)
+
+
+def _get_usuario_id() -> int:
+    """Igual que `forecast_view.py::_get_usuario_id` — respeta el modo
+    soporte SuperAdmin (`fc_soporte_usuario_id`) para que quede registrado
+    como autor de cada fila capturada mientras se le da soporte."""
+    usuario = st.session_state.get("usuario") or {}
+    soporte_id = st.session_state.get("fc_soporte_usuario_id")
+    if soporte_id and _tiene_rol(usuario.get("roles"), "superadmin"):
+        return int(soporte_id)
+    return _usuario_real_id()
 
 
 def _norm_roles_list(values) -> list[str]:

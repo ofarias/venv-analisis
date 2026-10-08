@@ -111,12 +111,14 @@ def obtener_cargas_presupuesto_compras_ctrl(
     id_carga: Optional[int] = None,
     limit: int = 100,
     usuario_id: int = None,
+    solo_autorizados: bool = False,
 ) -> pd.DataFrame:
     return obtener_cargas_presupuesto_compras_model(
         anio=anio,
         id_carga=id_carga,
         limit=limit,
         usuario_id=usuario_id,
+        solo_autorizados=solo_autorizados,
     )
 
 

@@ -103,6 +103,7 @@ def obtener_cargas_presupuesto_compras_model(
     id_carga: int | None = None,
     limit: int = 100,
     usuario_id: int | None = None,
+    solo_autorizados: bool = False,
 ) -> pd.DataFrame:
     conn = obtener_conexion()
     try:
@@ -110,34 +111,44 @@ def obtener_cargas_presupuesto_compras_model(
 
         sql = """
             select
-                id_carga,
-                nombre_archivo,
-                hoja_origen,
-                anio,
-                version,
-                estatus,
-                comentarios,
-                usuario_id,
-                created_at,
-                updated_at
-            from presupuesto_compras_cargas
+                c.id_carga,
+                c.nombre_archivo,
+                c.hoja_origen,
+                c.anio,
+                c.version,
+                c.estatus,
+                c.comentarios,
+                c.usuario_id,
+                c.created_at,
+                c.updated_at,
+                u.nombre as propietario
+            from presupuesto_compras_cargas c
+            left join usuarios u on u.id = c.usuario_id
             where 1 = 1
         """
         params: list = []
 
         if usuario_id is not None and int(usuario_id) > 0:
-            sql += " and usuario_id = %s"
+            sql += " and c.usuario_id = %s"
             params.append(int(usuario_id))
 
         if id_carga is not None:
-            sql += " and id_carga = %s"
+            sql += " and c.id_carga = %s"
             params.append(int(id_carga))
 
         if anio is not None:
-            sql += " and anio = %s"
+            sql += " and c.anio = %s"
             params.append(int(anio))
 
-        sql += " order by id_carga desc limit %s"
+        if solo_autorizados:
+            sql += """
+                and exists (
+                    select 1 from presupuesto_compras_lineas l
+                    where l.id_carga = c.id_carga and l.estatus = 'autorizada'
+                )
+            """
+
+        sql += " order by c.id_carga desc limit %s"
         params.append(int(limit))
 
         cur.execute(sql, tuple(params))
@@ -155,6 +166,7 @@ def obtener_cargas_presupuesto_compras_model(
                 "usuario_id",
                 "created_at",
                 "updated_at",
+                "propietario",
             ])
 
         return pd.DataFrame(rows)

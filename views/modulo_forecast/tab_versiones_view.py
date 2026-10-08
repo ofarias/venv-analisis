@@ -48,9 +48,20 @@ _ESTATUS_BADGE = {
 }
 
 
-def _get_usuario_id() -> int:
+def _usuario_real_id() -> int:
     u = st.session_state.get("usuario") or {}
     return int(u.get("id") or u.get("id_usuario") or 0)
+
+
+def _get_usuario_id() -> int:
+    """Igual que `forecast_view.py::_get_usuario_id` — respeta el modo
+    soporte SuperAdmin (`fc_soporte_usuario_id`) para crear versión, listar
+    cargas propias a vincular, etc."""
+    usuario = st.session_state.get("usuario") or {}
+    soporte_id = st.session_state.get("fc_soporte_usuario_id")
+    if soporte_id and _tiene_rol(usuario.get("roles"), "superadmin"):
+        return int(soporte_id)
+    return _usuario_real_id()
 
 
 def _norm_roles_list(values) -> list[str]:
@@ -72,6 +83,11 @@ def _puede_ver_todos_forecast() -> bool:
     if usuario.get("rol") == "Admin":
         return True
     return _tiene_rol(usuario.get("roles"), "admin", "superadmin", "forecastadmin")
+
+
+def _es_superadmin() -> bool:
+    usuario = st.session_state.get("usuario") or {}
+    return _tiene_rol(usuario.get("roles"), "superadmin")
 
 
 def mostrar_tab_versiones() -> None:
@@ -115,7 +131,15 @@ def mostrar_tab_versiones() -> None:
 
     # ── crear nueva versión ───────────────────────────────────────────────────
     with st.expander("➕ crear nueva versión", expanded=df is None or df.empty):
-        df_cargas = obtener_cargas_presupuesto_ventas_ctrl(limit=50, usuario_id=usuario_id)
+        es_superadmin = _es_superadmin()
+        if es_superadmin:
+            # SuperAdmin: puede vincular el presupuesto autorizado de
+            # cualquier usuario, no solo el propio o el del usuario elegido
+            # en el panel de soporte — evita tener que cambiar de "actuar
+            # como" solo para esto.
+            df_cargas = obtener_cargas_presupuesto_ventas_ctrl(limit=200, solo_autorizados=True)
+        else:
+            df_cargas = obtener_cargas_presupuesto_ventas_ctrl(limit=50, usuario_id=usuario_id)
 
         # método por defecto: fijo (manual) + una opción por cada carga de
         # presupuesto de ventas del usuario, identificada por su comentario
@@ -126,7 +150,10 @@ def mostrar_tab_versiones() -> None:
         if df_cargas is not None and not df_cargas.empty:
             for r in df_cargas.to_dict("records"):
                 id_carga_metodo = int(r["id_carga"])
-                metodos_opciones[f"pv_carga:{id_carga_metodo}"] = f"Presupuesto Ventas — {_etiqueta_carga_pv(r)}"
+                etiqueta = _etiqueta_carga_pv(r)
+                if es_superadmin and r.get("propietario"):
+                    etiqueta = f"{etiqueta} — {r['propietario']}"
+                metodos_opciones[f"pv_carga:{id_carga_metodo}"] = f"Presupuesto Ventas — {etiqueta}"
 
         c1, c2, c3 = st.columns([1, 2, 2])
         with c1:
