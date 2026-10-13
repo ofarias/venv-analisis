@@ -359,6 +359,7 @@ def recalcular_alertas_ctrl(
 ) -> int:
     limpiar_alertas_forecast_model(id_version)
     df_forecast = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="venta")
+    df_forecast_compra = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="compra")
     if df_forecast is None or df_forecast.empty:
         return 0
 
@@ -374,7 +375,8 @@ def recalcular_alertas_ctrl(
         filas_mdi = calcular_mdi_producto(
             cve_prod=str(cve_prod),
             stock_actual=stock,
-            df_forecast=df_forecast,
+            df_forecast_venta=df_forecast,
+            df_forecast_compra=df_forecast_compra,
             anio=anio,
             meses=meses,
         )
@@ -387,7 +389,7 @@ def recalcular_alertas_ctrl(
                     anio=anio,
                     mes=fila["mes"],
                     severidad="critical",
-                    mensaje=f"{cve_prod}: stock proyectado {fila['stock_fin']:.1f} kg — {fila['dias_cobertura']:.0f} días cobertura",
+                    mensaje=f"{cve_prod}: stock proyectado {fila['resultado']:.1f} kg — {fila['dias_cobertura']:.0f} días cobertura",
                 )
                 alertas += 1
             elif fila["semaforo"] == "🟡":
@@ -398,7 +400,7 @@ def recalcular_alertas_ctrl(
                     anio=anio,
                     mes=fila["mes"],
                     severidad="warning",
-                    mensaje=f"{cve_prod}: stock proyectado {fila['stock_fin']:.1f} kg — {fila['dias_cobertura']:.0f} días cobertura",
+                    mensaje=f"{cve_prod}: stock proyectado {fila['resultado']:.1f} kg — {fila['dias_cobertura']:.0f} días cobertura",
                 )
                 alertas += 1
     return alertas
@@ -599,6 +601,7 @@ def calcular_mdi_ctrl(
     Retorna DataFrame MDI: cve_prod + columnas de meses con stock proyectado y semáforo.
     """
     df_forecast = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="venta")
+    df_forecast_compra = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="compra")
     if df_forecast is None or df_forecast.empty:
         return pd.DataFrame()
 
@@ -613,9 +616,14 @@ def calcular_mdi_ctrl(
     if df_cat is not None and not df_cat.empty:
         cat_map = dict(zip(df_cat["cve_prod"].astype(str).str.strip(), df_cat["descr"]))
 
+    # unión venta ∪ compra — un producto puede tener DP de compra proyectado
+    # sin tener todavía forecast de venta propio en esta versión
+    cve_prods = set(df_forecast["cve_prod"].dropna().astype(str).str.strip())
+    if df_forecast_compra is not None and not df_forecast_compra.empty:
+        cve_prods |= set(df_forecast_compra["cve_prod"].dropna().astype(str).str.strip())
+
     filas = []
-    for cve_prod in sorted(df_forecast["cve_prod"].dropna().unique()):
-        prod_str = str(cve_prod).strip()
+    for prod_str in sorted(cve_prods):
         stock = 0.0
         if df_exist is not None and not df_exist.empty:
             m = df_exist["cve_art"].astype(str).str.strip() == prod_str
@@ -624,7 +632,8 @@ def calcular_mdi_ctrl(
         datos_mdi = calcular_mdi_producto(
             cve_prod=prod_str,
             stock_actual=stock,
-            df_forecast=df_forecast,
+            df_forecast_venta=df_forecast,
+            df_forecast_compra=df_forecast_compra,
             anio=anio,
             meses=meses,
         )
@@ -636,8 +645,10 @@ def calcular_mdi_ctrl(
         }
         for d in datos_mdi:
             mes = d["mes"]
-            fila[f"fc_{mes:02d}"] = d["salidas_forecast"]
-            fila[f"stock_{mes:02d}"] = d["stock_fin"]
+            fila[f"stock_ini_{mes:02d}"] = d["stock_inicio"]
+            fila[f"venta_{mes:02d}"] = d["venta_forecast"]
+            fila[f"compra_{mes:02d}"] = d["compra_forecast"]
+            fila[f"resultado_{mes:02d}"] = d["resultado"]
             fila[f"dias_{mes:02d}"] = d["dias_cobertura"]
             fila[f"sem_{mes:02d}"] = d["semaforo"]
         filas.append(fila)

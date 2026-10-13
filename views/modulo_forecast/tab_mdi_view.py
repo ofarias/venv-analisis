@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import streamlit as st
 
@@ -25,6 +27,19 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
         st.warning("selecciona meses en el tab de construcción")
         return
 
+    # el MDI es "¿qué pasa de aquí en adelante?" — los meses ya pasados no
+    # aportan y solo abultan la tabla, así que aunque el selector global
+    # (compartido con Real vs Forecast / Necesidades de Compra) tenga más
+    # meses marcados, aquí se recorta al mes anterior al actual en adelante.
+    hoy = date.today()
+    if anio == hoy.year:
+        mes_minimo = max(1, hoy.month - 1)
+        meses = [m for m in meses if m >= mes_minimo]
+
+    if not meses:
+        st.info("no hay meses vigentes (mes anterior en adelante) entre los meses seleccionados")
+        return
+
     col_act, col_alerta = st.columns([3, 1])
     with col_act:
         st.caption(
@@ -43,7 +58,7 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
         df_mdi = calcular_mdi_ctrl(id_version=id_version, anio=anio, meses=meses)
     if df_mdi is not None and not df_mdi.empty:
         for _c in df_mdi.columns:
-            if any(x in _c for x in ("stock", "fc_", "dias_")):
+            if any(x in _c for x in ("stock", "venta_", "compra_", "resultado_", "dias_")):
                 df_mdi[_c] = pd.to_numeric(df_mdi[_c], errors="coerce").fillna(0.0)
 
     if df_mdi is None or df_mdi.empty:
@@ -68,42 +83,50 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
 
     st.divider()
 
-    # ── detalle por mes: stock inicio → salidas → stock fin ────────────────────
+    # ── detalle por mes: stock → venta → compra → resultado (acumulativo) ──────
     st.markdown("##### Detalle de stock proyectado (KG)")
-    st.caption("no considera órdenes de producción — solo el stock actual menos el forecast de salidas")
+    st.caption(
+        "no considera órdenes de producción — cada mes resta la proyección de venta y "
+        "suma la proyección de compra (DP) al stock de inicio; el resultado se arrastra "
+        "como stock de inicio del mes siguiente hasta terminar el año."
+    )
 
-    # construir tabla wide: cve_prod | producto | stock_actual | ene_fc | ene_stock | ...
+    # construir tabla wide: cve_prod | producto | stock_actual | ene stock | ene venta | ene compra | ene resultado | ...
     cols_det = ["cve_prod", "producto", "stock_actual"]
     rename_det: dict = {"cve_prod": "cve prod", "producto": "producto", "stock_actual": "stock hoy"}
     for m in meses:
         mn = _MESES[m].upper()
-        fc_c = f"fc_{m:02d}"
-        stk_c = f"stock_{m:02d}"
-        for c, lbl in [(fc_c, f"{mn} forecast"), (stk_c, f"{mn} stock fin")]:
+        for c, lbl in [
+            (f"stock_ini_{m:02d}", f"{mn} Stock"),
+            (f"venta_{m:02d}", f"{mn} Proyección Venta"),
+            (f"compra_{m:02d}", f"{mn} Proyección Compra"),
+            (f"resultado_{m:02d}", f"{mn} Resultado"),
+        ]:
             if c in df_mdi.columns:
                 cols_det.append(c)
                 rename_det[c] = lbl
 
     df_det = df_mdi[[c for c in cols_det if c in df_mdi.columns]].rename(columns=rename_det)
 
-    # colorear columnas "stock fin" según semáforo
+    # colorear la columna "Resultado" de cada mes según su semáforo
     def _style_stock(df_styled):
         for m in meses:
-            stk_col = f"{_MESES[m].upper()} stock fin"
+            res_col = f"{_MESES[m].upper()} Resultado"
             sem_col = f"sem_{m:02d}"
-            if stk_col not in df_styled.columns or sem_col not in df_mdi.columns:
+            if res_col not in df_styled.columns or sem_col not in df_mdi.columns:
                 continue
             colors = df_mdi[sem_col].map(_COLOR_SEM).fillna("")
             df_styled = df_styled.apply(
-                lambda col, c=stk_col, clrs=colors: (
+                lambda col, c=res_col, clrs=colors: (
                     [f"background-color: {clr}" for clr in clrs] if col.name == c else [""] * len(col)
                 ),
                 axis=0,
             )
         return df_styled
 
+    cols_numericas = [c for c in df_det.columns if c not in ("cve prod", "producto")]
     styled = df_det.style.pipe(_style_stock).format(
-        {c: "{:,.2f}" for c in df_det.columns if "stock" in c.lower() or "forecast" in c.lower()},
+        {c: "{:,.2f}" for c in cols_numericas},
         na_rep="—"
     )
     st.dataframe(styled, use_container_width=True, hide_index=True, height=min(56 + len(df_det) * 35, 600))

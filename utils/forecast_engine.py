@@ -146,33 +146,43 @@ def generar_propuesta_forecast(
 def calcular_mdi_producto(
     cve_prod: str,
     stock_actual: float,
-    df_forecast: pd.DataFrame,          # forecast KG por mes
+    df_forecast_venta: pd.DataFrame,    # forecast KG de venta por mes
+    df_forecast_compra: pd.DataFrame,   # forecast KG de compra (DP) por mes
     anio: int,
     meses: list[int],
 ) -> list[dict]:
     """
-    Calcula el Mapa de Inventario mes a mes para un producto.
-    No considera órdenes de producción: el stock solo se reduce por el forecast de salidas.
-    Retorna lista de dicts: {mes, stock_inicio, salidas_forecast, stock_fin, dias_cobertura, semaforo}
+    Calcula el Mapa de Inventario mes a mes para un producto: parte del stock
+    actual y cada mes resta la proyección de venta y suma la proyección de
+    compra — el resultado es acumulativo, se arrastra como stock de inicio
+    del siguiente mes hasta terminar el año (no se trunca a 0: un resultado
+    negativo señala un faltante proyectado que no se resuelve solo). No
+    considera órdenes de producción, solo lo ya proyectado en el forecast.
+    Retorna lista de dicts: {mes, stock_inicio, venta_forecast,
+    compra_forecast, resultado, dias_cobertura, semaforo}
     """
+
+    def _forecast_mes(df: pd.DataFrame, mes: int) -> float:
+        if df is None or df.empty:
+            return 0.0
+        mask = (
+            (df["cve_prod"].astype(str).str.strip() == str(cve_prod).strip())
+            & (df["mes"] == mes)
+        )
+        return float(df.loc[mask, "forecast"].sum() if mask.any() else 0)
+
     resultado = []
     stock = float(stock_actual or 0)
 
     for mes in meses:
-        # salidas según forecast
-        salidas = 0.0
-        if df_forecast is not None and not df_forecast.empty:
-            mask_f = (
-                (df_forecast["cve_prod"].astype(str).str.strip() == str(cve_prod).strip())
-                & (df_forecast["mes"] == mes)
-            )
-            salidas = float(df_forecast.loc[mask_f, "forecast"].sum() if mask_f.any() else 0)
+        venta = _forecast_mes(df_forecast_venta, mes)
+        compra = _forecast_mes(df_forecast_compra, mes)
+        stock_inicio = stock
+        res = stock_inicio - venta + compra
+        dias = dias_cobertura(max(res, 0.0), venta, anio, mes)
 
-        stock_fin = max(stock - salidas, 0)
-        dias = dias_cobertura(stock_fin, salidas, anio, mes)
-
-        if stock_fin <= 0 and salidas <= 0:
-            # sin stock y sin demanda proyectada: no es una alerta de cobertura
+        if res <= 0 and venta <= 0:
+            # sin stock proyectado y sin demanda proyectada: no es una alerta de cobertura
             semaforo = "🔵"
         elif dias >= 30:
             semaforo = "🟢"
@@ -184,12 +194,13 @@ def calcular_mdi_producto(
         resultado.append({
             "mes": mes,
             "mes_nombre": _MESES.get(mes, str(mes)),
-            "stock_inicio": round(stock, 2),
-            "salidas_forecast": round(salidas, 2),
-            "stock_fin": round(stock_fin, 2),
+            "stock_inicio": round(stock_inicio, 2),
+            "venta_forecast": round(venta, 2),
+            "compra_forecast": round(compra, 2),
+            "resultado": round(res, 2),
             "dias_cobertura": dias,
             "semaforo": semaforo,
         })
-        stock = stock_fin
+        stock = res  # acumulativo: el resultado de este mes es el stock de inicio del siguiente
 
     return resultado
