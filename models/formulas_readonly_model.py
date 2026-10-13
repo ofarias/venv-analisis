@@ -4,6 +4,7 @@ import fdb
 import streamlit as st
 
 from database.conexion import obtener_conexion_biotecsa_formulas
+from models.presupuesto_ventas_model import listar_cve_prod_autorizados_model
 
 
 def _fetchall_dict(cursor):
@@ -182,12 +183,15 @@ def listar_pt_sin_formula_model():
     cur.close()
     conn.close()
 
+    cve_prod_autorizados = listar_cve_prod_autorizados_model()
+
     return [
         {
-            "cve_sae": (p["cve_art"] or "").strip(),
+            "cve_sae": cve_sae,
             "descripcion": (p["descr"] or "").strip(),
             "linea": (p["lin_prod"] or "").strip(),
+            "en_presupuesto_autorizado": cve_sae in cve_prod_autorizados,
         }
         for p in productos
-        if (p["cve_art"] or "").strip() not in con_formula
+        if (cve_sae := (p["cve_art"] or "").strip()) not in con_formula
     ]

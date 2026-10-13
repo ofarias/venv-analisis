@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import fdb
+import json
 import re
 import streamlit as st
 from dataclasses import dataclass
@@ -427,14 +428,71 @@ def get_detalle_by_solicitud(solicitud_id: int) -> List[Dict[str, Any]]:
             pass
 
 
-def delete_detalle_ids(solicitud_id: int, detalle_ids: List[int]) -> None:
+def _registrar_detalle_eliminado(
+    cur,
+    *,
+    solicitud_id: int,
+    filas: List[Dict[str, Any]],
+    origen: str,
+    usuario_id: Optional[int],
+    usuario_nombre: Optional[str],
+    usuario_email: Optional[str],
+) -> None:
+    for fila in filas:
+        cur.execute(
+            """
+            insert into solicitudes_detalle_eliminados (
+                solicitud_id, detalle_id, datos_json, origen,
+                eliminado_por, eliminado_por_nombre, eliminado_por_email
+            )
+            values (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                solicitud_id,
+                fila.get("id"),
+                json.dumps(fila, default=str, ensure_ascii=False),
+                origen,
+                usuario_id,
+                usuario_nombre,
+                usuario_email,
+            ),
+        )
+
+
+def delete_detalle_ids(
+    solicitud_id: int,
+    detalle_ids: List[int],
+    *,
+    usuario_id: Optional[int] = None,
+    usuario_nombre: Optional[str] = None,
+    usuario_email: Optional[str] = None,
+) -> None:
     if not detalle_ids:
         return
     conn = obtener_conexion()
     try:
-        cur = conn.cursor()
+        cur = conn.cursor(dictionary=True)
         placeholders = ",".join(["%s"] * len(detalle_ids))
         params: List[Any] = [solicitud_id] + detalle_ids
+
+        cur.execute(f"""
+            select *
+            from solicitudes_detalle
+            where solicitud_id = %s
+              and id in ({placeholders})
+        """, tuple(params))
+        filas = cur.fetchall() or []
+
+        _registrar_detalle_eliminado(
+            cur,
+            solicitud_id=solicitud_id,
+            filas=filas,
+            origen="manual",
+            usuario_id=usuario_id,
+            usuario_nombre=usuario_nombre,
+            usuario_email=usuario_email,
+        )
+
         cur.execute(f"""
             delete from solicitudes_detalle
             where solicitud_id = %s
@@ -1727,22 +1785,40 @@ def get_correos_usuarios_por_rol_model(nombre_rol: str) -> list[str]:
         except Exception:
             pass
 
-def eliminar_detalles_sin_monto_model(solicitud_id: int) -> dict:
+def eliminar_detalles_sin_monto_model(
+    solicitud_id: int,
+    *,
+    usuario_id: Optional[int] = None,
+    usuario_nombre: Optional[str] = None,
+    usuario_email: Optional[str] = None,
+) -> dict:
     from database.conexion import obtener_conexion
 
     cn = obtener_conexion()
     try:
-        cur = cn.cursor()
+        cur = cn.cursor(dictionary=True)
 
-        sql = """
-            delete from solicitudes_detalle
-            where solicitud_id = %s
+        condicion = """
+            solicitud_id = %s
               and coalesce(precio_unitario, 0) = 0
               and coalesce(total_xml, 0) = 0
               and coalesce(importe, 0) = 0
         """
 
-        cur.execute(sql, (int(solicitud_id),))
+        cur.execute(f"select * from solicitudes_detalle where {condicion}", (int(solicitud_id),))
+        filas = cur.fetchall() or []
+
+        _registrar_detalle_eliminado(
+            cur,
+            solicitud_id=int(solicitud_id),
+            filas=filas,
+            origen="limpieza_sin_monto",
+            usuario_id=usuario_id,
+            usuario_nombre=usuario_nombre,
+            usuario_email=usuario_email,
+        )
+
+        cur.execute(f"delete from solicitudes_detalle where {condicion}", (int(solicitud_id),))
         eliminados = cur.rowcount
         cn.commit()
 
@@ -1764,11 +1840,32 @@ def eliminar_detalles_sin_monto_model(solicitud_id: int) -> dict:
             "msg": str(e),
         }
 
+
+def listar_detalle_eliminados(solicitud_id: int) -> list[dict]:
+    cn = obtener_conexion()
+    try:
+        cur = cn.cursor(dictionary=True)
+        cur.execute(
+            """
+            select
+                id,
+                solicitud_id,
+                detalle_id,
+                datos_json,
+                origen,
+                eliminado_por,
+                eliminado_por_nombre,
+                eliminado_por_email,
+                fecha
+            from solicitudes_detalle_eliminados
+            where solicitud_id = %s
+            order by fecha asc, id asc
+            """,
+            (int(solicitud_id),),
+        )
+        return cur.fetchall() or []
     finally:
-        try:
-            cn.close()
-        except Exception:
-            pass
+        cn.close()
 
 def get_estatus_solicitud(solicitud_id: int) -> str | None:
     cn = obtener_conexion()

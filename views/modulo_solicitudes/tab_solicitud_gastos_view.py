@@ -41,6 +41,7 @@ from controllers.solicitudes_controller import (
     get_correos_usuarios_por_rol_ctrl,
     get_roles_por_usuario_id_ctrl,
     eliminar_detalles_sin_monto_ctrl,
+    listar_detalle_eliminados_ctrl,
 )
 from models.datoscfd_model import extraer_uuid_desde_pdf, guardar_pdf_datoscfd
 from utils.envio_correo import enviar_correo, enviar_correo_sistema
@@ -2043,6 +2044,8 @@ def mostrar_tab_solicitudes_gastos():
                     rows=rows_auto,
                     deleted_ids=[],
                     usuario_id=int(usuario["id"]),
+                    usuario_nombre=str(usuario.get("nombre") or ""),
+                    usuario_email=str(usuario.get("email") or ""),
                 )
                 if not res_det.get("ok"):
                     st.warning(
@@ -2127,6 +2130,8 @@ def mostrar_tab_solicitudes_gastos():
                 res_limpia = eliminar_detalles_sin_monto_ctrl(
                     int(selected_id),
                     int(usuario["id"]),
+                    usuario_nombre=str(usuario.get("nombre") or ""),
+                    usuario_email=str(usuario.get("email") or ""),
                 )
 
                 if tipo_aut == "sin_autorizacion":
@@ -3122,6 +3127,8 @@ def mostrar_tab_solicitudes_gastos():
                     rows=rows_out,
                     deleted_ids=[int(x) for x in ids_a_borrar],
                     usuario_id=int(usuario["id"]),
+                    usuario_nombre=str(usuario.get("nombre") or ""),
+                    usuario_email=str(usuario.get("email") or ""),
                 )
 
             if res is not None and res.get("ok"):
@@ -3138,6 +3145,37 @@ def mostrar_tab_solicitudes_gastos():
                     st.warning(msg)
                 else:
                     st.error(msg or "no se pudo guardar el detalle")
+
+    with st.expander("📜 historial de líneas eliminadas de este detalle"):
+        eliminados = listar_detalle_eliminados_ctrl(int(selected_id)) if selected_id else []
+        if not eliminados:
+            st.caption("sin eliminaciones registradas para esta solicitud")
+        else:
+            filas_hist = []
+            for e in eliminados:
+                datos = e.get("datos_json") or {}
+                if isinstance(datos, str):
+                    try:
+                        datos = json.loads(datos)
+                    except Exception:
+                        datos = {}
+                filas_hist.append({
+                    "fecha": e.get("fecha"),
+                    "concepto": datos.get("concepto", ""),
+                    "importe": _to_float(datos.get("importe"))
+                        or _to_float(datos.get("total_xml"))
+                        or _to_float(datos.get("precio_unitario")),
+                    "origen": (
+                        "manual" if e.get("origen") == "manual"
+                        else "limpieza automática (sin monto)"
+                    ),
+                    "eliminado por": e.get("eliminado_por_nombre") or e.get("eliminado_por_email") or "",
+                })
+            st.dataframe(
+                pd.DataFrame(filas_hist).sort_values("fecha", ascending=False),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     st.divider()
 

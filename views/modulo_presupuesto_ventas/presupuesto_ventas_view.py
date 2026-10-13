@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import date, datetime
 from io import BytesIO
@@ -43,9 +44,11 @@ from views.modulo_presupuesto_ventas.presupuesto_compras_view import (
 )
 from views.modulo_presupuesto_ventas.reporte_ventas_view import mostrar_panel_reporte_gerente
 from controllers.presupuesto_admin_controller import (
+    obtener_clientes_presupuesto_ctrl,
     obtener_presupuesto_ventas_compras_ctrl,
-    obtener_roles_usuario_id_ctrl,
+    obtener_roles_usuarios_ids_ctrl,
     obtener_usuario_por_id_ctrl,
+    obtener_usuarios_por_ids_ctrl,
     obtener_usuarios_presupuesto_ctrl,
 )
 from controllers.presupuesto_compras_controller import (
@@ -57,6 +60,7 @@ from controllers.presupuesto_compras_controller import (
 )
 from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
 from controllers.usuario_controller import get_usuarios
+from settings import BASE_DIR
 from utils.deeplink_tokens import build_links_autorizacion_presupuesto, get_app_link_cfg, verify_token
 from utils.envio_correo import enviar_correo, enviar_correo_sistema
 from utils.preferencias_columnas import guardar_columnas_ocultas, obtener_columnas_ocultas
@@ -2686,7 +2690,10 @@ def _grafica_barras(
         eje_x = alt.X(f"{valor}:Q", title=None, axis=alt.Axis(format=fmt))
         eje_y = alt.Y(f"{categoria}:N", sort="-x", title=None)
     else:
-        eje_x = alt.X(f"{categoria}:N", title=None)
+        # sin "sort" explícito, Altair ordena un campo :N alfabéticamente —
+        # aquí se respeta el orden en que ya viene el DataFrame (p. ej. los
+        # meses cronológicos, no "abr, ago, dic, ene…")
+        eje_x = alt.X(f"{categoria}:N", title=None, sort=list(df[categoria]))
         eje_y = alt.Y(f"{valor}:Q", title=None, axis=alt.Axis(format=fmt))
 
     chart = alt.Chart(df).mark_bar().encode(
@@ -2700,11 +2707,9 @@ def _grafica_barras(
     st.altair_chart(chart, use_container_width=True)
 
 
-def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
-    """KPIs y gráficas de lo filtrado — es lo primero que ve un directivo en
-    "ver todos"; el detalle línea por línea queda en un expander debajo,
-    en segundo nivel."""
-    meses_cols = [m for m in _MESES.values() if m in pivote.columns]
+def _kpis_ver_todos(pivote: pd.DataFrame) -> dict:
+    """KPIs agregados de lo filtrado — una sola fuente de verdad para las
+    métricas en pantalla y para el reporte en PDF."""
     total_kg = float(pivote["total_kg_anio"].sum()) if "total_kg_anio" in pivote.columns else 0.0
     total_usd = float(pivote["total_usd_anio"].sum()) if "total_usd_anio" in pivote.columns else 0.0
     num_clientes = (
@@ -2715,41 +2720,104 @@ def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
         int(pivote.loc[pivote["cve_prod"].astype(str).str.strip() != "", "cve_prod"].nunique())
         if "cve_prod" in pivote.columns else 0
     )
+    return {
+        "lineas": len(pivote), "total_kg": total_kg, "total_usd": total_usd,
+        "num_clientes": num_clientes, "num_productos": num_productos,
+    }
 
-    st.markdown("#### 📊 Resumen de lo filtrado")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Líneas", f"{len(pivote):,}")
-    c2.metric("Total USD año", f"${total_usd:,.0f}")
-    c3.metric("Total kg año", f"{total_kg:,.0f} kg")
-    c4.metric("Clientes", f"{num_clientes:,}")
-    c5.metric("Productos", f"{num_productos:,}")
 
+def _datos_mensuales_ver_todos(pivote: pd.DataFrame) -> pd.DataFrame:
+    """USD y kg por mes de lo filtrado, en orden cronológico — usado en las
+    gráficas de pantalla y en el reporte en PDF."""
+    meses_cols = [m for m in _MESES.values() if m in pivote.columns]
     if not meses_cols:
-        return
+        return pd.DataFrame(columns=["mes", "USD", "kg"])
 
     # precio efectivo por línea (precio venta si ya se capturó, si no el de
     # SAE) — mismo criterio que _agregar_totales_anio, aplicado mes a mes
-    # para la gráfica de USD; esta pestaña solo trae la sección KG.
+    # para la columna USD; esta pestaña solo trae la sección KG.
     precio_col = pd.to_numeric(pivote.get("precio", 0.0), errors="coerce").fillna(0.0)
     if "precio_venta" in pivote.columns:
         precio_venta_col = pd.to_numeric(pivote["precio_venta"], errors="coerce").fillna(0.0)
         precio_col = precio_venta_col.where(precio_venta_col > 0, precio_col)
 
-    df_mes_usd = pd.DataFrame({
+    return pd.DataFrame({
         "mes": [m.upper() for m in meses_cols],
         "USD": [float((pd.to_numeric(pivote[m], errors="coerce").fillna(0.0) * precio_col).sum()) for m in meses_cols],
-    })
-    df_mes_kg = pd.DataFrame({
-        "mes": [m.upper() for m in meses_cols],
         "kg": [float(pd.to_numeric(pivote[m], errors="coerce").fillna(0.0).sum()) for m in meses_cols],
     })
+
+
+def _top_por_categoria(pivote: pd.DataFrame, columna: str, top_n: int | None = 10) -> pd.DataFrame:
+    """USD agregado por valor distinto de `columna` (cliente, producto,
+    vendedor…), separado también por "tipo" (venta/compra) cuando esa columna
+    existe — sin esto, con ambos tipos a la vez (sin filtrar por tipo) se
+    sumaban ingresos de venta y costos de compra bajo el mismo nombre.
+    Devuelve [columna, "tipo", "usd"] de mayor a menor USD — usado en las
+    gráficas horizontales de pantalla y en el reporte en PDF."""
+    if columna not in pivote.columns:
+        return pd.DataFrame(columns=[columna, "tipo", "usd"])
+    claves = [columna] + (["tipo"] if "tipo" in pivote.columns else [])
+    df = (
+        pivote[pivote[columna].astype(str).str.strip() != ""]
+        .groupby(claves, as_index=False).agg(usd=("total_usd_anio", "sum"))
+        .sort_values("usd", ascending=False)
+    )
+    if "tipo" not in df.columns:
+        df["tipo"] = ""
+    return df.head(top_n) if top_n else df
+
+
+def _tabla_cobertura_mensual(pivote: pd.DataFrame) -> pd.DataFrame:
+    """Cliente + producto + kg por mes, agregado por si hay más de una
+    línea/carga para la misma combinación — separado por tipo (venta/compra)
+    para no mezclar clientes de venta con proveedores de compra. Es la base
+    de la tabla "verde donde hay valor" del reporte en PDF."""
+    meses_cols = [m for m in _MESES.values() if m in pivote.columns]
+    if not meses_cols or "cliente_excel" not in pivote.columns or "producto_excel" not in pivote.columns:
+        return pd.DataFrame()
+    cols_grupo = ["cliente_excel", "producto_excel"] + (["tipo"] if "tipo" in pivote.columns else [])
+    cols_totales = [c for c in ("total_kg_anio", "total_usd_anio") if c in pivote.columns]
+    df = pivote.groupby(cols_grupo, as_index=False)[meses_cols + cols_totales].sum()
+    return df.sort_values(["cliente_excel", "producto_excel"]).reset_index(drop=True)
+
+
+def _con_etiqueta_tipo(df: pd.DataFrame, columna: str) -> pd.DataFrame:
+    """Le agrega "(venta)"/"(compra)" al nombre solo si el propio top mezcla
+    ambos tipos — evita que dos barras de "cliente_excel" con el mismo nombre
+    pero tipo distinto se vean como una sola en la gráfica."""
+    if "tipo" not in df.columns or df["tipo"].nunique() <= 1:
+        return df
+    df = df.copy()
+    df[columna] = df[columna].astype(str) + " (" + df["tipo"].astype(str).str.capitalize() + ")"
+    return df
+
+
+def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
+    """KPIs y gráficas de lo filtrado — es lo primero que ve un directivo en
+    "ver todos"; el detalle línea por línea queda en un expander debajo,
+    en segundo nivel."""
+    kpis = _kpis_ver_todos(pivote)
+
+    st.markdown("#### 📊 Resumen de lo filtrado")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Líneas", f"{kpis['lineas']:,}")
+    c2.metric("Total USD año", f"${kpis['total_usd']:,.0f}")
+    c3.metric("Total kg año", f"{kpis['total_kg']:,.0f} kg")
+    c4.metric("Clientes", f"{kpis['num_clientes']:,}")
+    c5.metric("Productos", f"{kpis['num_productos']:,}")
+
+    df_meses = _datos_mensuales_ver_todos(pivote)
+    if df_meses.empty:
+        return
+
     col_g1, col_g2 = st.columns(2)
     with col_g1:
         st.caption("USD por mes")
-        _grafica_barras(df_mes_usd, categoria="mes", valor="USD", tipo_valor="usd", height=280)
+        _grafica_barras(df_meses[["mes", "USD"]], categoria="mes", valor="USD", tipo_valor="usd", height=280)
     with col_g2:
         st.caption("Kilos por mes")
-        _grafica_barras(df_mes_kg, categoria="mes", valor="kg", tipo_valor="cantidad", height=280)
+        _grafica_barras(df_meses[["mes", "kg"]], categoria="mes", valor="kg", tipo_valor="cantidad", height=280)
 
     col_g3, col_g4 = st.columns(2)
     with col_g3:
@@ -2765,34 +2833,273 @@ def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
             st.caption("Líneas por estatus de autorización")
             _grafica_barras(df_estatus, categoria="estatus_autorizacion_badge", valor="lineas", tipo_valor="cantidad", height=240)
 
-    top_n = 10
+    top_cli = _top_por_categoria(pivote, "cliente_excel", top_n=10)
+    top_prod = _top_por_categoria(pivote, "producto_excel", top_n=10)
     col_g5, col_g6 = st.columns(2)
     with col_g5:
-        if "cliente_excel" in pivote.columns:
-            top_cli = (
-                pivote[pivote["cliente_excel"].astype(str).str.strip() != ""]
-                .groupby("cliente_excel", as_index=False).agg(usd=("total_usd_anio", "sum"))
-                .sort_values("usd", ascending=False).head(top_n)
+        if not top_cli.empty:
+            st.caption(f"top {len(top_cli)} clientes por USD")
+            _grafica_barras(
+                _con_etiqueta_tipo(top_cli, "cliente_excel"),
+                categoria="cliente_excel", valor="usd", tipo_valor="usd", height=280, horizontal=True,
             )
-            if not top_cli.empty:
-                st.caption(f"top {len(top_cli)} clientes por USD")
-                _grafica_barras(
-                    top_cli, categoria="cliente_excel", valor="usd", tipo_valor="usd", height=280, horizontal=True,
-                )
     with col_g6:
-        if "producto_excel" in pivote.columns:
-            top_prod = (
-                pivote[pivote["producto_excel"].astype(str).str.strip() != ""]
-                .groupby("producto_excel", as_index=False).agg(usd=("total_usd_anio", "sum"))
-                .sort_values("usd", ascending=False).head(top_n)
+        if not top_prod.empty:
+            st.caption(f"top {len(top_prod)} productos por USD")
+            _grafica_barras(
+                _con_etiqueta_tipo(top_prod, "producto_excel"),
+                categoria="producto_excel", valor="usd", tipo_valor="usd", height=280, horizontal=True,
             )
-            if not top_prod.empty:
-                st.caption(f"top {len(top_prod)} productos por USD")
-                _grafica_barras(
-                    top_prod, categoria="producto_excel", valor="usd", tipo_valor="usd", height=280, horizontal=True,
-                )
+
+    # solo aporta cuando hay más de un vendedor en lo filtrado — con uno
+    # solo la comparación no dice nada
+    df_vendedor = _top_por_categoria(pivote, "usuario_nombre", top_n=None)
+    if len(df_vendedor) > 1:
+        st.caption("ventas por vendedor")
+        _grafica_barras(
+            _con_etiqueta_tipo(df_vendedor, "usuario_nombre"),
+            categoria="usuario_nombre", valor="usd", tipo_valor="usd", height=280, horizontal=True,
+        )
 
     st.divider()
+
+
+# ── reporte para dirección (PDF) ────────────────────────────────────────────
+
+def _generar_reporte_ver_todos_pdf(pivote: pd.DataFrame, filtros: dict) -> bytes:
+    """Reporte ejecutivo (KPIs + rankings, sin el detalle línea por línea) de
+    lo filtrado en "ver todos", para compartir con dirección."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (
+        Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    )
+
+    kpis = _kpis_ver_todos(pivote)
+    df_meses = _datos_mensuales_ver_todos(pivote)
+    top_cli = _top_por_categoria(pivote, "cliente_excel", top_n=10)
+    top_prod = _top_por_categoria(pivote, "producto_excel", top_n=10)
+    top_vend = _top_por_categoria(pivote, "usuario_nombre", top_n=None)
+
+    def fmt_usd(v) -> str:
+        return f"${v:,.0f}"
+
+    def fmt_kg(v) -> str:
+        return f"{v:,.0f} kg"
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=1.0 * cm, rightMargin=1.0 * cm, topMargin=1.2 * cm, bottomMargin=1.2 * cm,
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=18, spaceAfter=2)
+    meta = ParagraphStyle("meta", parent=styles["Normal"], fontSize=8.5, textColor=colors.HexColor("#4a505c"), spaceAfter=10)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=12.5, spaceBefore=14, spaceAfter=6)
+
+    GRIS_HDR = colors.HexColor("#12151a")
+    GRIS_LINEA = colors.HexColor("#e3e6ea")
+
+    titulo = [
+        Paragraph("Reporte de Presupuesto de Ventas y Compras", h1),
+        Paragraph(
+            f"Generado: <b>{datetime.now().strftime('%d/%m/%Y %H:%M')}</b> &nbsp;·&nbsp; "
+            f"Filtros: {filtros.get('resumen') or 'sin filtros adicionales'}",
+            meta,
+        ),
+    ]
+
+    logo_path = os.path.join(BASE_DIR, "assets", "biotecsaicon.png")
+    if os.path.exists(logo_path):
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(logo_path) as im:
+                # el archivo fuente es un ícono de 2048×2048 — se reduce en
+                # memoria antes de insertarlo, si no el PDF pesa varios MB
+                # de más por una imagen que se ve a ~2cm
+                im.thumbnail((300, 300))
+                ancho_px, alto_px = im.size
+                buf_logo = BytesIO()
+                im.convert("RGBA").save(buf_logo, format="PNG")
+                buf_logo.seek(0)
+            alto_logo = 2.0 * cm
+            ancho_logo = alto_logo * (ancho_px / alto_px)
+            encabezado = Table(
+                [[Image(buf_logo, width=ancho_logo, height=alto_logo), titulo]],
+                colWidths=[ancho_logo + 0.4 * cm, None],
+            )
+            encabezado.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (0, 0), 0),
+                ("RIGHTPADDING", (0, 0), (0, 0), 0),
+            ]))
+            story = [encabezado]
+        except Exception:
+            story = titulo
+    else:
+        story = titulo
+
+    story.append(Spacer(1, 6))
+
+    kpi_data = [
+        ["Líneas", "Total USD año", "Total kg año", "Clientes", "Productos"],
+        [
+            f"{kpis['lineas']:,}", fmt_usd(kpis["total_usd"]), fmt_kg(kpis["total_kg"]),
+            f"{kpis['num_clientes']:,}", f"{kpis['num_productos']:,}",
+        ],
+    ]
+    t_kpi = Table(kpi_data, colWidths=[3.6 * cm] * 5)
+    t_kpi.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), GRIS_HDR),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 1), (-1, 1), 11),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BOX", (0, 0), (-1, -1), 0.5, GRIS_LINEA),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, GRIS_LINEA),
+    ]))
+    story += [t_kpi, Spacer(1, 4)]
+
+    if not df_meses.empty:
+        story.append(Paragraph("USD y kg por mes", h2))
+        mes_data = [["Mes", "USD", "kg"]] + [
+            [r["mes"], fmt_usd(r["USD"]), fmt_kg(r["kg"])] for _, r in df_meses.iterrows()
+        ]
+        t_mes = Table(mes_data, colWidths=[3 * cm, 5 * cm, 5 * cm], repeatRows=1)
+        t_mes.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), GRIS_HDR),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.4, GRIS_LINEA),
+        ]))
+        story += [t_mes, Spacer(1, 4)]
+
+    def tabla_ranking(titulo_txt: str, df: pd.DataFrame, nombre_col: str):
+        if df.empty:
+            return []
+        # "tipo" solo se muestra como columna si el ranking mezcla venta y
+        # compra — si ya viene de un solo tipo, agregarla sería ruido
+        con_tipo = "tipo" in df.columns and df["tipo"].nunique() > 1
+        elementos = [Paragraph(titulo_txt, h2)]
+        header = ["", "Tipo", "USD"] if con_tipo else ["", "USD"]
+        data = [header]
+        for _, r in df.iterrows():
+            fila = [Paragraph(str(r[nombre_col]), styles["Normal"])]
+            if con_tipo:
+                fila.append(str(r["tipo"]).capitalize())
+            fila.append(fmt_usd(r["usd"]))
+            data.append(fila)
+        col_widths = [9.5 * cm, 2.5 * cm, 2.5 * cm] if con_tipo else [11 * cm, 3 * cm]
+        t = Table(data, colWidths=col_widths, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), GRIS_HDR),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.4, GRIS_LINEA),
+        ]))
+        elementos.append(t)
+        return elementos
+
+    story += tabla_ranking(f"Top {len(top_cli)} clientes por USD", top_cli, "cliente_excel")
+    story += tabla_ranking(f"Top {len(top_prod)} productos por USD", top_prod, "producto_excel")
+    if len(top_vend) > 1:
+        story += tabla_ranking("Ventas por vendedor", top_vend, "usuario_nombre")
+
+    # ── detalle mensual: cliente × producto, verde donde hay kg, blanco
+    # donde es 0 — separado en una tabla por tipo (venta / compra) para no
+    # mezclar clientes de venta con proveedores de compra en la misma fila
+    df_cobertura = _tabla_cobertura_mensual(pivote)
+    if not df_cobertura.empty:
+        meses_presentes = [m for m in _MESES.values() if m in df_cobertura.columns]
+        VERDE = colors.HexColor("#d4edda")
+        h_mes = ParagraphStyle("h_mes", parent=styles["Normal"], fontSize=7, leading=8)
+        # un Paragraph dentro de una celda ignora el TEXTCOLOR de la tabla —
+        # sin este estilo aparte, el encabezado queda negro sobre negro
+        h_mes_header = ParagraphStyle("h_mes_header", parent=h_mes, textColor=colors.white)
+        ancho_nombre = 4.3 * cm
+        ancho_total = 1.9 * cm
+        ancho_mes = (doc.width - 2 * ancho_nombre - 2 * ancho_total) / max(len(meses_presentes), 1)
+
+        tipos_presentes = (
+            list(dict.fromkeys(df_cobertura["tipo"])) if "tipo" in df_cobertura.columns else [None]
+        )
+        for tipo_actual in tipos_presentes:
+            df_tipo = (
+                df_cobertura[df_cobertura["tipo"] == tipo_actual] if tipo_actual is not None else df_cobertura
+            )
+            if df_tipo.empty:
+                continue
+            titulo_tabla = (
+                f"Detalle mensual — {str(tipo_actual).capitalize()} ({len(df_tipo)} línea(s))"
+                if tipo_actual is not None else f"Detalle mensual ({len(df_tipo)} línea(s))"
+            )
+            story.append(Paragraph(titulo_tabla, h2))
+
+            header = [
+                Paragraph("Cliente", h_mes_header), Paragraph("Producto", h_mes_header),
+            ] + [Paragraph(m.upper(), h_mes_header) for m in meses_presentes] + [
+                Paragraph("Total Kg", h_mes_header), Paragraph("Total USD", h_mes_header),
+            ]
+            data = [header]
+            estilos_extra = []
+            for i, r in enumerate(df_tipo.to_dict("records"), start=1):
+                fila = [
+                    Paragraph(str(r["cliente_excel"]), h_mes),
+                    Paragraph(str(r["producto_excel"]), h_mes),
+                ]
+                for j, m in enumerate(meses_presentes):
+                    valor = pd.to_numeric(r.get(m), errors="coerce") or 0.0
+                    col_idx = 2 + j
+                    if valor != 0:
+                        fila.append(Paragraph(f"{valor:,.0f}", h_mes))
+                        estilos_extra.append(("BACKGROUND", (col_idx, i), (col_idx, i), VERDE))
+                    else:
+                        fila.append("")
+                total_kg = pd.to_numeric(r.get("total_kg_anio"), errors="coerce") or 0.0
+                total_usd = pd.to_numeric(r.get("total_usd_anio"), errors="coerce") or 0.0
+                fila.append(Paragraph(f"{total_kg:,.0f}", h_mes))
+                fila.append(Paragraph(f"${total_usd:,.0f}", h_mes))
+                data.append(fila)
+
+            col_total_kg = 2 + len(meses_presentes)
+            col_total_usd = col_total_kg + 1
+            t_cobertura = Table(
+                data,
+                colWidths=[ancho_nombre, ancho_nombre] + [ancho_mes] * len(meses_presentes)
+                + [ancho_total, ancho_total],
+                repeatRows=1,
+            )
+            t_cobertura.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), GRIS_HDR),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("LEFTPADDING", (2, 0), (-1, -1), 1),
+                ("RIGHTPADDING", (2, 0), (-1, -1), 1),
+                ("GRID", (0, 0), (-1, -1), 0.3, GRIS_LINEA),
+                ("FONTNAME", (col_total_kg, 1), (col_total_usd, -1), "Helvetica-Bold"),
+                ("BACKGROUND", (col_total_kg, 1), (col_total_usd, -1), GRIS_LINEA),
+                *estilos_extra,
+            ]))
+            story += [t_cobertura, Spacer(1, 4)]
+
+    doc.build(story)
+    return buf.getvalue()
 
 
 def _panel_ver_todos() -> None:
@@ -2815,8 +3122,10 @@ def _panel_ver_todos() -> None:
             nombre = str(r.get("usuario_nombre") or f"usuario {r.get('usuario_id')}").strip()
             usuarios_opciones[nombre] = int(r["usuario_id"])
 
-    col_anio, col_btn, col_usuario, col_tipo, col_linea, col_producto, col_estatus = st.columns(
-        [1.1, 0.9, 1.3, 1.0, 1.3, 1.5, 1.3], vertical_alignment="bottom",
+    clientes_disponibles = obtener_clientes_presupuesto_ctrl() or []
+
+    col_anio, col_btn, col_usuario, col_tipo = st.columns(
+        [1.1, 0.9, 1.4, 1.0], vertical_alignment="bottom",
     )
     with col_anio:
         anio_sel = st.number_input(
@@ -2829,9 +3138,13 @@ def _panel_ver_todos() -> None:
             "🔍 Filtrar", key="pvt_btn_filtrar", type="primary", use_container_width=True,
         )
     with col_usuario:
-        usuarios_sel = st.multiselect("usuario", list(usuarios_opciones.keys()), key="pvt_usuario")
+        usuarios_sel = st.multiselect("vendedor", list(usuarios_opciones.keys()), key="pvt_usuario")
     with col_tipo:
         tipo_sel = st.multiselect("tipo", ["venta", "compra"], key="pvt_tipo")
+
+    col_linea, col_producto, col_cliente, col_estatus = st.columns(
+        [1.2, 1.5, 1.5, 1.3], vertical_alignment="bottom",
+    )
     with col_linea:
         linea_sel = st.multiselect("línea de producto", lineas_disponibles, key="pvt_linea")
     with col_producto:
@@ -2846,6 +3159,8 @@ def _panel_ver_todos() -> None:
                 if cve:
                     productos_opciones[f"{cve} - {desc}" if desc else cve] = cve
         producto_sel = st.multiselect("producto", list(productos_opciones.keys()), key="pvt_producto")
+    with col_cliente:
+        cliente_sel = st.multiselect("cliente", clientes_disponibles, key="pvt_cliente")
     with col_estatus:
         estatus_aut_sel = st.multiselect(
             "autorización", list(_ESTATUS_LINEA_BADGE.keys()),
@@ -2866,6 +3181,7 @@ def _panel_ver_todos() -> None:
                 cve_prod=cve_prods or None,
                 tipo=tipo_sel or None,
                 estatus_autorizacion=estatus_aut_sel or None,
+                cliente=cliente_sel or None,
             )
             if (
                 linea_sel and df_cat is not None and not df_cat.empty
@@ -2877,8 +3193,29 @@ def _panel_ver_todos() -> None:
                     .astype(str).str.strip()
                 )
                 df_resultado = df_resultado[df_resultado["cve_prod"].astype(str).str.strip().isin(cve_de_linea)]
+
+        # se guarda junto con el resultado (no se recalcula desde los widgets
+        # al generar el reporte) para que el PDF describa los filtros que de
+        # verdad produjeron lo que se está mostrando, aunque el usuario
+        # después mueva un multiselect sin volver a presionar "Filtrar"
+        partes_resumen = [f"año {anio_sel}" if filtrar_anio else "todos los años"]
+        if tipo_sel:
+            partes_resumen.append(f"tipo: {', '.join(tipo_sel)}")
+        if usuarios_sel:
+            partes_resumen.append(f"vendedor: {', '.join(usuarios_sel)}")
+        if linea_sel:
+            partes_resumen.append(f"línea: {', '.join(linea_sel)}")
+        if producto_sel:
+            partes_resumen.append(f"producto: {', '.join(producto_sel)}")
+        if cliente_sel:
+            partes_resumen.append(f"cliente: {', '.join(cliente_sel)}")
+        if estatus_aut_sel:
+            etiquetas = [_ESTATUS_LINEA_BADGE.get(k, k) for k in estatus_aut_sel]
+            partes_resumen.append(f"autorización: {', '.join(etiquetas)}")
+
         st.session_state["pvt_vt_resultado"] = {
             "df": df_resultado, "anio_sel": int(anio_sel), "filtrar_anio": bool(filtrar_anio),
+            "filtros_resumen": " · ".join(partes_resumen),
         }
 
     resultado = st.session_state.get("pvt_vt_resultado")
@@ -2887,6 +3224,7 @@ def _panel_ver_todos() -> None:
         return
 
     df, anio_sel, filtrar_anio = resultado["df"], resultado["anio_sel"], resultado["filtrar_anio"]
+    filtros_resumen = resultado.get("filtros_resumen", "")
 
     if df is None or df.empty:
         st.info("sin resultados para los filtros seleccionados")
@@ -2925,6 +3263,22 @@ def _panel_ver_todos() -> None:
 
     # ── directivos primero ven KPIs + gráficas; el detalle queda abajo ──
     _panel_resumen_ver_todos(pivote)
+
+    pdf_key = "pvt_vt_pdf_bytes"
+    if st.button("📄 preparar reporte PDF (para dirección)", key="pvt_btn_pdf"):
+        with st.spinner("generando PDF…"):
+            st.session_state[pdf_key] = _generar_reporte_ver_todos_pdf(
+                pivote, {"resumen": filtros_resumen},
+            )
+    pdf_bytes = st.session_state.get(pdf_key)
+    if pdf_bytes:
+        st.download_button(
+            "⬇️ descargar reporte PDF",
+            data=pdf_bytes,
+            file_name=f"reporte_presupuesto_ventas_compras_{anio_sel if filtrar_anio else 'todos'}.pdf",
+            mime="application/pdf",
+            key="pvt_pdf_dl",
+        )
 
     encabezados_pivote = {**_ENCABEZADOS_VER_TODOS, **{m: m.upper() for m in _MESES.values()}}
     col_order = (
@@ -3287,10 +3641,11 @@ def _panel_autorizaciones_resueltas(usuario: dict) -> None:
     resueltas = pd.concat(partes, ignore_index=True)
     resueltas = resueltas.sort_values("fecha", ascending=False).reset_index(drop=True)
 
-    nombre_por_usuario: dict[int, str] = {}
-    for uid in resueltas["carga_usuario_id"].dropna().unique():
-        u = obtener_usuario_por_id_ctrl(int(uid)) or {}
-        nombre_por_usuario[int(uid)] = str(u.get("nombre") or u.get("email") or "").strip()
+    uids_resueltas = [int(uid) for uid in resueltas["carga_usuario_id"].dropna().unique()]
+    usuarios_por_id_resueltas = obtener_usuarios_por_ids_ctrl(uids_resueltas)
+    nombre_por_usuario: dict[int, str] = {
+        uid: str(u.get("nombre") or u.get("email") or "").strip() for uid, u in usuarios_por_id_resueltas.items()
+    }
     resueltas["usuario"] = resueltas["carga_usuario_id"].apply(
         lambda uid: nombre_por_usuario.get(int(uid), "") if pd.notna(uid) else ""
     )
@@ -3345,9 +3700,11 @@ def _panel_autorizaciones_pendientes(
         # dueño de la carga (misma cascada que _tipo_autorizacion_linea, pero
         # aplicada a un tercero — igual que _roles_creador_solicitud en
         # solicitudes de gastos)
-        roles_por_usuario: dict[int, set[str]] = {}
-        for uid in pendientes["carga_usuario_id"].dropna().unique():
-            roles_por_usuario[int(uid)] = set(_norm_roles_list(obtener_roles_usuario_id_ctrl(int(uid))))
+        uids_carga = [int(uid) for uid in pendientes["carga_usuario_id"].dropna().unique()]
+        roles_crudos_por_usuario = obtener_roles_usuarios_ids_ctrl(uids_carga)
+        roles_por_usuario: dict[int, set[str]] = {
+            uid: set(_norm_roles_list(roles)) for uid, roles in roles_crudos_por_usuario.items()
+        }
 
         def _me_corresponde(row) -> bool:
             owner_roles = roles_por_usuario.get(int(row["carga_usuario_id"]), set())
@@ -3370,10 +3727,11 @@ def _panel_autorizaciones_pendientes(
 
     # "usuario" (dueño de la carga) y "presupuesto" (comentarios de la carga)
     # dan contexto a quien autoriza — van al inicio de la tabla
-    nombre_por_usuario: dict[int, str] = {}
-    for uid in pendientes["carga_usuario_id"].dropna().unique():
-        u = obtener_usuario_por_id_ctrl(int(uid)) or {}
-        nombre_por_usuario[int(uid)] = str(u.get("nombre") or u.get("email") or "").strip()
+    uids_pendientes = [int(uid) for uid in pendientes["carga_usuario_id"].dropna().unique()]
+    usuarios_por_id = obtener_usuarios_por_ids_ctrl(uids_pendientes)
+    nombre_por_usuario: dict[int, str] = {
+        uid: str(u.get("nombre") or u.get("email") or "").strip() for uid, u in usuarios_por_id.items()
+    }
     pendientes["usuario"] = pendientes["carga_usuario_id"].apply(
         lambda uid: nombre_por_usuario.get(int(uid), "") if pd.notna(uid) else ""
     )

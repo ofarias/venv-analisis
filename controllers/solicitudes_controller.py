@@ -45,6 +45,7 @@ from models.solicitudes_model import (
     get_correos_usuarios_por_rol_model,
     get_roles_por_usuario_id_model,
     eliminar_detalles_sin_monto_model,
+    listar_detalle_eliminados,
     get_estatus_actual_solicitud,
     insertar_solicitud_estatus,
 )
@@ -262,7 +263,9 @@ def guardar_detalle_ctrl(
     solicitud_id: int,
     rows: List[Dict[str, Any]],
     deleted_ids: List[int],
-    usuario_id: int
+    usuario_id: int,
+    usuario_nombre: str | None = None,
+    usuario_email: str | None = None,
 ) -> Dict[str, Any]:
     try:
         fixed: List[Dict[str, Any]] = []
@@ -291,7 +294,13 @@ def guardar_detalle_ctrl(
             fixed.append(calcular_totales_row(r))
             
         if deleted_ids:
-            delete_detalle_ids(solicitud_id, deleted_ids)
+            delete_detalle_ids(
+                solicitud_id,
+                deleted_ids,
+                usuario_id=usuario_id,
+                usuario_nombre=usuario_nombre,
+                usuario_email=usuario_email,
+            )
 
         if fixed:
             upsert_detalle_rows(
@@ -482,5 +491,19 @@ def get_roles_por_usuario_id_ctrl() -> Dict[int, List[str]]:
 def get_correos_usuarios_por_rol_ctrl(nombre_rol: str) -> list[str]:
     return get_correos_usuarios_por_rol_model(nombre_rol)
 
-def eliminar_detalles_sin_monto_ctrl(solicitud_id: int, usuario_id: int | None = None) -> dict:
-    return eliminar_detalles_sin_monto_model(solicitud_id)
+def eliminar_detalles_sin_monto_ctrl(
+    solicitud_id: int,
+    usuario_id: int | None = None,
+    usuario_nombre: str | None = None,
+    usuario_email: str | None = None,
+) -> dict:
+    return eliminar_detalles_sin_monto_model(
+        solicitud_id,
+        usuario_id=usuario_id,
+        usuario_nombre=usuario_nombre,
+        usuario_email=usuario_email,
+    )
+
+
+def listar_detalle_eliminados_ctrl(solicitud_id: int) -> list[dict]:
+    return listar_detalle_eliminados(solicitud_id)

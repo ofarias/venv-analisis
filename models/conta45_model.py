@@ -2020,9 +2020,6 @@ def insertar_poliza_solicitud_gasto_desglosada(
 
         partidas = _agrupar_partidas_solicitud_gasto(partidas_detalladas)
 
-        for p in partidas:
-            p["CONCEP_PO"] = concepto[:120]
-
         if not partidas:
             return {"ok": False, "msg": "no se generaron partidas"}
         

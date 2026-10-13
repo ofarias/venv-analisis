@@ -347,28 +347,30 @@ def _pivot_forecast(
 
 
 def _grafica_rendimiento(
-    fila_total: dict, meses_sel: list[int], real_col_prefix: str | None
+    fila_total: dict, meses_sel: list[int], real_col_prefix: str | None,
+    forecast_label: str, real_label: str,
 ) -> pd.DataFrame:
-    """DP vs Real, en orden cronológico y como pares por mes ("Real Ene",
-    "Ene", "Real Feb", "Feb", …) en vez de series agrupadas — a partir de los
-    totales ya sumados en `fila_total` (fila TOTAL pinneada del grid).
-    "Real \\<mes>" solo aparece en los meses que tienen esa columna (mes
-    actual y anteriores; ver _mostrar_construccion_tipo)."""
+    """Forecast/presupuesto vs Real, una columna por serie (en vez de pares
+    de filas) para que `st.bar_chart` las pinte con colores distintos — a
+    partir de los totales ya sumados en `fila_total` (fila TOTAL pinneada
+    del grid). `real_label` solo tiene valor en los meses que tienen esa
+    columna (mes actual y anteriores; ver _mostrar_construccion_tipo)."""
     filas: list[dict] = []
     for m in sorted(meses_sel):
         mn = _MESES[m]
         if mn not in fila_total:
             continue
+        fila = {"categoria": mn.capitalize(), forecast_label: fila_total[mn]}
         if real_col_prefix:
             real_mes_col = f"{real_col_prefix}_{mn}"
             if real_mes_col in fila_total:
-                filas.append({"categoria": f"Real {mn.capitalize()}", "valor": fila_total[real_mes_col]})
-        filas.append({"categoria": mn.capitalize(), "valor": fila_total[mn]})
+                fila[real_label] = fila_total[real_mes_col]
+        filas.append(fila)
     if not filas:
         return pd.DataFrame()
     df = pd.DataFrame(filas)
-    # categórica ordenada: preserva el orden de inserción (cronológico, Real
-    # antes que el mes) en vez del orden alfabético que usaría el eje X por defecto
+    # categórica ordenada: preserva el orden cronológico en vez del orden
+    # alfabético que usaría el eje X por defecto
     df["categoria"] = pd.Categorical(df["categoria"], categories=df["categoria"].tolist(), ordered=True)
     return df.set_index("categoria")
 
@@ -679,15 +681,26 @@ def _mostrar_construccion_tipo(
                 else:
                     st.info("sin cambios detectados")
 
+            forecast_label = "Presupuesto" if tipo == "venta" else "DP"
+            titulo_grafica = (
+                "📊 mostrar gráfica de rendimiento (presupuesto vs venta real por mes)"
+                if tipo == "venta" else
+                "📊 mostrar gráfica de rendimiento (DP vs Real por mes)"
+            )
             mostrar_grafica = st.checkbox(
-                "📊 mostrar gráfica de rendimiento (DP vs Real por mes)",
+                titulo_grafica,
                 value=True,
                 key=f"fc_show_grafica_{tipo}_{seccion}_{region}_{id_version}",
             )
             if mostrar_grafica:
-                df_grafica = _grafica_rendimiento(fila_total, meses_sel, real_col_prefix)
+                df_grafica = _grafica_rendimiento(
+                    fila_total, meses_sel, real_col_prefix, forecast_label, real_label,
+                )
                 if not df_grafica.empty:
-                    st.bar_chart(df_grafica, use_container_width=True, height=300)
+                    st.bar_chart(
+                        df_grafica, use_container_width=True, height=300,
+                        color=["#4C78A8", "#2ca02c"],
+                    )
                 else:
                     st.info("sin datos suficientes para la gráfica")
 

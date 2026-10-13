@@ -19,7 +19,15 @@ def mostrar_tab_pt_faltantes():
 
     st.warning(f"faltan {len(df):,} productos PT por registrar en fórmulas.")
 
-    c1, c2 = st.columns(2)
+    n_urgentes = int(df["en_presupuesto_autorizado"].sum())
+    if n_urgentes:
+        st.error(
+            f"⚠️ {n_urgentes:,} de estos productos SÍ están en un presupuesto "
+            "de ventas autorizado y no tienen fórmula — atender primero "
+            "(marcados en rojo abajo)."
+        )
+
+    c1, c2, c3 = st.columns([2, 2, 1])
 
     with c1:
         buscar = st.text_input("buscar", key="pt_faltantes_buscar")
@@ -29,6 +37,14 @@ def mostrar_tab_pt_faltantes():
             "línea",
             ["todas"] + sorted(df["linea"].dropna().astype(str).unique().tolist()),
             key="pt_faltantes_linea",
+        )
+
+    with c3:
+        solo_urgentes = st.checkbox(
+            "solo en presupuesto",
+            value=False,
+            key="pt_faltantes_solo_urgentes",
+            help="mostrar solo los que sí están en un presupuesto autorizado",
         )
 
     df_view = df.copy()
@@ -43,14 +59,28 @@ def mostrar_tab_pt_faltantes():
     if linea != "todas":
         df_view = df_view[df_view["linea"].astype(str) == linea]
 
+    if solo_urgentes:
+        df_view = df_view[df_view["en_presupuesto_autorizado"]]
+
+    df_view = df_view.sort_values(
+        "en_presupuesto_autorizado", ascending=False
+    ).reset_index(drop=True)
+
     st.caption(f"mostrando {len(df_view):,} de {len(df):,}")
 
+    df_mostrar = df_view.rename(columns={
+        "cve_sae": "clave SAE",
+        "descripcion": "producto",
+        "linea": "línea",
+        "en_presupuesto_autorizado": "en presupuesto autorizado",
+    })
+
+    def _row_style(row):
+        bg = "background-color: #f8d7da; color: #721c24;" if row["en presupuesto autorizado"] else ""
+        return [bg for _ in row.index]
+
     st.dataframe(
-        df_view.rename(columns={
-            "cve_sae": "clave SAE",
-            "descripcion": "producto",
-            "linea": "línea",
-        }),
+        df_mostrar.style.apply(_row_style, axis=1),
         use_container_width=True,
         hide_index=True,
     )
