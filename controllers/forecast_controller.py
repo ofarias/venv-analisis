@@ -114,8 +114,12 @@ def guardar_forecast_fila_ctrl(
         presupuesto_valor=presupuesto_valor,
         tipo=tipo,
     )
+    calcular_mdi_ctrl.clear()
+    obtener_forecast_detalle_ctrl.clear()
+    calcular_necesidades_compra_ctrl.clear()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def obtener_forecast_detalle_ctrl(
     id_version: int,
     seccion: Optional[str] = None,
@@ -153,6 +157,7 @@ def _resumir_presupuesto(df_raw: pd.DataFrame, seccion: str, region: Optional[st
     )
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def obtener_presupuesto_resumen_ctrl(
     id_carga_pv: Optional[int],
     seccion: str,
@@ -169,6 +174,7 @@ def obtener_presupuesto_resumen_ctrl(
     return _resumir_presupuesto(df_raw, seccion, region)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def obtener_presupuesto_resumen_por_anio_ctrl(
     anio: int,
     seccion: str,
@@ -192,6 +198,7 @@ def obtener_presupuesto_resumen_por_anio_ctrl(
     return _resumir_presupuesto(df_raw, seccion, region)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def obtener_presupuesto_compras_resumen_por_anio_ctrl(
     anio: int,
     seccion: str,
@@ -211,6 +218,7 @@ def obtener_presupuesto_compras_resumen_por_anio_ctrl(
     return _resumir_presupuesto(df_raw, seccion, region)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def obtener_presupuesto_compras_resumen_ctrl(
     id_carga_pc: Optional[int],
     seccion: str,
@@ -343,11 +351,15 @@ def generar_propuesta_ctrl(
         )
         guardados += 1
 
+    calcular_mdi_ctrl.clear()
+    obtener_forecast_detalle_ctrl.clear()
+    calcular_necesidades_compra_ctrl.clear()
     return {"guardados": guardados, "productos": len(df_prop["cve_prod"].unique()) if not df_prop.empty else 0}
 
 
 # ── alertas ───────────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=120, show_spinner=False)
 def obtener_alertas_ctrl(id_version: int) -> pd.DataFrame:
     return obtener_alertas_forecast_model(id_version=id_version)
 
@@ -403,11 +415,13 @@ def recalcular_alertas_ctrl(
                     mensaje=f"{cve_prod}: stock proyectado {fila['resultado']:.1f} kg — {fila['dias_cobertura']:.0f} días cobertura",
                 )
                 alertas += 1
+    obtener_alertas_ctrl.clear()
     return alertas
 
 
 # ── necesidades de compra ─────────────────────────────────────────────────────
 
+@st.cache_data(ttl=300, show_spinner="calculando necesidades de compra…")
 def calcular_necesidades_compra_ctrl(
     id_version: int,
     anio: int,
@@ -592,6 +606,7 @@ def calcular_necesidades_compra_ctrl(
 
 # ── MDI ───────────────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=300, show_spinner="calculando MDI…")
 def calcular_mdi_ctrl(
     id_version: int,
     anio: int,
@@ -705,5 +720,25 @@ def _existencias_sae() -> pd.DataFrame:
         return obtener_existencias_productos_sae_model()
     except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=600, show_spinner="cargando clientes por producto…")
+def clientes_por_producto_ctrl(anio: int) -> pd.DataFrame:
+    """Desglose cve_prod → cliente(s) a partir de las líneas autorizadas de
+    presupuesto de ventas del año. Sirve para mostrar "quién requiere este
+    producto" en el MDI; productos cuyo forecast salió de captura manual
+    (sin línea de presupuesto de origen) simplemente no aparecen aquí."""
+    try:
+        df = obtener_presupuesto_ventas_model(anio=int(anio), solo_autorizados=True, limit=200000)
+    except Exception:
+        return pd.DataFrame(columns=["cve_prod", "cve_clie", "cliente_excel", "kg", "usd"])
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["cve_prod", "cve_clie", "cliente_excel", "kg", "usd"])
+    df["cve_prod"] = df["cve_prod"].astype(str).str.strip()
+    df["cve_clie"] = df["cve_clie"].fillna("").astype(str).str.strip()
+    df["cliente_excel"] = df["cliente_excel"].fillna("").astype(str).str.strip()
+    return df.groupby(["cve_prod", "cve_clie", "cliente_excel"], dropna=False, as_index=False).agg(
+        kg=("cantidad_kg", "sum"), usd=("importe", "sum"),
+    )
 
 

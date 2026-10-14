@@ -9,6 +9,8 @@ from controllers.forecast_controller import (
     calcular_mdi_ctrl,
     recalcular_alertas_ctrl,
     _existencias_sae,
+    _catalogo_productos_sae,
+    clientes_por_producto_ctrl,
 )
 
 
@@ -22,6 +24,25 @@ def _semaforo_style(val: str) -> str:
     return f"background-color: {_COLOR_SEM.get(str(val), '')}"
 
 
+def _mostrar_clientes_producto(cve_prod: str, producto: str, df_clientes: pd.DataFrame) -> None:
+    filtrado = (
+        df_clientes[df_clientes["cve_prod"] == str(cve_prod).strip()]
+        if df_clientes is not None and not df_clientes.empty
+        else pd.DataFrame()
+    )
+    with st.container(border=True):
+        st.markdown(f"**📋 Clientes que requieren `{cve_prod}` — {producto}**")
+        if filtrado.empty:
+            st.caption(
+                "sin datos de cliente para este producto (forecast capturado manualmente "
+                "o sin línea de presupuesto de ventas autorizada asociada)"
+            )
+        else:
+            for _, fila in filtrado.sort_values("kg", ascending=False).iterrows():
+                nombre = fila["cliente_excel"] or fila["cve_clie"] or "cliente sin nombre"
+                st.markdown(f"- {nombre} — {fila['kg']:,.0f} kg (${fila['usd']:,.0f})")
+
+
 def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
     if not meses:
         st.warning("selecciona meses en el tab de construcción")
@@ -30,14 +51,13 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
     # el MDI es "¿qué pasa de aquí en adelante?" — los meses ya pasados no
     # aportan y solo abultan la tabla, así que aunque el selector global
     # (compartido con Real vs Forecast / Necesidades de Compra) tenga más
-    # meses marcados, aquí se recorta al mes anterior al actual en adelante.
+    # meses marcados, aquí se recorta al mes actual en adelante.
     hoy = date.today()
     if anio == hoy.year:
-        mes_minimo = max(1, hoy.month - 1)
-        meses = [m for m in meses if m >= mes_minimo]
+        meses = [m for m in meses if m >= hoy.month]
 
     if not meses:
-        st.info("no hay meses vigentes (mes anterior en adelante) entre los meses seleccionados")
+        st.info("no hay meses vigentes (mes actual en adelante) entre los meses seleccionados")
         return
 
     col_act, col_alerta = st.columns([3, 1])
@@ -53,9 +73,8 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
             st.success(f"{n} alertas generadas")
             st.rerun()
 
-    # ── datos ─────────────────────────────────────────────────────────────────
-    with st.spinner("calculando MDI…"):
-        df_mdi = calcular_mdi_ctrl(id_version=id_version, anio=anio, meses=meses)
+    # ── datos (cacheados — el spinner, si aplica, lo pone el propio cache_data) ─
+    df_mdi = calcular_mdi_ctrl(id_version=id_version, anio=anio, meses=meses)
     if df_mdi is not None and not df_mdi.empty:
         for _c in df_mdi.columns:
             if any(x in _c for x in ("stock", "venta_", "compra_", "resultado_", "dias_")):
@@ -64,6 +83,43 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
     if df_mdi is None or df_mdi.empty:
         st.info("sin datos de forecast KG para este período — genera la propuesta primero")
         return
+
+    # ── filtros: cve prod / producto / unidad de negocio (línea) ───────────────
+    df_cat = _catalogo_productos_sae()
+    mapa_linea: dict = {}
+    if df_cat is not None and not df_cat.empty and "cve_art" in df_cat.columns and "linea" in df_cat.columns:
+        mapa_linea = dict(zip(
+            df_cat["cve_art"].astype(str).str.strip(),
+            df_cat["linea"].astype(str).str.strip(),
+        ))
+    df_mdi["linea"] = df_mdi["cve_prod"].astype(str).str.strip().map(mapa_linea).fillna("")
+
+    cves_disponibles = sorted(df_mdi["cve_prod"].dropna().astype(str).str.strip().unique())
+    productos_disponibles = sorted(df_mdi["producto"].dropna().astype(str).str.strip().unique())
+    lineas_disponibles = sorted(l for l in df_mdi["linea"].unique() if l)
+
+    col_cve, col_prod, col_linea = st.columns(3)
+    with col_cve:
+        cve_sel = st.multiselect("cve prod", options=cves_disponibles, default=[], key="mdi_cve_prod")
+    with col_prod:
+        prod_sel = st.multiselect("producto", options=productos_disponibles, default=[], key="mdi_producto")
+    with col_linea:
+        linea_sel = st.multiselect(
+            "unidad de negocio (línea)", options=lineas_disponibles, default=[], key="mdi_linea",
+        )
+
+    if cve_sel:
+        df_mdi = df_mdi[df_mdi["cve_prod"].astype(str).str.strip().isin(cve_sel)]
+    if prod_sel:
+        df_mdi = df_mdi[df_mdi["producto"].astype(str).str.strip().isin(prod_sel)]
+    if linea_sel:
+        df_mdi = df_mdi[df_mdi["linea"].astype(str).str.strip().isin(linea_sel)]
+
+    if df_mdi.empty:
+        st.info("sin resultados para los filtros seleccionados")
+        return
+
+    df_clientes = clientes_por_producto_ctrl(anio)
 
     # ── vista resumen: tabla de semáforos ─────────────────────────────────────
     st.markdown("##### Semáforo de cobertura por mes")
@@ -79,7 +135,16 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
         **{f"sem_{m:02d}": _MESES[m].upper() for m in meses if f"sem_{m:02d}" in df_mdi.columns}
     })
 
-    st.dataframe(df_sem, use_container_width=True, hide_index=True, height=min(56 + len(df_sem) * 35, 500))
+    sel_sem = st.dataframe(
+        df_sem, use_container_width=True, hide_index=True, height=min(56 + len(df_sem) * 35, 500),
+        on_select="rerun", selection_mode="single-row", key="mdi_tabla_semaforo",
+    )
+    filas_sem = sel_sem.selection.get("rows", [])
+    if filas_sem:
+        fila_sem = df_sem.iloc[filas_sem[0]]
+        _mostrar_clientes_producto(fila_sem["cve prod"], fila_sem["producto"], df_clientes)
+    else:
+        st.caption("👆 haz clic en una fila para ver qué clientes requieren ese producto")
 
     st.divider()
 
@@ -129,7 +194,16 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
         {c: "{:,.2f}" for c in cols_numericas},
         na_rep="—"
     )
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=min(56 + len(df_det) * 35, 600))
+    sel_det = st.dataframe(
+        styled, use_container_width=True, hide_index=True, height=min(56 + len(df_det) * 35, 600),
+        on_select="rerun", selection_mode="single-row", key="mdi_tabla_detalle",
+    )
+    filas_det = sel_det.selection.get("rows", [])
+    if filas_det:
+        fila_det = df_det.iloc[filas_det[0]]
+        _mostrar_clientes_producto(fila_det["cve prod"], fila_det["producto"], df_clientes)
+    else:
+        st.caption("👆 haz clic en una fila para ver qué clientes requieren ese producto")
 
     st.divider()
 

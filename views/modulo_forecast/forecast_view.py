@@ -158,30 +158,40 @@ def _selector_version() -> dict | None:
     return version
 
 
+_SECCIONES_FORECAST = [
+    "📊 Dashboard",
+    "📈 Construcción del Forecast",
+    "📉 Real vs Forecast",
+    "🗺️ MDI — Mapa de Inventario",
+    "📦 Necesidades de Compra",
+    "⚙️ Versiones",
+]
+
+
 def mostrar_modulo_forecast() -> None:
     st.subheader("Forecast — Centro de Planeación Comercial")
 
     _panel_soporte_seleccionar_usuario()
 
-    tab_dash, tab_const, tab_rvf, tab_mdi, tab_comp, tab_ver = st.tabs([
-        "📊 Dashboard",
-        "📈 Construcción del Forecast",
-        "📉 Real vs Forecast",
-        "🗺️ MDI — Mapa de Inventario",
-        "📦 Necesidades de Compra",
-        "⚙️ Versiones",
-    ])
+    # st.pills (a diferencia de st.tabs) informa cuál sección está activa, así
+    # que solo se ejecuta el código de esa sección — st.tabs corre las 6 en
+    # cada rerun (aunque no se vean), lo que volvía lento cualquier clic en
+    # cualquier parte del módulo (ej. el AgGrid de Construcción se
+    # reconstruye siempre, aunque estés viendo el MDI).
+    seccion = st.pills(
+        "navegación", _SECCIONES_FORECAST, default=_SECCIONES_FORECAST[0],
+        key="fc_nav_sel", label_visibility="collapsed",
+    ) or st.session_state.get("fc_nav_sel", _SECCIONES_FORECAST[0])
 
-    with tab_ver:
+    if seccion == "⚙️ Versiones":
         mostrar_tab_versiones()
+        return
 
-    # para los demás tabs necesitamos una versión seleccionada
+    # para las demás secciones necesitamos una versión seleccionada
     version = _selector_version()
 
     if version is None:
-        for tab in (tab_dash, tab_const, tab_rvf, tab_mdi, tab_comp):
-            with tab:
-                st.info("crea una versión de forecast en el tab ⚙️ Versiones para comenzar")
+        st.info("crea una versión de forecast en la sección ⚙️ Versiones para comenzar")
         return
 
     id_version  = int(version["id_version"])
@@ -198,10 +208,10 @@ def mostrar_modulo_forecast() -> None:
     # meses del selector global (persiste en session_state desde tab_construccion)
     meses_sel: list[int] = st.session_state.get("fc_meses_sel", list(range(1, 13)))
 
-    with tab_dash:
+    if seccion == "📊 Dashboard":
         mostrar_tab_dashboard(id_version=id_version, anio=anio)
 
-    with tab_const:
+    elif seccion == "📈 Construcción del Forecast":
         mostrar_tab_construccion(
             id_version=id_version,
             id_carga_pv=id_carga_pv,
@@ -210,13 +220,13 @@ def mostrar_modulo_forecast() -> None:
             usuario_datos_id=usuario_datos_id,
         )
 
-    with tab_rvf:
+    elif seccion == "📉 Real vs Forecast":
         mostrar_tab_real_vs_forecast(
             id_version=id_version, anio=anio, meses=meses_sel, usuario_datos_id=usuario_datos_id,
         )
 
-    with tab_mdi:
+    elif seccion == "🗺️ MDI — Mapa de Inventario":
         mostrar_tab_mdi(id_version=id_version, anio=anio, meses=meses_sel)
 
-    with tab_comp:
+    elif seccion == "📦 Necesidades de Compra":
         mostrar_tab_compras(id_version=id_version, anio=anio, meses=meses_sel)

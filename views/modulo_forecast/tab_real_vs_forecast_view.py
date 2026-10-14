@@ -17,6 +17,7 @@ from controllers.forecast_controller import (
     _compras_historicas_sae,
     _ventas_historicas_sae,
 )
+from utils.preferencias_columnas import obtener_columnas_ocultas, guardar_columnas_ocultas
 
 
 _MESES = {1:"ene",2:"feb",3:"mar",4:"abr",5:"may",6:"jun",
@@ -616,28 +617,30 @@ def mostrar_tab_real_vs_forecast(
                 for k in claves_totales if _SERIES_META[k]["total_col"] in df_comp.columns
             }
 
-            cols_tot = st.columns(len(series_sel))
-            for col, k in zip(cols_tot, series_sel):
-                col.metric(f"{_SERIES_META[k]['label']} {unidad}", f"{totales_sum[k]:,.0f}")
+            # todas las métricas (totales + cumplimiento + diferencia) en una sola línea
+            cols_metricas = st.columns(len(series_sel) + 2 * len(otros))
+            idx_col = 0
+            for k in series_sel:
+                cols_metricas[idx_col].metric(f"{_SERIES_META[k]['label']} {unidad}", f"{totales_sum[k]:,.0f}")
+                idx_col += 1
 
-            if otros:
-                cols_cumpl = st.columns(len(otros))
-                cols_delta = st.columns(len(otros))
-                for col_c, col_d, otro in zip(cols_cumpl, cols_delta, otros):
-                    referencia = _referencia_para(otro, baseline)
-                    referencia_label = _SERIES_META[referencia]["label"]
-                    otro_label = _SERIES_META[otro]["label"]
-                    num, den = (totales_sum[referencia], totales_sum[otro]) if baseline == "real" \
-                        else (totales_sum[otro], totales_sum[referencia])
-                    cumpl = round(num / den * 100, 1) if den else 0.0
-                    col_c.metric(
-                        f"Cumplimiento {otro_label} (vs {referencia_label})", f"{cumpl:.1f}%",
-                        delta=f"{cumpl - 100:.1f}pp vs plan", delta_color="normal",
-                    )
-                    col_d.metric(
-                        f"Diferencia {otro_label} (vs {referencia_label})", f"{num - den:+,.0f}",
-                        delta_color="normal",
-                    )
+            for otro in otros:
+                referencia = _referencia_para(otro, baseline)
+                referencia_label = _SERIES_META[referencia]["label"]
+                otro_label = _SERIES_META[otro]["label"]
+                num, den = (totales_sum[referencia], totales_sum[otro]) if baseline == "real" \
+                    else (totales_sum[otro], totales_sum[referencia])
+                cumpl = round(num / den * 100, 1) if den else 0.0
+                cols_metricas[idx_col].metric(
+                    f"Cumplimiento {otro_label} (vs {referencia_label})", f"{cumpl:.1f}%",
+                    delta=f"{cumpl - 100:.1f}pp vs plan", delta_color="normal",
+                )
+                idx_col += 1
+                cols_metricas[idx_col].metric(
+                    f"Diferencia {otro_label} (vs {referencia_label})", f"{num - den:+,.0f}",
+                    delta_color="normal",
+                )
+                idx_col += 1
 
             st.divider()
 
@@ -682,7 +685,29 @@ def mostrar_tab_real_vs_forecast(
                     encabezados[c] = titulo
                     cols_orden.append(c)
 
-            df_show = df_comp[[c for c in cols_orden if c in df_comp.columns]].copy()
+            # ── selector de columnas visibles (persistido por usuario) ─────
+            cols_disponibles = [c for c in cols_orden if c in df_comp.columns]
+            columnas_fijas = [c for c in ("cve_prod", "producto") if c in cols_disponibles]
+            columnas_opcionales = [c for c in cols_disponibles if c not in columnas_fijas]
+            labels_por_col = {c: encabezados.get(c, c) for c in columnas_opcionales}
+            col_por_label = {v: k for k, v in labels_por_col.items()}
+
+            grid_key_rvf = f"real_vs_forecast_{seccion}_{region}"
+            ocultas_guardadas = set(obtener_columnas_ocultas(usuario_datos_id, grid_key_rvf))
+            default_labels = [labels_por_col[c] for c in columnas_opcionales if c not in ocultas_guardadas]
+            labels_sel = st.multiselect(
+                "columnas visibles",
+                options=[labels_por_col[c] for c in columnas_opcionales],
+                default=default_labels,
+                key=f"rvf_columnas_visibles_{seccion}_{region}",
+            )
+            cols_sel_opcionales = [col_por_label[l] for l in labels_sel] or columnas_opcionales
+            nuevas_ocultas = set(columnas_opcionales) - set(cols_sel_opcionales)
+            if nuevas_ocultas != ocultas_guardadas:
+                guardar_columnas_ocultas(usuario_datos_id, grid_key_rvf, sorted(nuevas_ocultas))
+            cols_orden_final = columnas_fijas + [c for c in columnas_opcionales if c in cols_sel_opcionales]
+
+            df_show = df_comp[[c for c in cols_orden_final if c in df_comp.columns]].copy()
 
             # columnas de valores (kg/USD): redondear a entero para que "localized" no muestre decimales
             cols_valor = {_SERIES_META[k]["total_col"] for k in series_sel} | {
