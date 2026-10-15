@@ -11,6 +11,8 @@ from controllers.forecast_controller import (
     _existencias_sae,
     _catalogo_productos_sae,
     clientes_por_producto_ctrl,
+    obtener_forecast_detalle_ctrl,
+    obtener_presupuesto_resumen_por_anio_ctrl,
 )
 
 
@@ -24,7 +26,33 @@ def _semaforo_style(val: str) -> str:
     return f"background-color: {_COLOR_SEM.get(str(val), '')}"
 
 
-def _mostrar_clientes_producto(cve_prod: str, producto: str, df_clientes: pd.DataFrame) -> None:
+def _venta_mes(
+    cve_prod: str, mes: int, df_forecast_venta: pd.DataFrame, df_pv_resumen: pd.DataFrame,
+) -> tuple[float, str]:
+    """Venta pronóstico de un producto en un mes: forecast capturado en
+    Construcción si ya existe una fila para ese producto/mes; si no, el
+    presupuesto de ventas autorizado (agrupado por producto) de ese mes."""
+    if df_forecast_venta is not None and not df_forecast_venta.empty:
+        mask = (
+            (df_forecast_venta["cve_prod"].astype(str).str.strip() == str(cve_prod).strip())
+            & (df_forecast_venta["mes"] == mes)
+        )
+        if mask.any():
+            return float(df_forecast_venta.loc[mask, "forecast"].sum()), "forecast"
+    if df_pv_resumen is not None and not df_pv_resumen.empty and "cve_prod" in df_pv_resumen.columns:
+        mask = (
+            (df_pv_resumen["cve_prod"].astype(str).str.strip() == str(cve_prod).strip())
+            & (df_pv_resumen["mes"] == mes)
+        )
+        if mask.any():
+            return float(df_pv_resumen.loc[mask, "total_kg"].sum()), "presupuesto ventas"
+    return 0.0, "sin dato"
+
+
+def _mostrar_clientes_producto(
+    cve_prod: str, producto: str, df_clientes: pd.DataFrame,
+    meses: list[int], df_forecast_venta: pd.DataFrame, df_pv_resumen: pd.DataFrame,
+) -> None:
     filtrado = (
         df_clientes[df_clientes["cve_prod"] == str(cve_prod).strip()]
         if df_clientes is not None and not df_clientes.empty
@@ -42,8 +70,15 @@ def _mostrar_clientes_producto(cve_prod: str, producto: str, df_clientes: pd.Dat
                 nombre = fila["cliente_excel"] or fila["cve_clie"] or "cliente sin nombre"
                 st.markdown(f"- {nombre} — {fila['kg']:,.0f} kg (${fila['usd']:,.0f})")
 
+        st.markdown("**📈 Venta pronóstico por mes**")
+        for mes in meses:
+            valor, origen = _venta_mes(cve_prod, mes, df_forecast_venta, df_pv_resumen)
+            st.markdown(f"- {_MESES[mes].upper()}: {valor:,.0f} kg ({origen})")
 
-def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
+
+def mostrar_tab_mdi(
+    id_version: int, anio: int, meses: list[int], usuario_datos_id: int | None = None,
+) -> None:
     if not meses:
         st.warning("selecciona meses en el tab de construcción")
         return
@@ -119,7 +154,11 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
         st.info("sin resultados para los filtros seleccionados")
         return
 
-    df_clientes = clientes_por_producto_ctrl(anio)
+    df_clientes = clientes_por_producto_ctrl(anio, meses=tuple(meses))
+    df_forecast_venta = obtener_forecast_detalle_ctrl(id_version=id_version, seccion="KG", tipo="venta")
+    df_pv_resumen = obtener_presupuesto_resumen_por_anio_ctrl(
+        anio=anio, seccion="KG", region=None, usuario_id=usuario_datos_id, solo_autorizados=True,
+    )
 
     # ── vista resumen: tabla de semáforos ─────────────────────────────────────
     st.markdown("##### Semáforo de cobertura por mes")
@@ -142,7 +181,10 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
     filas_sem = sel_sem.selection.get("rows", [])
     if filas_sem:
         fila_sem = df_sem.iloc[filas_sem[0]]
-        _mostrar_clientes_producto(fila_sem["cve prod"], fila_sem["producto"], df_clientes)
+        _mostrar_clientes_producto(
+            fila_sem["cve prod"], fila_sem["producto"], df_clientes,
+            meses, df_forecast_venta, df_pv_resumen,
+        )
     else:
         st.caption("👆 haz clic en una fila para ver qué clientes requieren ese producto")
 
@@ -201,7 +243,10 @@ def mostrar_tab_mdi(id_version: int, anio: int, meses: list[int]) -> None:
     filas_det = sel_det.selection.get("rows", [])
     if filas_det:
         fila_det = df_det.iloc[filas_det[0]]
-        _mostrar_clientes_producto(fila_det["cve prod"], fila_det["producto"], df_clientes)
+        _mostrar_clientes_producto(
+            fila_det["cve prod"], fila_det["producto"], df_clientes,
+            meses, df_forecast_venta, df_pv_resumen,
+        )
     else:
         st.caption("👆 haz clic en una fila para ver qué clientes requieren ese producto")
 

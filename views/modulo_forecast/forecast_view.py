@@ -226,7 +226,11 @@ def mostrar_modulo_forecast() -> None:
         )
 
     elif seccion == "🗺️ MDI — Mapa de Inventario":
-        mostrar_tab_mdi(id_version=id_version, anio=anio, meses=meses_sel)
+        mostrar_tab_mdi(
+            id_version=id_version, anio=anio, meses=meses_sel, usuario_datos_id=usuario_datos_id,
+        )
 
     elif seccion == "📦 Necesidades de Compra":
-        mostrar_tab_compras(id_version=id_version, anio=anio, meses=meses_sel)
+        mostrar_tab_compras(
+            id_version=id_version, anio=anio, meses=meses_sel, usuario_datos_id=usuario_datos_id,
+        )

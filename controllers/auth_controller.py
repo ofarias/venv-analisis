@@ -8,9 +8,27 @@ config = st.secrets["msal"]
 
 CLIENT_ID = config["client_id"]
 CLIENT_SECRET = config["client_secret"]
-REDIRECT_URI = config["redirect_uri"]
+DEFAULT_REDIRECT_URI = config["redirect_uri"]
+REDIRECT_URIS = config.get("redirect_uris", [DEFAULT_REDIRECT_URI])
 AUTHORITY = config.get("authority", "https://login.microsoftonline.com/common")
 SCOPES = config.get("scopes", ["User.Read"])
+
+def _get_redirect_uri() -> str:
+    """Elige, entre las redirect_uris registradas en Azure AD, la que
+    coincide con el host por el que entró el usuario (p.ej. onecore.biotecsa.com
+    u otro dominio registrado para acceso en LAN), para que Microsoft regrese
+    al mismo lugar en vez de siempre a DEFAULT_REDIRECT_URI."""
+    try:
+        host = (st.context.headers.get("Host") or "").strip().lower()
+    except Exception:
+        host = ""
+    if not host:
+        return DEFAULT_REDIRECT_URI
+    for uri in REDIRECT_URIS:
+        netloc = uri.split("://", 1)[-1].lower()
+        if netloc == host:
+            return uri
+    return DEFAULT_REDIRECT_URI
 
 def _get_msal_app():
     return msal.ConfidentialClientApplication(
@@ -26,7 +44,7 @@ def get_login_url(state: str = None):
            (?code=...&state=...), útil para preservar deeplink params.
     """
     msal_app = _get_msal_app()
-    kwargs = dict(scopes=SCOPES, redirect_uri=REDIRECT_URI)
+    kwargs = dict(scopes=SCOPES, redirect_uri=_get_redirect_uri())
     if state:
         kwargs["state"] = state
     auth_request_url = msal_app.get_authorization_request_url(**kwargs)
@@ -39,7 +57,7 @@ def handle_redirect(auth_code):
         token_response = msal_app.acquire_token_by_authorization_code(
             code=auth_code,
             scopes=SCOPES,
-            redirect_uri=REDIRECT_URI
+            redirect_uri=_get_redirect_uri()
         )
 
         if "access_token" not in token_response:

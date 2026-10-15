@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 from typing import Optional
+
 import pandas as pd
 
 
@@ -202,5 +203,77 @@ def calcular_mdi_producto(
             "semaforo": semaforo,
         })
         stock = res  # acumulativo: el resultado de este mes es el stock de inicio del siguiente
+
+    return resultado
+
+
+def calcular_necesidad_compra_dp_producto(
+    cve_prod: str,
+    stock_actual: float,
+    df_forecast_venta: pd.DataFrame,   # forecast KG de venta por mes
+    df_forecast_compra: pd.DataFrame,  # forecast KG de compra (DP) por mes, si ya se capturó
+    df_dp_compras: pd.DataFrame,       # presupuesto de compras YA AUTORIZADO por cve_prod × mes (columna total_kg)
+    meses: list[int],
+) -> list[dict]:
+    """
+    Necesidad de compra por producto, mes a mes desde el mes actual hasta el
+    último mes seleccionado: cada mes compara la venta proyectada contra lo
+    que ya está disponible para cubrirla (existencia de inicio + compra). La
+    compra del mes se toma del forecast de compra (DP capturado en
+    Construcción del Forecast) si ya existe una fila para ese producto/mes;
+    si no, se usa el presupuesto de compras YA AUTORIZADO (DP) de ese
+    producto/mes como respaldo.
+
+    El sobrante de un mes (existencia + compra > venta) se arrastra como
+    existencia de inicio del mes siguiente. El faltante de un mes (venta >
+    existencia + compra) se reporta como "necesidad" de ese mes pero NO se
+    arrastra como deuda a los meses siguientes — cada mes con faltante
+    arranca el siguiente en 0, para no duplicar la misma falta más adelante.
+
+    Retorna lista de dicts: {mes, existencia_inicio, venta_forecast,
+    compra_cubierta, origen_compra, necesidad, sobra}
+    """
+
+    def _valor_mes(df: pd.DataFrame, mes: int, col: str) -> Optional[float]:
+        if df is None or df.empty or col not in df.columns:
+            return None
+        mask = (
+            (df["cve_prod"].astype(str).str.strip() == str(cve_prod).strip())
+            & (df["mes"] == mes)
+        )
+        if not mask.any():
+            return None
+        return float(df.loc[mask, col].sum())
+
+    resultado = []
+    stock = float(stock_actual or 0)
+
+    for mes in meses:
+        venta = _valor_mes(df_forecast_venta, mes, "forecast") or 0.0
+        compra_fc = _valor_mes(df_forecast_compra, mes, "forecast")
+        if compra_fc:
+            compra = compra_fc
+            origen_compra = "forecast"
+        else:
+            compra_dp = _valor_mes(df_dp_compras, mes, "total_kg")
+            compra = compra_dp or 0.0
+            origen_compra = "DP autorizado" if compra_dp else "sin dato"
+
+        existencia_inicio = stock
+        disponible = existencia_inicio + compra
+        necesidad = max(0.0, venta - disponible)
+        sobra = max(0.0, disponible - venta)
+
+        resultado.append({
+            "mes": mes,
+            "mes_nombre": _MESES.get(mes, str(mes)),
+            "existencia_inicio": round(existencia_inicio, 2),
+            "venta_forecast": round(venta, 2),
+            "compra_cubierta": round(compra, 2),
+            "origen_compra": origen_compra,
+            "necesidad": round(necesidad, 2),
+            "sobra": round(sobra, 2),
+        })
+        stock = sobra  # el sobrante rueda; el faltante no se arrastra como deuda
 
     return resultado

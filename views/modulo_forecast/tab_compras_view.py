@@ -5,7 +5,12 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from controllers.forecast_controller import calcular_necesidades_compra_ctrl
+from controllers.forecast_controller import (
+    calcular_necesidades_compra_ctrl,
+    calcular_necesidad_compra_dp_ctrl,
+    _catalogo_productos_sae,
+    clientes_por_producto_ctrl,
+)
 from controllers.compras_solicitudes_controller import (
     obtener_tipo_compra_mp_inventario_ctrl,
     crear_solicitud_mp_inventario_ctrl,
@@ -98,9 +103,20 @@ def _agregar_por_mp(df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
-def mostrar_tab_compras(id_version: int, anio: int, meses: list[int]) -> None:
+def mostrar_tab_compras(
+    id_version: int, anio: int, meses: list[int], usuario_datos_id: int | None = None,
+) -> None:
     if not meses:
         st.warning("selecciona meses en el tab de construcción")
+        return
+
+    # igual que el MDI: los meses ya pasados no aportan, se recorta al mes
+    # actual en adelante aunque el selector global tenga más meses marcados.
+    hoy = date.today()
+    if anio == hoy.year:
+        meses = [m for m in meses if m >= hoy.month]
+    if not meses:
+        st.info("no hay meses vigentes (mes actual en adelante) entre los meses seleccionados")
         return
 
     st.caption(
@@ -120,13 +136,17 @@ def mostrar_tab_compras(id_version: int, anio: int, meses: list[int]) -> None:
         return
 
     with st.spinner("cruzando forecast × existencias PT (almacén 18) × fórmulas × existencias MP (almacén 17)…"):
-        df = calcular_necesidades_compra_ctrl(
-            id_version=id_version,
-            anio=anio,
-            meses=meses,
+        df = calcular_necesidades_compra_ctrl(id_version=id_version, anio=anio, meses=meses)
+
+    with st.spinner("calculando necesidad de compra (DP)…"):
+        df_prod = calcular_necesidad_compra_dp_ctrl(
+            id_version=id_version, anio=anio, meses=meses, usuario_datos_id=usuario_datos_id,
         )
 
-    if df is None or df.empty:
+    hay_mp = df is not None and not df.empty
+    hay_prod = df_prod is not None and not df_prod.empty
+
+    if not hay_mp and not hay_prod:
         st.warning(
             "no se encontraron necesidades de compra. Posibles causas:\n"
             "- El forecast KG aún no tiene datos\n"
@@ -134,98 +154,167 @@ def mostrar_tab_compras(id_version: int, anio: int, meses: list[int]) -> None:
         )
         return
 
-    # ── KPIs ──────────────────────────────────────────────────────────────────
-    df_mp = _agregar_por_mp(df)
-    df_mp["severidad"] = df_mp.apply(
-        lambda r: _severidad(float(r.get("compra_requerida") or 0), float(r.get("necesidad_kg") or 0)), axis=1
-    )
+    # ── filtros: producto / unidad de negocio (línea) / cliente ────────────────
+    df_cat = _catalogo_productos_sae()
+    mapa_linea: dict = {}
+    if df_cat is not None and not df_cat.empty and "cve_art" in df_cat.columns and "linea" in df_cat.columns:
+        mapa_linea = dict(zip(
+            df_cat["cve_art"].astype(str).str.strip(),
+            df_cat["linea"].astype(str).str.strip(),
+        ))
+    df_clientes = clientes_por_producto_ctrl(anio, meses=tuple(meses))
 
-    total_mp = df["cve_mp"].nunique()
-    total_pt = df["cve_prod"].nunique()
-    directos = df.loc[df["origen"] != "fórmula", "cve_prod"].nunique()
-    criticas = (df_mp["severidad"] == "alta").sum()
-    total_compra = df_mp["compra_requerida"].sum()
+    if hay_mp:
+        df["linea"] = df["cve_prod"].astype(str).str.strip().map(mapa_linea).fillna("")
+    if hay_prod:
+        df_prod["linea"] = df_prod["cve_prod"].astype(str).str.strip().map(mapa_linea).fillna("")
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("materias primas analizadas", total_mp)
-    c2.metric("productos terminados", f"{total_pt} ({directos} sin fórmula)")
-    c3.metric("necesidades críticas (>50% descubierto)", criticas)
-    c4.metric("total a comprar (kg)", f"{total_compra:,.2f}")
+    cves_disponibles = sorted(set(
+        (df["cve_prod"].dropna().astype(str).str.strip().tolist() if hay_mp else [])
+        + (df_prod["cve_prod"].dropna().astype(str).str.strip().tolist() if hay_prod else [])
+    ))
+    productos_disponibles = sorted(set(
+        (df["producto_pt"].dropna().astype(str).str.strip().tolist() if hay_mp else [])
+        + (df_prod["producto"].dropna().astype(str).str.strip().tolist() if hay_prod else [])
+    ))
+    lineas_disponibles = sorted(set(
+        (df["linea"].dropna().astype(str).str.strip().tolist() if hay_mp else [])
+        + (df_prod["linea"].dropna().astype(str).str.strip().tolist() if hay_prod else [])
+    ) - {""})
 
-    if st.button("📝 generar solicitud de compra", type="primary", key="comp_btn_generar_solicitud"):
-        _generar_solicitud_compra_mp(df_mp, id_version=id_version, anio=anio)
+    col_cve, col_prod, col_linea, col_clie = st.columns(4)
+    with col_cve:
+        cve_sel = st.multiselect("cve prod", options=cves_disponibles, default=[], key="comp_cve_prod")
+    with col_prod:
+        prod_sel = st.multiselect("producto", options=productos_disponibles, default=[], key="comp_producto")
+    with col_linea:
+        linea_sel = st.multiselect(
+            "unidad de negocio (línea)", options=lineas_disponibles, default=[], key="comp_linea",
+        )
+    with col_clie:
+        clientes_disponibles = (
+            sorted(df_clientes["cliente_excel"].replace("", pd.NA).dropna().unique())
+            if df_clientes is not None and not df_clientes.empty and "cliente_excel" in df_clientes.columns
+            else []
+        )
+        cliente_sel = st.multiselect("cliente", options=clientes_disponibles, default=[], key="comp_cliente")
+
+    cve_prods_cliente: set | None = None
+    if cliente_sel and df_clientes is not None and not df_clientes.empty:
+        cve_prods_cliente = set(
+            df_clientes.loc[df_clientes["cliente_excel"].isin(cliente_sel), "cve_prod"]
+            .astype(str).str.strip()
+        )
+
+    def _filtrar(df_in: pd.DataFrame, col_prod_nombre: str) -> pd.DataFrame:
+        out = df_in
+        if cve_sel:
+            out = out[out["cve_prod"].astype(str).str.strip().isin(cve_sel)]
+        if prod_sel:
+            out = out[out[col_prod_nombre].astype(str).str.strip().isin(prod_sel)]
+        if linea_sel:
+            out = out[out["linea"].astype(str).str.strip().isin(linea_sel)]
+        if cve_prods_cliente is not None:
+            out = out[out["cve_prod"].astype(str).str.strip().isin(cve_prods_cliente)]
+        return out
+
+    if hay_mp:
+        df = _filtrar(df, "producto_pt")
+        hay_mp = not df.empty
+    if hay_prod:
+        df_prod = _filtrar(df_prod, "producto")
+        hay_prod = not df_prod.empty
+
+    if not hay_mp and not hay_prod:
+        st.info("sin resultados para los filtros seleccionados")
+        return
 
     st.divider()
 
-    # ── vista ─────────────────────────────────────────────────────────────────
-    vista = st.radio(
-        "agrupar por", ["materia prima", "producto terminado", "mes"], horizontal=True, key="comp_vista"
-    )
+    # ── KPIs (solo si hay cruce de fórmulas/MP) ─────────────────────────────────
+    df_mp = pd.DataFrame()
+    if hay_mp:
+        df_mp = _agregar_por_mp(df)
+        df_mp["severidad"] = df_mp.apply(
+            lambda r: _severidad(float(r.get("compra_requerida") or 0), float(r.get("necesidad_kg") or 0)), axis=1
+        )
 
-    if vista == "mes":
-        for mes in sorted(meses):
-            df_mes = df_mp[df_mp["mes"] == mes].copy()
-            if df_mes.empty:
-                continue
-            con_compra = df_mes[df_mes["compra_requerida"] > 0]
-            st.markdown(f"**{_MESES[mes].upper()} {anio}** — {len(con_compra)} MP a comprar")
-            if not con_compra.empty:
-                _tabla_compras_mp(con_compra)
+        total_mp = df["cve_mp"].nunique()
+        total_pt = df["cve_prod"].nunique()
+        directos = df.loc[df["origen"] != "fórmula", "cve_prod"].nunique()
+        criticas = (df_mp["severidad"] == "alta").sum()
+        total_compra = df_mp["compra_requerida"].sum()
 
-    elif vista == "producto terminado":
-        _vista_por_pt(df)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("materias primas analizadas", total_mp)
+        c2.metric("productos terminados", f"{total_pt} ({directos} sin fórmula)")
+        c3.metric("necesidades críticas (>50% descubierto)", criticas)
+        c4.metric("total a comprar (kg)", f"{total_compra:,.2f}")
 
+        if st.button("📝 generar solicitud de compra", type="primary", key="comp_btn_generar_solicitud"):
+            _generar_solicitud_compra_mp(df_mp, id_version=id_version, anio=anio)
+
+        st.divider()
+
+    # ── necesidad por producto (venta vs. existencia + DP) ──────────────────────
+    st.markdown("##### Necesidad de compra por producto")
+    if hay_prod:
+        _vista_por_producto_dp(df_prod)
     else:
-        # pivot: MP × mes
+        st.info("sin datos de necesidad de compra por producto para los filtros/meses seleccionados")
+
+    # ── necesidad por materia prima × mes ────────────────────────────────────────
+    if hay_mp:
+        st.divider()
+        st.markdown("##### Compra de materia prima por mes")
         df_crit = df_mp[df_mp["compra_requerida"] > 0].copy()
         if df_crit.empty:
             st.success("no se requieren compras adicionales de MP para el período")
-            return
+        else:
+            pivot = df_crit.pivot_table(
+                index=["cve_mp", "mp_nombre", "existencia_mp"],
+                columns="mes",
+                values="compra_requerida",
+                aggfunc="sum",
+                fill_value=0.0,
+            ).reset_index()
+            pivot.columns = [
+                c if isinstance(c, str) else f"{_MESES.get(c, str(c)).upper()}"
+                for c in pivot.columns
+            ]
+            pivot["total"] = pivot[[c for c in pivot.columns if c not in ["cve_mp", "mp_nombre", "existencia_mp"]]].sum(axis=1)
+            pivot = pivot.sort_values("total", ascending=False)
 
-        pivot = df_crit.pivot_table(
-            index=["cve_mp", "mp_nombre", "existencia_mp"],
-            columns="mes",
-            values="compra_requerida",
-            aggfunc="sum",
-            fill_value=0.0,
-        ).reset_index()
-        pivot.columns = [
-            c if isinstance(c, str) else f"{_MESES.get(c, str(c)).upper()}"
-            for c in pivot.columns
-        ]
-        pivot["total"] = pivot[[c for c in pivot.columns if c not in ["cve_mp", "mp_nombre", "existencia_mp"]]].sum(axis=1)
-        pivot = pivot.sort_values("total", ascending=False)
+            col_cfg = {
+                "cve_mp": st.column_config.TextColumn("cve MP", disabled=True),
+                "mp_nombre": st.column_config.TextColumn("materia prima", disabled=True),
+                "existencia_mp": st.column_config.NumberColumn("existencia actual (kg)", format="%.2f", disabled=True),
+                "total": st.column_config.NumberColumn("total a comprar (kg)", format="%.2f", disabled=True),
+            }
+            for mes in meses:
+                mn = _MESES[mes].upper()
+                if mn in pivot.columns:
+                    col_cfg[mn] = st.column_config.NumberColumn(mn, format="%.2f", disabled=True)
 
-        col_cfg = {
-            "cve_mp": st.column_config.TextColumn("cve MP", disabled=True),
-            "mp_nombre": st.column_config.TextColumn("materia prima", disabled=True),
-            "existencia_mp": st.column_config.NumberColumn("existencia actual (kg)", format="%.2f", disabled=True),
-            "total": st.column_config.NumberColumn("total a comprar (kg)", format="%.2f", disabled=True),
-        }
-        for mes in meses:
-            mn = _MESES[mes].upper()
-            if mn in pivot.columns:
-                col_cfg[mn] = st.column_config.NumberColumn(mn, format="%.2f", disabled=True)
+            st.dataframe(
+                pivot,
+                use_container_width=True,
+                hide_index=True,
+                column_config=col_cfg,
+                height=min(56 + len(pivot) * 35, 600),
+            )
 
-        st.dataframe(
-            pivot,
-            use_container_width=True,
-            hide_index=True,
-            column_config=col_cfg,
-            height=min(56 + len(pivot) * 35, 600),
-        )
+    if hay_mp:
+        st.divider()
 
-    st.divider()
+        # ── tabla completa con severidad ────────────────────────────────────────
+        with st.expander("ver detalle completo (por materia prima)"):
+            _tabla_compras_mp(df_mp[df_mp["compra_requerida"] > 0])
 
-    # ── tabla completa con severidad ──────────────────────────────────────────
-    with st.expander("ver detalle completo (por materia prima)"):
-        _tabla_compras_mp(df_mp[df_mp["compra_requerida"] > 0])
+        with st.expander("ver detalle completo (por producto terminado × materia prima)"):
+            _tabla_detalle_pt(df)
 
-    with st.expander("ver detalle completo (por producto terminado × materia prima)"):
-        _tabla_detalle_pt(df)
-
-    # ── descarga CSV ──────────────────────────────────────────────────────────
-    if not df.empty:
+        # ── descarga CSV ────────────────────────────────────────────────────────
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button(
             "⬇️ descargar CSV (detalle PT × MP)",
@@ -236,29 +325,30 @@ def mostrar_tab_compras(id_version: int, anio: int, meses: list[int]) -> None:
         )
 
 
-def _vista_por_pt(df: pd.DataFrame) -> None:
-    resumen = df.groupby(["cve_prod", "producto_pt", "origen", "mes"], as_index=False).agg(
-        forecast_kg=("forecast_kg", "first"),
-        existencia_pt=("existencia_pt", "first"),
-        necesidad_mp_kg=("necesidad_kg", "sum"),
-        materias_primas=("cve_mp", lambda x: ", ".join(sorted(set(x)))),
+def _vista_por_producto_dp(df_prod: pd.DataFrame) -> None:
+    """Necesidad de compra por producto terminado cruzando la venta forecast
+    contra lo disponible (forecast de compra si ya se capturó para ese mes, o
+    si no, el presupuesto de compras YA AUTORIZADO) mes a mes desde el mes
+    actual hasta el último mes del rango — ver calcular_necesidad_compra_dp_ctrl."""
+    st.caption(
+        "Necesidad = lo que la venta proyectada de cada mes (desde el actual hasta el "
+        "último seleccionado) no alcanza a cubrir con la existencia actual + lo que ya "
+        "está disponible para comprar ese mes (forecast de compra si existe, si no el "
+        "presupuesto de compras ya autorizado); el sobrante de un mes se usa para cubrir "
+        "los siguientes y al final se obtiene la necesidad total del período."
     )
-    resumen["mes_nombre"] = resumen["mes"].map(_MESES).str.upper()
-    resumen = resumen.sort_values(["producto_pt", "mes"])
-
+    resumen = df_prod.sort_values("necesidad", ascending=False)
     st.dataframe(
-        resumen[["cve_prod", "producto_pt", "origen", "mes_nombre", "forecast_kg", "existencia_pt", "necesidad_mp_kg", "materias_primas"]],
+        resumen[["cve_prod", "producto", "existencia_actual", "forecast_mes_actual", "presupuesto_compra_dp", "necesidad"]],
         use_container_width=True,
         hide_index=True,
         column_config={
-            "cve_prod": st.column_config.TextColumn("cve PT", disabled=True),
-            "producto_pt": st.column_config.TextColumn("producto terminado", disabled=True),
-            "origen": st.column_config.TextColumn("origen", disabled=True),
-            "mes_nombre": st.column_config.TextColumn("mes", disabled=True),
-            "forecast_kg": st.column_config.NumberColumn("forecast PT (kg)", format="%.2f", disabled=True),
-            "existencia_pt": st.column_config.NumberColumn("existencia PT alm.18 (kg)", format="%.2f", disabled=True),
-            "necesidad_mp_kg": st.column_config.NumberColumn("materia prima requerida (kg)", format="%.2f", disabled=True),
-            "materias_primas": st.column_config.TextColumn("materias primas (cve)", disabled=True),
+            "cve_prod": st.column_config.TextColumn("cve prod", disabled=True),
+            "producto": st.column_config.TextColumn("producto", disabled=True),
+            "existencia_actual": st.column_config.NumberColumn("existencia actual (kg)", format="%.2f", disabled=True),
+            "forecast_mes_actual": st.column_config.NumberColumn("forecast mes actual (kg)", format="%.2f", disabled=True),
+            "presupuesto_compra_dp": st.column_config.NumberColumn("presupuesto compra DP (kg)", format="%.2f", disabled=True),
+            "necesidad": st.column_config.NumberColumn("necesidad (kg)", format="%.2f", disabled=True),
         },
         height=min(56 + len(resumen) * 35, 600),
     )

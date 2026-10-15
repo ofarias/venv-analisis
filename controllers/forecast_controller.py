@@ -40,6 +40,7 @@ from models.formulas_readonly_model import (
 from models.formulas_model import listar_mp_sae_model, listar_pt_sae_model
 from utils.forecast_engine import (
     calcular_mdi_producto,
+    calcular_necesidad_compra_dp_producto,
     generar_propuesta_forecast,
 )
 
@@ -117,6 +118,7 @@ def guardar_forecast_fila_ctrl(
     calcular_mdi_ctrl.clear()
     obtener_forecast_detalle_ctrl.clear()
     calcular_necesidades_compra_ctrl.clear()
+    calcular_necesidad_compra_dp_ctrl.clear()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -354,6 +356,7 @@ def generar_propuesta_ctrl(
     calcular_mdi_ctrl.clear()
     obtener_forecast_detalle_ctrl.clear()
     calcular_necesidades_compra_ctrl.clear()
+    calcular_necesidad_compra_dp_ctrl.clear()
     return {"guardados": guardados, "productos": len(df_prop["cve_prod"].unique()) if not df_prop.empty else 0}
 
 
@@ -604,6 +607,89 @@ def calcular_necesidades_compra_ctrl(
     )
 
 
+@st.cache_data(ttl=300, show_spinner="calculando necesidad de compra (DP)…")
+def calcular_necesidad_compra_dp_ctrl(
+    id_version: int,
+    anio: int,
+    meses: list[int],
+    usuario_datos_id: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Necesidad de compra por producto terminado, mes a mes desde `meses[0]`
+    (se espera "mes actual en adelante") hasta el último mes seleccionado:
+    cruza la venta forecast contra lo disponible para cubrirla — forecast de
+    compra (DP capturado en Construcción del Forecast) si ya existe para ese
+    mes, o si no, el presupuesto de compras YA AUTORIZADO agrupado por
+    producto — ver `calcular_necesidad_compra_dp_producto` en
+    utils/forecast_engine.py para el detalle del arrastre mes a mes.
+
+    Retorna una fila por producto con: cve_prod, producto, existencia_actual,
+    forecast_mes_actual (venta del primer mes del rango), presupuesto_compra_dp
+    (suma de lo que cubrió cada mes del rango, venga de forecast o de DP) y
+    necesidad (suma de los faltantes mensuales — la necesidad final del año
+    para ese producto).
+    """
+    if not meses:
+        return pd.DataFrame()
+
+    df_forecast_venta = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="venta")
+    if df_forecast_venta is None or df_forecast_venta.empty:
+        return pd.DataFrame()
+    df_forecast_compra = obtener_forecast_detalle_model(id_version=id_version, seccion="KG", tipo="compra")
+    df_dp = obtener_presupuesto_compras_resumen_por_anio_ctrl(
+        anio=anio, seccion="KG", region=None, usuario_id=usuario_datos_id, solo_autorizados=True,
+    )
+    df_exist = _existencias_sae()
+
+    try:
+        df_cat = obtener_catalogo_productos_pv_model()
+    except Exception:
+        df_cat = pd.DataFrame()
+    cat_map = {}
+    if df_cat is not None and not df_cat.empty:
+        cat_map = dict(zip(df_cat["cve_prod"].astype(str).str.strip(), df_cat["descr"]))
+
+    cve_prods = set(df_forecast_venta["cve_prod"].dropna().astype(str).str.strip())
+    if df_forecast_compra is not None and not df_forecast_compra.empty:
+        cve_prods |= set(df_forecast_compra["cve_prod"].dropna().astype(str).str.strip())
+    if df_dp is not None and not df_dp.empty and "cve_prod" in df_dp.columns:
+        cve_prods |= set(df_dp["cve_prod"].dropna().astype(str).str.strip())
+
+    mes_actual = meses[0]
+    filas = []
+    for prod_str in sorted(cve_prods):
+        stock = 0.0
+        if df_exist is not None and not df_exist.empty:
+            m = df_exist["cve_art"].astype(str).str.strip() == prod_str
+            stock = float(df_exist.loc[m, "existencia"].sum() if m.any() else 0)
+
+        detalle = calcular_necesidad_compra_dp_producto(
+            cve_prod=prod_str,
+            stock_actual=stock,
+            df_forecast_venta=df_forecast_venta,
+            df_forecast_compra=df_forecast_compra,
+            df_dp_compras=df_dp,
+            meses=meses,
+        )
+        if not detalle:
+            continue
+
+        forecast_mes_actual = next((d["venta_forecast"] for d in detalle if d["mes"] == mes_actual), 0.0)
+        dp_total = sum(d["compra_cubierta"] for d in detalle)
+        necesidad_total = sum(d["necesidad"] for d in detalle)
+
+        filas.append({
+            "cve_prod": prod_str,
+            "producto": cat_map.get(prod_str, prod_str),
+            "existencia_actual": round(stock, 2),
+            "forecast_mes_actual": round(forecast_mes_actual, 2),
+            "presupuesto_compra_dp": round(dp_total, 2),
+            "necesidad": round(necesidad_total, 2),
+        })
+
+    return pd.DataFrame(filas) if filas else pd.DataFrame()
+
+
 # ── MDI ───────────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300, show_spinner="calculando MDI…")
@@ -723,16 +809,24 @@ def _existencias_sae() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600, show_spinner="cargando clientes por producto…")
-def clientes_por_producto_ctrl(anio: int) -> pd.DataFrame:
+def clientes_por_producto_ctrl(anio: int, meses: tuple[int, ...] | None = None) -> pd.DataFrame:
     """Desglose cve_prod → cliente(s) a partir de las líneas autorizadas de
     presupuesto de ventas del año. Sirve para mostrar "quién requiere este
-    producto" en el MDI; productos cuyo forecast salió de captura manual
-    (sin línea de presupuesto de origen) simplemente no aparecen aquí."""
+    producto" en el MDI y en Necesidades de Compra; productos cuyo forecast
+    salió de captura manual (sin línea de presupuesto de origen) simplemente
+    no aparecen aquí.
+
+    meses: si se indica, solo suma esos meses (ej. mes actual en adelante,
+    igual que el resto de la pantalla) — si se omite, suma el año completo."""
     try:
         df = obtener_presupuesto_ventas_model(anio=int(anio), solo_autorizados=True, limit=200000)
     except Exception:
         return pd.DataFrame(columns=["cve_prod", "cve_clie", "cliente_excel", "kg", "usd"])
     if df is None or df.empty:
+        return pd.DataFrame(columns=["cve_prod", "cve_clie", "cliente_excel", "kg", "usd"])
+    if meses and "mes" in df.columns:
+        df = df[df["mes"].isin(meses)]
+    if df.empty:
         return pd.DataFrame(columns=["cve_prod", "cve_clie", "cliente_excel", "kg", "usd"])
     df["cve_prod"] = df["cve_prod"].astype(str).str.strip()
     df["cve_clie"] = df["cve_clie"].fillna("").astype(str).str.strip()
