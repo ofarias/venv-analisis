@@ -12,13 +12,14 @@ from models.forecast_autorizacion_model import (
     upsert_forecast_mes_estatus_model,
 )
 from models.presupuesto_ventas_sae_model import obtener_catalogo_productos_pv_model
+from models.formulas_readonly_model import listar_formulas_readonly_model
+from models.formulas_model import listar_mp_sae_model, listar_pt_sae_model
 from utils.forecast_engine import calcular_necesidad_compra_dp_producto
 from controllers.forecast_controller import (
     obtener_forecast_versiones_ctrl,
     obtener_forecast_detalle_ctrl,
     obtener_presupuesto_resumen_por_anio_ctrl,
     obtener_presupuesto_compras_resumen_por_anio_ctrl,
-    _existencias_sae,
 )
 
 
@@ -127,25 +128,27 @@ _MESES_CTRL = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
 @st.cache_data(ttl=300, show_spinner="consolidando necesidad de compra de todos los vendedores…")
 def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> pd.DataFrame:
     """
-    Necesidad de compra por producto × mes, consolidada entre TODOS los
-    vendedores (todas las forecast_versiones del año): para cada vendedor y
-    mes, usa su forecast de venta/compra si ese mes está 'autorizada'; si no,
-    cae al presupuesto de ventas/compras YA AUTORIZADO de ESE MISMO vendedor.
-    Se agrega primero (suma por cve_prod × mes, vendedor por vendedor) y hasta
-    el final se corre el motor de arrastre mes a mes
-    (`calcular_necesidad_compra_dp_producto`) una sola vez por producto contra
-    la existencia física, que es global (no se puede repartir entre
-    vendedores sin duplicar el conteo).
+    Necesidad de **materia prima** (cve_prod que inicia con "B") por mes,
+    consolidada entre TODOS los vendedores: para cada vendedor y mes, usa su
+    forecast de venta/compra si ese mes está 'autorizada'; si no, cae al
+    presupuesto de ventas/compras YA AUTORIZADO de ESE MISMO vendedor.
 
-    Retorna una fila por (cve_prod, mes) — "formato largo" para poder pivotear
-    en la vista a Stock actual | Forecast | DP | Orden de Compra | Resultado
-    por mes, con el arrastre de `existencia_inicio`/`resultado` ya resuelto por el
-    motor. `origen_forecast` y `vendedores` son a nivel producto (repetidos en
-    cada fila de mes) — ver `_acumular_contribucion_mes`.
+    Un producto terminado (PT, con fórmula registrada) no se compra, se
+    fabrica — su venta consolidada se cruza contra su fórmula (carrier +
+    enzimas + auxiliares, % por componente) y contra su existencia de PT
+    (almacén 18, neteada mes a mes) para obtener cuánta materia prima hace
+    falta producirlo; esa necesidad derivada se suma a la de cada materia
+    prima junto con lo que esa misma se forecastea/compra directamente (una
+    materia prima puede venderse ella misma Y ser insumo de varias fórmulas
+    a la vez). Solo hasta el final, ya por materia prima, se corre el motor
+    de arrastre mes a mes (`calcular_necesidad_compra_dp_producto`) contra su
+    existencia física real (almacén 17).
 
-    No excluye nada del consolidado: un producto/mes sin ningún vendedor
-    autorizado todavía aparece con su presupuesto como respaldo, marcado
-    `origen_forecast = 'presupuesto (fallback)'` en vez de `'autorizado'`.
+    Retorna una fila por (cve_prod, mes) — "formato largo" para poder
+    pivotear en la vista a Stock | Forecast | DP | Resultado | Orden
+    Sugerida por mes. `origen_forecast` y `vendedores` son a nivel producto
+    (repetidos en cada fila de mes); para una materia prima derivada de un
+    PT, los vendedores son los de ese PT.
     """
     if not meses:
         return pd.DataFrame()
@@ -194,11 +197,107 @@ def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> p
                 vendedores_por_producto=vendedores_por_producto, nombre_vendedor=nombre_v,
             )
 
-    cve_prods = sorted({k[0] for k in venta_acc} | {k[0] for k in compra_acc})
-    if not cve_prods:
+    # ── explosión de fórmula: PT → materia prima ──────────────────────────
+    # Un producto terminado no se compra, se fabrica — se cruza su venta
+    # consolidada contra su fórmula y su existencia de PT (almacén 18,
+    # neteada mes a mes) para traducirla a materia prima requerida.
+    try:
+        formulas = listar_formulas_readonly_model()
+    except Exception:
+        formulas = []
+    formula_por_sae = {
+        str(f.get("cve_sae") or "").strip(): f
+        for f in formulas if str(f.get("cve_sae") or "").strip()
+    }
+
+    try:
+        rows_pt = listar_pt_sae_model()
+        df_pt_exist = pd.DataFrame(rows_pt) if rows_pt else pd.DataFrame()
+    except Exception:
+        df_pt_exist = pd.DataFrame()
+    if not df_pt_exist.empty:
+        df_pt_exist.columns = [c.lower() for c in df_pt_exist.columns]
+    pt_exist_map: dict = {}
+    if not df_pt_exist.empty and "cve_art" in df_pt_exist.columns:
+        for r in df_pt_exist.to_dict("records"):
+            cve = str(r.get("cve_art") or "").strip().upper()
+            if cve:
+                pt_exist_map[cve] = float(r.get("exist") or 0)
+
+    venta_mp_acc: dict[tuple[str, int], float] = {}
+    fallback_mp: set[tuple[str, int]] = set()
+    vendedores_mp: dict[str, set[str]] = {}
+
+    def _propagar_mp(cve_mp: str, mes: int, valor: float, origen_cve: str, es_fallback: bool) -> None:
+        if not valor:
+            return
+        key = (cve_mp, mes)
+        venta_mp_acc[key] = venta_mp_acc.get(key, 0.0) + valor
+        if es_fallback:
+            fallback_mp.add(key)
+        vendedores_mp.setdefault(cve_mp, set()).update(vendedores_por_producto.get(origen_cve, set()))
+
+    meses_ordenados = sorted(meses)
+    for cve_prod in sorted({k[0] for k in venta_acc}):
+        formula = formula_por_sae.get(cve_prod)
+        componentes: list[dict] = []
+        if formula:
+            carrier = formula.get("carrier")
+            if isinstance(carrier, dict) and carrier.get("mp"):
+                componentes.append(carrier)
+            for grupo in ("enzimas", "auxiliares"):
+                lista = formula.get(grupo)
+                if isinstance(lista, list):
+                    componentes.extend([c for c in lista if isinstance(c, dict) and c.get("mp")])
+
+        if not componentes:
+            # sin fórmula (o fórmula sin materias primas declaradas): pasa
+            # tal cual — si de verdad es materia prima (prefijo "B"), queda
+            # igual más abajo; si no, se descarta al filtrar por "B"
+            for mes in meses_ordenados:
+                valor = venta_acc.get((cve_prod, mes), 0.0)
+                _propagar_mp(cve_prod, mes, valor, cve_prod, (cve_prod, mes) in fallback_venta)
+            continue
+
+        stock_pt = pt_exist_map.get(str(cve_prod).strip().upper(), 0.0)
+        for mes in meses_ordenados:
+            fc_kg = venta_acc.get((cve_prod, mes), 0.0)
+            existencia_pt_mes = stock_pt
+            a_producir_kg = max(0.0, fc_kg - existencia_pt_mes)
+            stock_pt = max(0.0, existencia_pt_mes - fc_kg)
+            if a_producir_kg <= 0:
+                continue
+            es_fallback = (cve_prod, mes) in fallback_venta
+            for comp in componentes:
+                cve_mp = str(comp.get("mp") or "").strip()
+                pct = float(comp.get("pct") or 0)
+                if not cve_mp or pct <= 0:
+                    continue
+                _propagar_mp(cve_mp, mes, a_producir_kg * (pct / 100), cve_prod, es_fallback)
+
+    cve_prods_mp = sorted({
+        cve for cve in ({k[0] for k in venta_mp_acc} | {k[0] for k in compra_acc})
+        if str(cve).strip().upper().startswith("B")
+    })
+    if not cve_prods_mp:
         return pd.DataFrame()
 
-    df_exist = _existencias_sae()
+    try:
+        rows_mp = listar_mp_sae_model()
+        df_mp_exist = pd.DataFrame(rows_mp) if rows_mp else pd.DataFrame()
+    except Exception:
+        df_mp_exist = pd.DataFrame()
+    if not df_mp_exist.empty:
+        df_mp_exist.columns = [c.lower() for c in df_mp_exist.columns]
+    mp_exist_map: dict = {}
+    mp_nombre_map: dict = {}
+    if not df_mp_exist.empty and "cve_art" in df_mp_exist.columns:
+        for r in df_mp_exist.to_dict("records"):
+            cve = str(r.get("cve_art") or "").strip().upper()
+            if cve:
+                mp_exist_map[cve] = float(r.get("exist") or 0)
+                mp_nombre_map[cve] = str(r.get("descr") or cve).strip()
+
     try:
         df_cat = obtener_catalogo_productos_pv_model()
     except Exception:
@@ -208,14 +307,12 @@ def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> p
         cat_map = dict(zip(df_cat["cve_prod"].astype(str).str.strip(), df_cat["descr"]))
 
     filas = []
-    for cve in cve_prods:
-        stock = 0.0
-        if df_exist is not None and not df_exist.empty:
-            m = df_exist["cve_art"].astype(str).str.strip() == cve
-            stock = float(df_exist.loc[m, "existencia"].sum() if m.any() else 0)
+    for cve in cve_prods_mp:
+        cve_up = cve.strip().upper()
+        stock = mp_exist_map.get(cve_up, 0.0)
 
         df_venta_prod = pd.DataFrame([
-            {"cve_prod": cve, "mes": mes, "forecast": venta_acc.get((cve, mes), 0.0)} for mes in meses
+            {"cve_prod": cve, "mes": mes, "forecast": venta_mp_acc.get((cve, mes), 0.0)} for mes in meses
         ])
         df_compra_prod = pd.DataFrame([
             {"cve_prod": cve, "mes": mes, "forecast": compra_acc.get((cve, mes), 0.0)} for mes in meses
@@ -229,10 +326,10 @@ def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> p
         if not detalle:
             continue
 
-        hubo_fallback = any((cve, mes) in fallback_venta or (cve, mes) in fallback_compra for mes in meses)
+        hubo_fallback = any((cve, mes) in fallback_mp or (cve, mes) in fallback_compra for mes in meses)
         origen_prod = "presupuesto (fallback)" if hubo_fallback else "autorizado"
-        vendedores = ", ".join(sorted(vendedores_por_producto.get(cve, set())))
-        producto = cat_map.get(cve, cve)
+        vendedores = ", ".join(sorted(vendedores_mp.get(cve, set())))
+        producto = mp_nombre_map.get(cve_up) or cat_map.get(cve, cve)
 
         for d in detalle:
             filas.append({

@@ -213,7 +213,8 @@ def obtener_productos_sae_model(
                 i.exist,
                 i.peso,
                 i.tipo_ele,
-                i.status
+                i.status,
+                i.tiem_surt
             from inve01 i
             left join clin01 l
                 on l.cve_lin = i.lin_prod
@@ -251,6 +252,7 @@ def obtener_productos_sae_model(
                 "peso",
                 "tipo_ele",
                 "status",
+                "tiem_surt",
             ],
         )
 

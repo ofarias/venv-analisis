@@ -10,6 +10,7 @@ from controllers.forecast_controller import (
     generar_propuesta_ctrl,
     guardar_forecast_fila_ctrl,
     obtener_forecast_detalle_ctrl,
+    obtener_precio_venta_presupuesto_ctrl,
     _compras_historicas_sae,
     _ventas_historicas_sae,
     _existencias_sae,
@@ -120,6 +121,16 @@ def _value_formatter_js(decimales: int) -> JsCode:
     function(params) {{
         if (params.value === null || params.value === undefined || params.value === '') return '';
         return Number(params.value).toFixed({decimales});
+    }}
+    """)
+
+
+def _value_formatter_miles_js(decimales: int) -> JsCode:
+    """Con separador de miles — mismo criterio que presupuesto_compras_view.py."""
+    return JsCode(f"""
+    function(params) {{
+        if (params.value === null || params.value === undefined || params.value === '') return '';
+        return Number(params.value).toLocaleString('en-US', {{minimumFractionDigits: {decimales}, maximumFractionDigits: {decimales}}});
     }}
     """)
 
@@ -357,9 +368,11 @@ def _pivot_forecast(
     real_col_prefix: str | None = None,
 ) -> pd.DataFrame:
     """Convierte detalle long → wide con columnas de meses. "precio" es el
-    precio SAE del producto; "total_kg" es la suma de los meses mostrados;
-    "total_usd" la convierte a dólares con ese precio — mismo criterio que
-    "Total Kilos Año"/"Total USD Año" en presupuesto de ventas.
+    precio de venta que el propio vendedor capturó en su Presupuesto de
+    Ventas (promedio ponderado por kg, ver
+    obtener_precio_venta_presupuesto_ctrl) — ya no el precio público de
+    catálogo ni el de facturas SAE; "total_kg" es la suma de los meses
+    mostrados; "total_usd" la convierte a dólares con ese precio de venta.
 
     real_map (cve_prod → total real SAE de los meses seleccionados) se agrega
     como `real_col` cuando se pasan ambos — un solo total acumulado de los
@@ -373,7 +386,7 @@ def _pivot_forecast(
     if df is None or df.empty:
         return pd.DataFrame()
     cols_id = ["cve_prod", "producto_excel"]
-    ref_cols = ["venta_real_mes_ant", "venta_real_prom_3m", "presupuesto_valor"]
+    ref_cols = ["venta_real_mes_ant"]
 
     wide = df.pivot_table(
         index=cols_id,
@@ -466,15 +479,6 @@ def mostrar_tab_construccion(
 
     st.divider()
 
-    try:
-        df_cat_precio = obtener_catalogo_productos_pv_ctrl()
-    except Exception:
-        df_cat_precio = pd.DataFrame()
-    precio_map = {
-        str(r.get("cve_prod") or "").strip(): float(r.get("precio") or 0.0)
-        for r in df_cat_precio.to_dict("records")
-    } if df_cat_precio is not None and not df_cat_precio.empty else {}
-
     # ventas y compras reales SAE — compartidas entre ambos sub-tabs, cada
     # uno usa la que le corresponde (venta → "Venta Real", compra → "Compra Real")
     with st.spinner("cargando ventas SAE…"):
@@ -495,7 +499,6 @@ def mostrar_tab_construccion(
                 usuario_id=usuario_id,
                 es_admin=es_admin,
                 meses_sel=meses_sel,
-                precio_map=precio_map,
                 df_ventas_sae=df_ventas_sae,
                 df_compras_sae=df_compras_sae,
             )
@@ -511,7 +514,6 @@ def _mostrar_construccion_tipo(
     usuario_id: int,
     es_admin: bool,
     meses_sel: list[int],
-    precio_map: dict,
     df_ventas_sae: pd.DataFrame,
     df_compras_sae: pd.DataFrame,
 ) -> None:
@@ -608,7 +610,9 @@ def _mostrar_construccion_tipo(
 
             df_real_sae = df_ventas_sae if tipo == "venta" else df_compras_sae
             real_col = "venta_real_sae" if tipo == "venta" else "compra_real_sae"
-            real_label = "Venta Real" if tipo == "venta" else "Compra Real"
+            real_label = "Venta Real KG" if tipo == "venta" else "Compra Real KG"
+
+            precio_map = obtener_precio_venta_presupuesto_ctrl(anio=anio, usuario_id=usuario_datos_id)
 
             # además del total acumulado de siempre, real mes a mes junto a
             # cada columna de forecast del mismo mes (venta y compra por
@@ -631,36 +635,31 @@ def _mostrar_construccion_tipo(
 
             gb = GridOptionsBuilder.from_dataframe(pivot_orig)
             gb.configure_default_column(editable=False, resizable=True, width=100)
+            # panel lateral nativo de AG Grid para mostrar/ocultar columnas —
+            # mismo criterio que Tabla Presupuesto (presupuesto_ventas_view.py)
+            gb.configure_side_bar()
 
-            gb.configure_column("cve_prod", headerName="cve prod", editable=False, width=130)
-            gb.configure_column("producto_excel", headerName="producto", editable=False, width=220)
+            gb.configure_column("cve_prod", headerName="cve prod", editable=False, width=130, pinned="left")
+            gb.configure_column("producto_excel", headerName="producto", editable=False, width=220, pinned="left")
             gb.configure_column(
-                "precio", headerName="precio", editable=False, width=100,
+                "precio", headerName="Precio Venta", editable=False, width=110, pinned="left",
                 type=["numericColumn"], valueFormatter=_value_formatter_js(4),
             )
             gb.configure_column(
-                "total_kg", headerName="Total KG", editable=False, width=110,
+                "total_kg", headerName="Total KG", editable=False, width=110, pinned="left",
                 type=["numericColumn"], valueFormatter=_value_formatter_js(0),
             )
             gb.configure_column(
-                "total_usd", headerName="Total USD", editable=False, width=110,
-                type=["numericColumn"], valueFormatter=_value_formatter_js(2),
+                "total_usd", headerName="Total USD", editable=False, width=120, pinned="left",
+                type=["numericColumn"], valueFormatter=_value_formatter_miles_js(2),
             )
             gb.configure_column(
-                "venta_real_mes_ant", headerName="vta año ant", editable=False, width=110,
-                type=["numericColumn"], valueFormatter=_value_formatter_js(2),
-            )
-            gb.configure_column(
-                "venta_real_prom_3m", headerName="prom 3m", editable=False, width=100,
-                type=["numericColumn"], valueFormatter=_value_formatter_js(2),
-            )
-            gb.configure_column(
-                "presupuesto_valor", headerName="presupuesto", editable=False, width=110,
+                "venta_real_mes_ant", headerName="vta año ant (Kg)", editable=False, width=130, pinned="left",
                 type=["numericColumn"], valueFormatter=_value_formatter_js(2),
             )
             if real_col in pivot_orig.columns:
                 gb.configure_column(
-                    real_col, headerName=real_label, editable=False, width=110,
+                    real_col, headerName=real_label, editable=False, width=110, pinned="left",
                     type=["numericColumn"], valueFormatter=_value_formatter_js(2),
                 )
             for m in meses_sel:
@@ -714,7 +713,7 @@ def _mostrar_construccion_tipo(
             # por mes (columnas ene..dic, incluyendo real_<mes> si aplica) y
             # en el año (Total KG/Total USD)
             fila_total: dict = {"cve_prod": "TOTAL", "producto_excel": ""}
-            for c in ("total_kg", "total_usd", real_col, "venta_real_mes_ant", "venta_real_prom_3m", "presupuesto_valor"):
+            for c in ("total_kg", "total_usd", real_col, "venta_real_mes_ant"):
                 if c in pivot_orig.columns:
                     fila_total[c] = float(pd.to_numeric(pivot_orig[c], errors="coerce").fillna(0.0).sum())
             for m in meses_sel:
@@ -739,6 +738,7 @@ def _mostrar_construccion_tipo(
                 data_return_mode=DataReturnMode.AS_INPUT,
                 fit_columns_on_grid_load=False,
                 allow_unsafe_jscode=True,
+                enable_enterprise_modules=True,
                 height=min(56 + len(pivot_orig) * 35, 680),
                 key=f"fc_editor_{tipo}_{seccion}_{region}_{id_version}",
             )

@@ -39,18 +39,19 @@ def calcular_promedio_n_meses(
     return round(total / n, 4)
 
 
-def calcular_venta_mismo_mes_anio_anterior(
+def calcular_venta_acumulada_anio_anterior(
     df_ventas: pd.DataFrame,
     cve_prod: str,
     anio_ref: int,
-    mes_ref: int,
 ) -> float:
+    """Venta real acumulada (kg) de TODO el año anterior (anio_ref - 1), no
+    solo un mes — referencia de "¿cuánto se vendió el año pasado en total?"
+    para la columna "vta año ant (Kg)" de Construcción del Forecast."""
     if df_ventas is None or df_ventas.empty:
         return 0.0
     mask = (
         (df_ventas["cve_art"].astype(str).str.strip() == str(cve_prod).strip())
         & (df_ventas["anio"] == anio_ref - 1)
-        & (df_ventas["mes"] == mes_ref)
     )
     return float(df_ventas.loc[mask, "cantidad"].sum() or 0)
 
@@ -105,8 +106,8 @@ def generar_propuesta_forecast(
             pv_mask = mask_pv & (df_pv["mes"] == mes) if "mes" in df_pv.columns else mask_pv
             pres_val = float(df_pv.loc[pv_mask, col_val].sum()) if col_val in df_pv.columns else 0.0
 
-            # ventas año anterior mismo mes
-            venta_ant = calcular_venta_mismo_mes_anio_anterior(df_ventas, prod_str, anio, mes) if df_ventas is not None and not df_ventas.empty else 0.0
+            # ventas año anterior, acumulado del año completo (no solo el mes)
+            venta_ant = calcular_venta_acumulada_anio_anterior(df_ventas, prod_str, anio) if df_ventas is not None and not df_ventas.empty else 0.0
 
             # promedio 3 o 12 meses
             n = 3 if metodo == "prom_3m" else 12

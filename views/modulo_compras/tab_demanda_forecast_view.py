@@ -12,7 +12,6 @@ from controllers.forecast_controller import (
     _catalogo_productos_sae,
 )
 from controllers.forecast_autorizacion_controller import calcular_necesidad_compra_consolidada_ctrl
-from controllers.formulas_readonly_controller import listar_formulas_readonly_ctrl
 
 
 _MESES = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
@@ -25,15 +24,18 @@ _ORIGEN_BADGE = {
 
 # por cada mes se repiten estas 5 columnas. Resultado = Stock - Forecast + DP
 # (sin acotar a 0, puede quedar negativo) y ES el Stock del mes siguiente —
-# el arrastre real. "Orden Compra" es solo informativo (cuánto haría falta
-# ordenar ESE mes para no quedar en negativo), no participa en el arrastre
-# (ver utils/forecast_engine.py::calcular_necesidad_compra_dp_producto).
+# el arrastre real. "DP" es solo informativo (lo que ya está planeado/
+# cubierto por forecast de compra o presupuesto autorizado); "Orden Sugerida"
+# es el valor accionable para Compras — cuánto haría falta ordenar ESE mes
+# para no quedar en negativo (ver utils/forecast_engine.py::
+# calcular_necesidad_compra_dp_producto). Ninguno de los dos participa en
+# el arrastre, que siempre usa Resultado.
 _SUFIJOS_MES = [
     ("Stock", "existencia_inicio"),
     ("Forecast", "venta_forecast"),
-    ("DP", "compra_cubierta"),
+    ("DP (info)", "compra_cubierta"),
     ("Resultado", "resultado"),
-    ("Orden Compra (info)", "necesidad"),
+    ("Orden Sugerida", "necesidad"),
 ]
 
 _VALUE_FORMATTER_MILES_JS = JsCode("""
@@ -64,16 +66,16 @@ def _construir_tabla_mensual(df_f: pd.DataFrame, meses_sel: list[int]) -> pd.Dat
     y una columna final de necesidad total del período."""
     base = (
         df_f.drop_duplicates("cve_prod")
-        .set_index("cve_prod")[["producto", "linea", "formula", "origen_forecast", "vendedores"]]
+        .set_index("cve_prod")[["producto", "tiempo_resurtido", "linea", "origen_forecast", "vendedores"]]
     )
     necesidad_total_por_prod = df_f.groupby("cve_prod")["necesidad"].sum()
 
     filas = []
     for cve, info in base.iterrows():
         fila = {
-            "formula": info["formula"],
             "cve_prod": cve,
             "producto": info["producto"],
+            "tiempo_resurtido": info["tiempo_resurtido"],
             "linea": info["linea"],
             "origen": _ORIGEN_BADGE.get(info["origen_forecast"], info["origen_forecast"]),
             "vendedores": info["vendedores"],
@@ -92,11 +94,13 @@ def _construir_tabla_mensual(df_f: pd.DataFrame, meses_sel: list[int]) -> pd.Dat
 
 def mostrar_tab_demanda_forecast() -> None:
     st.caption(
-        "Necesidad de compra consolidada de **todos los vendedores** — suma, producto por "
-        "producto, el forecast de venta/compra ya autorizado de cada vendedor para el mes "
-        "(o su presupuesto de compras/ventas ya autorizado si todavía no autoriza ese mes) "
-        "contra la existencia actual, para dimensionar la compra real sin depender de que "
-        "un solo vendedor esté al día."
+        "Necesidad de **materia prima** consolidada de todos los vendedores — los productos "
+        "terminados (con fórmula registrada) se cruzan contra su fórmula y su existencia de "
+        "PT (almacén 18) para traducir su venta en materia prima requerida; esta tabla solo "
+        "muestra materia prima (cve_prod que inicia con \"B\"), nunca producto terminado. "
+        "Usa el forecast de venta/compra ya autorizado de cada vendedor para el mes (o su "
+        "presupuesto ya autorizado si todavía no autoriza ese mes), contra la existencia "
+        "real de materia prima (almacén 17)."
     )
 
     hoy = date.today()
@@ -142,34 +146,23 @@ def mostrar_tab_demanda_forecast() -> None:
         )
         return
 
-    # línea (unidad de negocio) por producto, vía catálogo SAE
+    # línea (unidad de negocio) y tiempo de resurtido (SAE inve01.tiem_surt,
+    # en días) por producto, vía catálogo SAE
     try:
         df_cat = _catalogo_productos_sae()
     except Exception:
         df_cat = pd.DataFrame()
     mapa_linea: dict = {}
-    if df_cat is not None and not df_cat.empty and "cve_art" in df_cat.columns and "linea" in df_cat.columns:
-        mapa_linea = dict(zip(
-            df_cat["cve_art"].astype(str).str.strip(),
-            df_cat["linea"].astype(str).str.strip(),
-        ))
+    mapa_resurtido: dict = {}
+    if df_cat is not None and not df_cat.empty and "cve_art" in df_cat.columns:
+        cve_cat = df_cat["cve_art"].astype(str).str.strip()
+        if "linea" in df_cat.columns:
+            mapa_linea = dict(zip(cve_cat, df_cat["linea"].astype(str).str.strip()))
+        if "tiem_surt" in df_cat.columns:
+            mapa_resurtido = dict(zip(cve_cat, pd.to_numeric(df_cat["tiem_surt"], errors="coerce")))
     df = df.copy()
     df["linea"] = df["cve_prod"].astype(str).str.strip().map(mapa_linea).fillna("")
-
-    # indicador 🟢 tiene fórmula (producto terminado, se fabrica) / 🔴 materia
-    # prima (sin fórmula, se compra directo) — mismo criterio que usa el
-    # cruce de Necesidades de Compra (forecast_controller.py: formula_por_sae
-    # vía listar_formulas_readonly_model, clave cve_sae)
-    try:
-        df_formulas = listar_formulas_readonly_ctrl()
-    except Exception:
-        df_formulas = pd.DataFrame()
-    cve_con_formula: set = set()
-    if df_formulas is not None and not df_formulas.empty and "cve_sae" in df_formulas.columns:
-        cve_con_formula = set(df_formulas["cve_sae"].astype(str).str.strip()) - {""}
-    df["formula"] = df["cve_prod"].astype(str).str.strip().apply(
-        lambda c: "🟢" if c in cve_con_formula else "🔴"
-    )
+    df["tiempo_resurtido"] = df["cve_prod"].astype(str).str.strip().map(mapa_resurtido)
 
     # cliente(s) por producto, vía líneas autorizadas de presupuesto de ventas
     # del año/meses seleccionados (mismo criterio que Forecast → MDI/Necesidades)
@@ -251,15 +244,14 @@ def mostrar_tab_demanda_forecast() -> None:
 
     st.divider()
     st.caption(
-        "🟢 tiene fórmula (se fabrica)  |  🔴 materia prima (se compra directo, sin fórmula) — "
-        "🔒 el indicador, cve prod, producto y línea quedan fijos al hacer scroll — "
+        "🔒 cve prod, producto, tiempo de resurtido y línea quedan fijos al hacer scroll — "
         "Resultado = Stock - Forecast + DP (si queda en rojo/negativo, se arrastra "
-        "como déficit al mes siguiente) — Orden Compra (info) es solo informativo, "
-        "no se arrastra."
+        "como déficit al mes siguiente) — DP (info) es solo informativo (lo ya planeado), "
+        "Orden Sugerida es lo que hay que ordenar ese mes; ninguno de los dos se arrastra."
     )
     tabla = _construir_tabla_mensual(df_f, meses_sel).sort_values("Necesidad total", ascending=False)
 
-    cols_orden = ["formula", "cve_prod", "producto", "linea"]
+    cols_orden = ["cve_prod", "producto", "tiempo_resurtido", "linea"]
     cols_numericas = ["Necesidad total"]
     cols_resultado = set()
     for mes in meses_sel:
@@ -272,6 +264,7 @@ def mostrar_tab_demanda_forecast() -> None:
                 cols_resultado.add(col)
     cols_orden += ["Necesidad total", "origen", "vendedores"]
 
+    tabla["tiempo_resurtido"] = pd.to_numeric(tabla["tiempo_resurtido"], errors="coerce")
     for col in cols_numericas:
         tabla[col] = pd.to_numeric(tabla[col], errors="coerce").round(0)
 
@@ -279,12 +272,12 @@ def mostrar_tab_demanda_forecast() -> None:
 
     gb = GridOptionsBuilder.from_dataframe(tabla)
     gb.configure_default_column(editable=False, resizable=True, width=110)
-    gb.configure_column(
-        "formula", headerName="", pinned="left", width=50,
-        headerTooltip="🟢 tiene fórmula (se fabrica)  |  🔴 materia prima (se compra directo)",
-    )
     gb.configure_column("cve_prod", headerName="cve prod", pinned="left", width=110)
     gb.configure_column("producto", headerName="producto", pinned="left", width=200)
+    gb.configure_column(
+        "tiempo_resurtido", headerName="tiempo resurtido (días)", pinned="left", width=140,
+        type=["numericColumn"], valueFormatter=_VALUE_FORMATTER_MILES_JS,
+    )
     gb.configure_column("linea", headerName="línea", pinned="left", width=120)
     gb.configure_column("origen", headerName="origen del forecast", width=200)
     gb.configure_column("vendedores", headerName="vendedor(es)", width=220)

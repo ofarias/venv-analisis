@@ -201,6 +201,37 @@ def obtener_presupuesto_resumen_por_anio_ctrl(
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def obtener_precio_venta_presupuesto_ctrl(anio: int, usuario_id: Optional[int]) -> dict:
+    """cve_prod → precio de venta capturado por el vendedor en su Presupuesto
+    de Ventas (columna `precio_venta`, manual, no el de catálogo/SAE),
+    promedio ponderado por kg entre todas sus líneas de ese año — usado en
+    Construcción del Forecast para Total USD. Se incluyen líneas en
+    cualquier estatus (captura/enviada/autorizada): el precio es un dato de
+    referencia, no algo sujeto a aprobación.
+    """
+    df = obtener_presupuesto_ventas_model(anio=anio, usuario_id=usuario_id, solo_autorizados=False)
+    if df is None or df.empty:
+        return {}
+    df = df.copy()
+    df["precio_venta"] = pd.to_numeric(df.get("precio_venta"), errors="coerce").fillna(0.0)
+    df["cantidad_kg"] = pd.to_numeric(df.get("cantidad_kg"), errors="coerce").fillna(0.0)
+    df["cve_prod"] = df["cve_prod"].astype(str).str.strip()
+    df = df[(df["precio_venta"] > 0) & (df["cve_prod"] != "")]
+    if df.empty:
+        return {}
+    # promedio ponderado por kg; una línea sin kg capturado pesa 1 para no
+    # perder su precio en el promedio
+    peso = df["cantidad_kg"].where(df["cantidad_kg"] > 0, 1.0)
+    df["_ponderado"] = df["precio_venta"] * peso
+    df["_peso"] = peso
+    agg = df.groupby("cve_prod", as_index=False).agg(
+        ponderado=("_ponderado", "sum"), peso=("_peso", "sum"),
+    )
+    agg["precio"] = agg["ponderado"] / agg["peso"]
+    return dict(zip(agg["cve_prod"], agg["precio"]))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def obtener_presupuesto_compras_resumen_por_anio_ctrl(
     anio: int,
     seccion: str,
