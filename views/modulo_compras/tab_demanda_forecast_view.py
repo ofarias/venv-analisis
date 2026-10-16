@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import date
 
 import pandas as pd
@@ -26,10 +27,9 @@ _ORIGEN_BADGE = {
 # (sin acotar a 0, puede quedar negativo) y ES el Stock del mes siguiente —
 # el arrastre real. "DP" es solo informativo (lo que ya está planeado/
 # cubierto por forecast de compra o presupuesto autorizado); "Orden Sugerida"
-# es el valor accionable para Compras — cuánto haría falta ordenar ESE mes
-# para no quedar en negativo (ver utils/forecast_engine.py::
-# calcular_necesidad_compra_dp_producto). Ninguno de los dos participa en
-# el arrastre, que siempre usa Resultado.
+# es el valor accionable para Compras (ver utils/forecast_engine.py::
+# calcular_necesidad_compra_dp_producto para el faltante mes a mes). Ninguno
+# de los dos participa en el arrastre, que siempre usa Resultado.
 _SUFIJOS_MES = [
     ("Stock", "existencia_inicio"),
     ("Forecast", "venta_forecast"),
@@ -37,6 +37,15 @@ _SUFIJOS_MES = [
     ("Resultado", "resultado"),
     ("Orden Sugerida", "necesidad"),
 ]
+
+
+def _meses_cobertura_resurtido(tiempo_resurtido) -> int:
+    """Cuántos meses hacia adelante cubre un pedido colocado hoy, según el
+    tiempo de resurtido del producto (SAE, días) — redondeado hacia arriba a
+    meses completos. Sin dato o 0, se asume 1 mes (el actual nada más)."""
+    if tiempo_resurtido is None or pd.isna(tiempo_resurtido) or tiempo_resurtido <= 0:
+        return 1
+    return max(1, math.ceil(float(tiempo_resurtido) / 30))
 
 _VALUE_FORMATTER_MILES_JS = JsCode("""
 function(params) {
@@ -63,12 +72,20 @@ function(params) {
 def _construir_tabla_mensual(df_f: pd.DataFrame, meses_sel: list[int]) -> pd.DataFrame:
     """Pivotea el detalle largo (cve_prod × mes) a una fila por producto, con
     5 columnas por cada mes seleccionado (arrastre ya resuelto por el motor)
-    y una columna final de necesidad total del período."""
+    y una columna final de necesidad total del período.
+
+    "Orden Sugerida" solo se muestra en el primer mes (el actual): un pedido
+    colocado hoy tarda `tiempo_resurtido` días en llegar, así que debe cubrir
+    no solo el faltante de este mes sino el de los meses siguientes que
+    transcurran mientras llega — se suma el faltante (columna "necesidad") de
+    esos meses y se coloca todo en el mes actual; los meses siguientes
+    quedan en 0 en esta columna (ya están cubiertos por ese pedido)."""
     base = (
         df_f.drop_duplicates("cve_prod")
         .set_index("cve_prod")[["producto", "tiempo_resurtido", "linea", "origen_forecast", "vendedores"]]
     )
     necesidad_total_por_prod = df_f.groupby("cve_prod")["necesidad"].sum()
+    meses_ordenados = sorted(meses_sel)
 
     filas = []
     for cve, info in base.iterrows():
@@ -81,11 +98,23 @@ def _construir_tabla_mensual(df_f: pd.DataFrame, meses_sel: list[int]) -> pd.Dat
             "vendedores": info["vendedores"],
         }
         sub = df_f[df_f["cve_prod"] == cve].set_index("mes")
+
+        meses_cobertura = _meses_cobertura_resurtido(info["tiempo_resurtido"])
+        meses_orden_sugerida = set(meses_ordenados[:meses_cobertura])
+        orden_sugerida_total = sum(
+            float(sub.loc[m, "necesidad"]) for m in meses_orden_sugerida if m in sub.index
+        )
+        mes_actual = meses_ordenados[0] if meses_ordenados else None
+
         for mes in meses_sel:
             mn = _MESES[mes].upper()
             fila_mes = sub.loc[mes] if mes in sub.index else None
             for etiqueta, campo in _SUFIJOS_MES:
-                fila[f"{mn} {etiqueta}"] = float(fila_mes[campo]) if fila_mes is not None else 0.0
+                if etiqueta == "Orden Sugerida":
+                    valor = orden_sugerida_total if mes == mes_actual else 0.0
+                else:
+                    valor = float(fila_mes[campo]) if fila_mes is not None else 0.0
+                fila[f"{mn} {etiqueta}"] = valor
         fila["Necesidad total"] = float(necesidad_total_por_prod.get(cve, 0.0))
         filas.append(fila)
 
@@ -246,8 +275,11 @@ def mostrar_tab_demanda_forecast() -> None:
     st.caption(
         "🔒 cve prod, producto, tiempo de resurtido y línea quedan fijos al hacer scroll — "
         "Resultado = Stock - Forecast + DP (si queda en rojo/negativo, se arrastra "
-        "como déficit al mes siguiente) — DP (info) es solo informativo (lo ya planeado), "
-        "Orden Sugerida es lo que hay que ordenar ese mes; ninguno de los dos se arrastra."
+        "como déficit al mes siguiente) — DP (info) es solo informativo (lo ya planeado). "
+        "**Orden Sugerida solo aparece en el mes actual**: suma el faltante de ese mes y de "
+        "los siguientes que transcurran mientras llega el pedido, según el tiempo de "
+        "resurtido del producto (ej. 60 días = 2 meses) — los meses siguientes quedan en 0, "
+        "ya cubiertos por ese pedido."
     )
     tabla = _construir_tabla_mensual(df_f, meses_sel).sort_values("Necesidad total", ascending=False)
 
