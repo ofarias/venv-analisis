@@ -120,17 +120,28 @@ def _acumular_contribucion_mes(
         vendedores_por_producto.setdefault(cve, set()).add(nombre_vendedor)
 
 
+_MESES_CTRL = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
+               7: "jul", 8: "ago", 9: "sep", 10: "oct", 11: "nov", 12: "dic"}
+
+
 @st.cache_data(ttl=300, show_spinner="consolidando necesidad de compra de todos los vendedores…")
 def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> pd.DataFrame:
     """
-    Necesidad de compra por producto, consolidada entre TODOS los vendedores
-    (todas las forecast_versiones del año): para cada vendedor y mes, usa su
-    forecast de venta/compra si ese mes está 'autorizada'; si no, cae al
-    presupuesto de ventas/compras YA AUTORIZADO de ESE MISMO vendedor. Se
-    agrega primero (suma por cve_prod × mes, vendedor por vendedor) y hasta el
-    final se corre el motor de arrastre mes a mes (`calcular_necesidad_compra_dp_producto`)
-    una sola vez por producto contra la existencia física, que es global (no
-    se puede repartir entre vendedores sin duplicar el conteo).
+    Necesidad de compra por producto × mes, consolidada entre TODOS los
+    vendedores (todas las forecast_versiones del año): para cada vendedor y
+    mes, usa su forecast de venta/compra si ese mes está 'autorizada'; si no,
+    cae al presupuesto de ventas/compras YA AUTORIZADO de ESE MISMO vendedor.
+    Se agrega primero (suma por cve_prod × mes, vendedor por vendedor) y hasta
+    el final se corre el motor de arrastre mes a mes
+    (`calcular_necesidad_compra_dp_producto`) una sola vez por producto contra
+    la existencia física, que es global (no se puede repartir entre
+    vendedores sin duplicar el conteo).
+
+    Retorna una fila por (cve_prod, mes) — "formato largo" para poder pivotear
+    en la vista a Stock actual | Forecast | DP | Orden de Compra | Resultado
+    por mes, con el arrastre de `existencia_inicio`/`resultado` ya resuelto por el
+    motor. `origen_forecast` y `vendedores` son a nivel producto (repetidos en
+    cada fila de mes) — ver `_acumular_contribucion_mes`.
 
     No excluye nada del consolidado: un producto/mes sin ningún vendedor
     autorizado todavía aparece con su presupuesto como respaldo, marcado
@@ -196,7 +207,6 @@ def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> p
     if df_cat is not None and not df_cat.empty:
         cat_map = dict(zip(df_cat["cve_prod"].astype(str).str.strip(), df_cat["descr"]))
 
-    mes_actual = meses[0]
     filas = []
     for cve in cve_prods:
         stock = 0.0
@@ -219,22 +229,24 @@ def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> p
         if not detalle:
             continue
 
-        forecast_mes_actual = next((d["venta_forecast"] for d in detalle if d["mes"] == mes_actual), 0.0)
-        compra_total = sum(d["compra_cubierta"] for d in detalle)
-        necesidad_total = sum(d["necesidad"] for d in detalle)
-
         hubo_fallback = any((cve, mes) in fallback_venta or (cve, mes) in fallback_compra for mes in meses)
+        origen_prod = "presupuesto (fallback)" if hubo_fallback else "autorizado"
         vendedores = ", ".join(sorted(vendedores_por_producto.get(cve, set())))
+        producto = cat_map.get(cve, cve)
 
-        filas.append({
-            "cve_prod": cve,
-            "producto": cat_map.get(cve, cve),
-            "existencia_actual": round(stock, 2),
-            "forecast_mes_actual": round(forecast_mes_actual, 2),
-            "presupuesto_compra_dp": round(compra_total, 2),
-            "necesidad": round(necesidad_total, 2),
-            "origen_forecast": "presupuesto (fallback)" if hubo_fallback else "autorizado",
-            "vendedores": vendedores,
-        })
+        for d in detalle:
+            filas.append({
+                "cve_prod": cve,
+                "producto": producto,
+                "mes": int(d["mes"]),
+                "mes_nombre": _MESES_CTRL.get(int(d["mes"]), str(d["mes"])),
+                "existencia_inicio": round(d["existencia_inicio"], 2),
+                "venta_forecast": round(d["venta_forecast"], 2),
+                "compra_cubierta": round(d["compra_cubierta"], 2),
+                "necesidad": round(d["necesidad"], 2),
+                "resultado": round(d["resultado"], 2),
+                "origen_forecast": origen_prod,
+                "vendedores": vendedores,
+            })
 
     return pd.DataFrame(filas) if filas else pd.DataFrame()

@@ -224,14 +224,16 @@ def calcular_necesidad_compra_dp_producto(
     si no, se usa el presupuesto de compras YA AUTORIZADO (DP) de ese
     producto/mes como respaldo.
 
-    El sobrante de un mes (existencia + compra > venta) se arrastra como
-    existencia de inicio del mes siguiente. El faltante de un mes (venta >
-    existencia + compra) se reporta como "necesidad" de ese mes pero NO se
-    arrastra como deuda a los meses siguientes — cada mes con faltante
-    arranca el siguiente en 0, para no duplicar la misma falta más adelante.
+    Resultado del mes = existencia de inicio - venta proyectada + compra
+    (DP/forecast de compra). Ese resultado — sin acotar a 0, puede quedar
+    negativo — es la existencia de inicio del mes siguiente: un faltante SÍ
+    se arrastra como deuda a los meses siguientes, no se "resetea" cada mes.
+    "necesidad" es solo informativo: cuánto haría falta ordenar ESE mes para
+    no quedar en negativo (max(0, venta - disponible)) — no participa en el
+    arrastre, que siempre usa el resultado real (positivo o negativo).
 
     Retorna lista de dicts: {mes, existencia_inicio, venta_forecast,
-    compra_cubierta, origen_compra, necesidad, sobra}
+    compra_cubierta, origen_compra, necesidad, resultado}
     """
 
     def _valor_mes(df: pd.DataFrame, mes: int, col: str) -> Optional[float]:
@@ -245,7 +247,7 @@ def calcular_necesidad_compra_dp_producto(
             return None
         return float(df.loc[mask, col].sum())
 
-    resultado = []
+    filas = []
     stock = float(stock_actual or 0)
 
     for mes in meses:
@@ -260,11 +262,10 @@ def calcular_necesidad_compra_dp_producto(
             origen_compra = "DP autorizado" if compra_dp else "sin dato"
 
         existencia_inicio = stock
-        disponible = existencia_inicio + compra
-        necesidad = max(0.0, venta - disponible)
-        sobra = max(0.0, disponible - venta)
+        resultado_mes = existencia_inicio - venta + compra
+        necesidad = max(0.0, -resultado_mes)
 
-        resultado.append({
+        filas.append({
             "mes": mes,
             "mes_nombre": _MESES.get(mes, str(mes)),
             "existencia_inicio": round(existencia_inicio, 2),
@@ -272,8 +273,8 @@ def calcular_necesidad_compra_dp_producto(
             "compra_cubierta": round(compra, 2),
             "origen_compra": origen_compra,
             "necesidad": round(necesidad, 2),
-            "sobra": round(sobra, 2),
+            "resultado": round(resultado_mes, 2),
         })
-        stock = sobra  # el sobrante rueda; el faltante no se arrastra como deuda
+        stock = resultado_mes  # arrastre directo — puede quedar negativo (deuda)
 
-    return resultado
+    return filas
