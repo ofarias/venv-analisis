@@ -12,6 +12,7 @@ from controllers.forecast_controller import (
     _catalogo_productos_sae,
 )
 from controllers.forecast_autorizacion_controller import calcular_necesidad_compra_consolidada_ctrl
+from controllers.formulas_readonly_controller import listar_formulas_readonly_ctrl
 
 
 _MESES = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
@@ -34,8 +35,6 @@ _SUFIJOS_MES = [
     ("Resultado", "resultado"),
     ("Orden Compra (info)", "necesidad"),
 ]
-
-_COLS_FIJAS = {"cve_prod", "producto", "linea"}
 
 _VALUE_FORMATTER_MILES_JS = JsCode("""
 function(params) {
@@ -65,13 +64,14 @@ def _construir_tabla_mensual(df_f: pd.DataFrame, meses_sel: list[int]) -> pd.Dat
     y una columna final de necesidad total del período."""
     base = (
         df_f.drop_duplicates("cve_prod")
-        .set_index("cve_prod")[["producto", "linea", "origen_forecast", "vendedores"]]
+        .set_index("cve_prod")[["producto", "linea", "formula", "origen_forecast", "vendedores"]]
     )
     necesidad_total_por_prod = df_f.groupby("cve_prod")["necesidad"].sum()
 
     filas = []
     for cve, info in base.iterrows():
         fila = {
+            "formula": info["formula"],
             "cve_prod": cve,
             "producto": info["producto"],
             "linea": info["linea"],
@@ -156,6 +156,21 @@ def mostrar_tab_demanda_forecast() -> None:
     df = df.copy()
     df["linea"] = df["cve_prod"].astype(str).str.strip().map(mapa_linea).fillna("")
 
+    # indicador 🟢 tiene fórmula (producto terminado, se fabrica) / 🔴 materia
+    # prima (sin fórmula, se compra directo) — mismo criterio que usa el
+    # cruce de Necesidades de Compra (forecast_controller.py: formula_por_sae
+    # vía listar_formulas_readonly_model, clave cve_sae)
+    try:
+        df_formulas = listar_formulas_readonly_ctrl()
+    except Exception:
+        df_formulas = pd.DataFrame()
+    cve_con_formula: set = set()
+    if df_formulas is not None and not df_formulas.empty and "cve_sae" in df_formulas.columns:
+        cve_con_formula = set(df_formulas["cve_sae"].astype(str).str.strip()) - {""}
+    df["formula"] = df["cve_prod"].astype(str).str.strip().apply(
+        lambda c: "🟢" if c in cve_con_formula else "🔴"
+    )
+
     # cliente(s) por producto, vía líneas autorizadas de presupuesto de ventas
     # del año/meses seleccionados (mismo criterio que Forecast → MDI/Necesidades)
     df_clientes = clientes_por_producto_ctrl(int(anio_sel), meses=tuple(meses_sel))
@@ -236,14 +251,15 @@ def mostrar_tab_demanda_forecast() -> None:
 
     st.divider()
     st.caption(
-        "🔒 cve prod / producto / línea quedan fijas al hacer scroll — "
+        "🟢 tiene fórmula (se fabrica)  |  🔴 materia prima (se compra directo, sin fórmula) — "
+        "🔒 el indicador, cve prod, producto y línea quedan fijos al hacer scroll — "
         "Resultado = Stock - Forecast + DP (si queda en rojo/negativo, se arrastra "
         "como déficit al mes siguiente) — Orden Compra (info) es solo informativo, "
         "no se arrastra."
     )
     tabla = _construir_tabla_mensual(df_f, meses_sel).sort_values("Necesidad total", ascending=False)
 
-    cols_orden = ["cve_prod", "producto", "linea"]
+    cols_orden = ["formula", "cve_prod", "producto", "linea"]
     cols_numericas = ["Necesidad total"]
     cols_resultado = set()
     for mes in meses_sel:
@@ -263,6 +279,10 @@ def mostrar_tab_demanda_forecast() -> None:
 
     gb = GridOptionsBuilder.from_dataframe(tabla)
     gb.configure_default_column(editable=False, resizable=True, width=110)
+    gb.configure_column(
+        "formula", headerName="", pinned="left", width=50,
+        headerTooltip="🟢 tiene fórmula (se fabrica)  |  🔴 materia prima (se compra directo)",
+    )
     gb.configure_column("cve_prod", headerName="cve prod", pinned="left", width=110)
     gb.configure_column("producto", headerName="producto", pinned="left", width=200)
     gb.configure_column("linea", headerName="línea", pinned="left", width=120)
@@ -283,6 +303,7 @@ def mostrar_tab_demanda_forecast() -> None:
         data_return_mode=DataReturnMode.AS_INPUT,
         fit_columns_on_grid_load=False,
         allow_unsafe_jscode=True,
+        enable_enterprise_modules=True,
         height=min(56 + len(tabla) * 35, 650),
         key=f"comp_fc_grid_{anio_sel}",
     )

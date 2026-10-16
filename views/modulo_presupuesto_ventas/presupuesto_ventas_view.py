@@ -1699,8 +1699,12 @@ def _panel_resumen_captura(
     c3.metric("total kilos", f"{total_kg:,.0f}")
     c4.metric("total USD", f"{total_usd:,.2f}")
 
-    def _linea_de(lbl: str) -> str:
-        code = label_to_code.get(str(lbl or ""), "") or ""
+    def _linea_de(cve: str) -> str:
+        # _cve_prod_label (ver _construir_pivot) es solo el código desde que
+        # se quitó la descripción redundante de esa columna — antes aquí se
+        # buscaba por label_to_code esperando "código + descripción", que ya
+        # no existe en esa columna y por eso nunca encontraba nada.
+        code = str(cve or "").strip()
         desc = code_to_linea.get(code, ("", ""))[1] if code else ""
         desc = str(desc or "").split(" — ", 1)[-1].strip()
         return desc or "(sin línea SAE)"
@@ -2678,6 +2682,33 @@ def _tabla_generica_a_excel_bytes(nombre_hoja: str, df: pd.DataFrame, encabezado
 
 _FORMATO_NUM_GRAFICA = {"usd": "$,.0f", "cantidad": ",.0f"}
 
+# color fijo por tipo (nunca por orden/posición) — venta y compra son flujos
+# económicos opuestos, nunca deben sumarse ni compartir color en una gráfica
+_COLOR_TIPO = {"venta": "#2a78d6", "compra": "#eb6834"}
+
+
+def _grafica_lineas_por_tipo(
+    df: pd.DataFrame, valor: str, tipo_valor: str, height: int = 280,
+) -> None:
+    """Línea por mes, una serie por tipo (venta/compra) con color fijo —
+    nunca se suman entre sí en la misma línea."""
+    fmt = _FORMATO_NUM_GRAFICA.get(tipo_valor, ",.0f")
+    tipos_presentes = [t for t in ("venta", "compra") if t in set(df["tipo"])]
+    chart = alt.Chart(df).mark_line(point=True).encode(
+        x=alt.X("mes:N", title=None, sort=list(df["mes"].drop_duplicates())),
+        y=alt.Y(f"{valor}:Q", title=None, axis=alt.Axis(format=fmt)),
+        color=alt.Color(
+            "tipo:N", title="tipo",
+            scale=alt.Scale(domain=tipos_presentes, range=[_COLOR_TIPO[t] for t in tipos_presentes]),
+        ),
+        tooltip=[
+            alt.Tooltip("mes:N", title="mes"),
+            alt.Tooltip("tipo:N", title="tipo"),
+            alt.Tooltip(f"{valor}:Q", format=fmt, title=valor),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
 
 def _grafica_barras(
     df: pd.DataFrame, categoria: str, valor: str, tipo_valor: str,
@@ -2727,11 +2758,13 @@ def _kpis_ver_todos(pivote: pd.DataFrame) -> dict:
 
 
 def _datos_mensuales_ver_todos(pivote: pd.DataFrame) -> pd.DataFrame:
-    """USD y kg por mes de lo filtrado, en orden cronológico — usado en las
-    gráficas de pantalla y en el reporte en PDF."""
+    """USD y kg por mes de lo filtrado, en orden cronológico y SEPARADO por
+    tipo (venta/compra) — son flujos económicos opuestos, nunca se deben
+    sumar en una sola cifra/línea. Usado en las gráficas de pantalla y en el
+    reporte en PDF."""
     meses_cols = [m for m in _MESES.values() if m in pivote.columns]
     if not meses_cols:
-        return pd.DataFrame(columns=["mes", "USD", "kg"])
+        return pd.DataFrame(columns=["mes", "tipo", "USD", "kg"])
 
     # precio efectivo por línea (precio venta si ya se capturó, si no el de
     # SAE) — mismo criterio que _agregar_totales_anio, aplicado mes a mes
@@ -2741,11 +2774,23 @@ def _datos_mensuales_ver_todos(pivote: pd.DataFrame) -> pd.DataFrame:
         precio_venta_col = pd.to_numeric(pivote["precio_venta"], errors="coerce").fillna(0.0)
         precio_col = precio_venta_col.where(precio_venta_col > 0, precio_col)
 
-    return pd.DataFrame({
-        "mes": [m.upper() for m in meses_cols],
-        "USD": [float((pd.to_numeric(pivote[m], errors="coerce").fillna(0.0) * precio_col).sum()) for m in meses_cols],
-        "kg": [float(pd.to_numeric(pivote[m], errors="coerce").fillna(0.0).sum()) for m in meses_cols],
-    })
+    tipos_col = (
+        pivote["tipo"].astype(str).str.strip() if "tipo" in pivote.columns
+        else pd.Series("venta", index=pivote.index)
+    )
+    tipos_presentes = sorted(tipos_col[tipos_col != ""].unique()) or ["venta"]
+
+    filas = []
+    for m in meses_cols:
+        kg_mes = pd.to_numeric(pivote[m], errors="coerce").fillna(0.0)
+        usd_mes = kg_mes * precio_col
+        for tipo_val in tipos_presentes:
+            mask = tipos_col == tipo_val
+            filas.append({
+                "mes": m.upper(), "tipo": tipo_val,
+                "USD": float(usd_mes[mask].sum()), "kg": float(kg_mes[mask].sum()),
+            })
+    return pd.DataFrame(filas)
 
 
 def _top_por_categoria(pivote: pd.DataFrame, columna: str, top_n: int | None = 10) -> pd.DataFrame:
@@ -2782,24 +2827,41 @@ def _tabla_cobertura_mensual(pivote: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(["cliente_excel", "producto_excel"]).reset_index(drop=True)
 
 
-def _con_etiqueta_tipo(df: pd.DataFrame, columna: str) -> pd.DataFrame:
-    """Le agrega "(venta)"/"(compra)" al nombre solo si el propio top mezcla
-    ambos tipos — evita que dos barras de "cliente_excel" con el mismo nombre
-    pero tipo distinto se vean como una sola en la gráfica."""
-    if "tipo" not in df.columns or df["tipo"].nunique() <= 1:
-        return df
-    df = df.copy()
-    df[columna] = df[columna].astype(str) + " (" + df["tipo"].astype(str).str.capitalize() + ")"
-    return df
+def _grafica_top_por_tipo(
+    pivote: pd.DataFrame, columna: str, titulo_base: str, top_n: int | None = 10,
+) -> None:
+    """Top N de `columna` por USD — si venta y compra están mezcladas, calcula
+    el top N de CADA tipo por separado (no un ranking combinado): como los
+    montos de compra suelen ser mucho más grandes, un solo top 10 combinado
+    dejaba fuera casi siempre a los clientes/productos de venta."""
+    tipos_col = (
+        pivote["tipo"].astype(str).str.strip() if "tipo" in pivote.columns
+        else pd.Series("venta", index=pivote.index)
+    )
+    tipos_presentes = sorted(tipos_col[tipos_col != ""].unique()) or ["venta"]
+
+    if len(tipos_presentes) > 1:
+        cols = st.columns(len(tipos_presentes))
+        for col, tipo_val in zip(cols, tipos_presentes):
+            with col:
+                top = _top_por_categoria(pivote[tipos_col == tipo_val], columna, top_n=top_n)
+                if not top.empty:
+                    st.caption(f"top {len(top)} {titulo_base} ({tipo_val})")
+                    _grafica_barras(
+                        top[[columna, "usd"]], categoria=columna, valor="usd",
+                        tipo_valor="usd", height=280, horizontal=True,
+                    )
+    else:
+        top = _top_por_categoria(pivote, columna, top_n=top_n)
+        if not top.empty:
+            st.caption(f"top {len(top)} {titulo_base} ({tipos_presentes[0]})")
+            _grafica_barras(
+                top[[columna, "usd"]], categoria=columna, valor="usd",
+                tipo_valor="usd", height=280, horizontal=True,
+            )
 
 
-def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
-    """KPIs y gráficas de lo filtrado — es lo primero que ve un directivo en
-    "ver todos"; el detalle línea por línea queda en un expander debajo,
-    en segundo nivel."""
-    kpis = _kpis_ver_todos(pivote)
-
-    st.markdown("#### 📊 Resumen de lo filtrado")
+def _mostrar_kpis(kpis: dict) -> None:
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Líneas", f"{kpis['lineas']:,}")
     c2.metric("Total USD año", f"${kpis['total_usd']:,.0f}")
@@ -2807,17 +2869,50 @@ def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
     c4.metric("Clientes", f"{kpis['num_clientes']:,}")
     c5.metric("Productos", f"{kpis['num_productos']:,}")
 
+
+def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
+    """KPIs y gráficas de lo filtrado — es lo primero que ve un directivo en
+    "ver todos"; el detalle línea por línea queda en un expander debajo,
+    en segundo nivel."""
+    st.markdown("#### 📊 Resumen de lo filtrado")
+
+    # venta y compra son flujos económicos opuestos — nunca se suman en un
+    # solo total (líneas, USD, kg, clientes, productos); si el filtro mezcla
+    # ambos tipos, cada uno se muestra en su propio bloque con su título.
+    tipos_col = (
+        pivote["tipo"].astype(str).str.strip() if "tipo" in pivote.columns
+        else pd.Series("venta", index=pivote.index)
+    )
+    tipos_presentes_kpi = sorted(tipos_col[tipos_col != ""].unique()) or ["venta"]
+
+    if len(tipos_presentes_kpi) > 1:
+        for tipo_val in tipos_presentes_kpi:
+            st.markdown(f"**{tipo_val.capitalize()}**")
+            _mostrar_kpis(_kpis_ver_todos(pivote[tipos_col == tipo_val]))
+    else:
+        _mostrar_kpis(_kpis_ver_todos(pivote))
+
     df_meses = _datos_mensuales_ver_todos(pivote)
     if df_meses.empty:
         return
 
+    tipos_en_meses = sorted(df_meses["tipo"].unique())
+    multi_tipo = len(tipos_en_meses) > 1
+    titulo_tipo = " vs ".join(tipos_en_meses) if multi_tipo else (tipos_en_meses[0] if tipos_en_meses else "")
+
     col_g1, col_g2 = st.columns(2)
     with col_g1:
-        st.caption("USD por mes")
-        _grafica_barras(df_meses[["mes", "USD"]], categoria="mes", valor="USD", tipo_valor="usd", height=280)
+        st.caption(f"USD por mes ({titulo_tipo})" if titulo_tipo else "USD por mes")
+        if multi_tipo:
+            _grafica_lineas_por_tipo(df_meses[["mes", "tipo", "USD"]], valor="USD", tipo_valor="usd", height=280)
+        else:
+            _grafica_barras(df_meses[["mes", "USD"]], categoria="mes", valor="USD", tipo_valor="usd", height=280)
     with col_g2:
-        st.caption("Kilos por mes")
-        _grafica_barras(df_meses[["mes", "kg"]], categoria="mes", valor="kg", tipo_valor="cantidad", height=280)
+        st.caption(f"Kilos por mes ({titulo_tipo})" if titulo_tipo else "Kilos por mes")
+        if multi_tipo:
+            _grafica_lineas_por_tipo(df_meses[["mes", "tipo", "kg"]], valor="kg", tipo_valor="cantidad", height=280)
+        else:
+            _grafica_barras(df_meses[["mes", "kg"]], categoria="mes", valor="kg", tipo_valor="cantidad", height=280)
 
     col_g3, col_g4 = st.columns(2)
     with col_g3:
@@ -2833,33 +2928,18 @@ def _panel_resumen_ver_todos(pivote: pd.DataFrame) -> None:
             st.caption("Líneas por estatus de autorización")
             _grafica_barras(df_estatus, categoria="estatus_autorizacion_badge", valor="lineas", tipo_valor="cantidad", height=240)
 
-    top_cli = _top_por_categoria(pivote, "cliente_excel", top_n=10)
-    top_prod = _top_por_categoria(pivote, "producto_excel", top_n=10)
-    col_g5, col_g6 = st.columns(2)
-    with col_g5:
-        if not top_cli.empty:
-            st.caption(f"top {len(top_cli)} clientes por USD")
-            _grafica_barras(
-                _con_etiqueta_tipo(top_cli, "cliente_excel"),
-                categoria="cliente_excel", valor="usd", tipo_valor="usd", height=280, horizontal=True,
-            )
-    with col_g6:
-        if not top_prod.empty:
-            st.caption(f"top {len(top_prod)} productos por USD")
-            _grafica_barras(
-                _con_etiqueta_tipo(top_prod, "producto_excel"),
-                categoria="producto_excel", valor="usd", tipo_valor="usd", height=280, horizontal=True,
-            )
+    st.markdown("**Top clientes por USD**")
+    _grafica_top_por_tipo(pivote, "cliente_excel", "clientes por USD", top_n=10)
+
+    st.markdown("**Top productos por USD**")
+    _grafica_top_por_tipo(pivote, "producto_excel", "productos por USD", top_n=10)
 
     # solo aporta cuando hay más de un vendedor en lo filtrado — con uno
     # solo la comparación no dice nada
-    df_vendedor = _top_por_categoria(pivote, "usuario_nombre", top_n=None)
-    if len(df_vendedor) > 1:
-        st.caption("ventas por vendedor")
-        _grafica_barras(
-            _con_etiqueta_tipo(df_vendedor, "usuario_nombre"),
-            categoria="usuario_nombre", valor="usd", tipo_valor="usd", height=280, horizontal=True,
-        )
+    df_vendedor_total = _top_por_categoria(pivote, "usuario_nombre", top_n=None)
+    if df_vendedor_total["usuario_nombre"].nunique() > 1:
+        st.markdown("**USD por vendedor**")
+        _grafica_top_por_tipo(pivote, "usuario_nombre", "USD por vendedor", top_n=None)
 
     st.divider()
 
@@ -2879,15 +2959,53 @@ def _generar_reporte_ver_todos_pdf(pivote: pd.DataFrame, filtros: dict) -> bytes
 
     kpis = _kpis_ver_todos(pivote)
     df_meses = _datos_mensuales_ver_todos(pivote)
-    top_cli = _top_por_categoria(pivote, "cliente_excel", top_n=10)
-    top_prod = _top_por_categoria(pivote, "producto_excel", top_n=10)
-    top_vend = _top_por_categoria(pivote, "usuario_nombre", top_n=None)
-
     def fmt_usd(v) -> str:
         return f"${v:,.0f}"
 
-    def fmt_kg(v) -> str:
-        return f"{v:,.0f} kg"
+    def fmt_ton(v) -> str:
+        # Tn en vez de kg — con montos grandes los kg se amontonaban en la tabla
+        return f"{v / 1000:,.1f} Tn"
+
+    def _grafica_mensual_png(valor: str, titulo: str, es_usd: bool) -> BytesIO | None:
+        """PNG del mismo gráfico de líneas por tipo que se ve en pantalla
+        (_grafica_lineas_por_tipo), para incrustar en el PDF — Altair no
+        exporta a imagen estática sin dependencias extra, así que aquí se
+        redibuja equivalente en matplotlib."""
+        if df_meses.empty:
+            return None
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
+
+        fig, ax = plt.subplots(figsize=(6.4, 2.6), dpi=150)
+        tipos_presentes = sorted(df_meses["tipo"].unique())
+        meses_orden = list(df_meses["mes"].drop_duplicates())
+        for tipo_val in tipos_presentes:
+            sub = df_meses[df_meses["tipo"] == tipo_val].set_index("mes").reindex(meses_orden)
+            serie = sub[valor] / 1000 if not es_usd else sub[valor]
+            ax.plot(
+                meses_orden, serie, marker="o", markersize=3.5, linewidth=1.6,
+                label=tipo_val.capitalize(), color=_COLOR_TIPO.get(tipo_val, "#555555"),
+            )
+        if es_usd:
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"${v:,.0f}"))
+        else:
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f} Tn"))
+        ax.set_title(titulo, fontsize=10)
+        ax.tick_params(axis="both", labelsize=7.5)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.grid(axis="y", linewidth=0.4, alpha=0.4)
+        if len(tipos_presentes) > 1:
+            ax.legend(fontsize=7.5, frameon=False)
+        fig.tight_layout()
+
+        buf_img = BytesIO()
+        fig.savefig(buf_img, format="png")
+        plt.close(fig)
+        buf_img.seek(0)
+        return buf_img
 
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -2944,9 +3062,9 @@ def _generar_reporte_ver_todos_pdf(pivote: pd.DataFrame, filtros: dict) -> bytes
     story.append(Spacer(1, 6))
 
     kpi_data = [
-        ["Líneas", "Total USD año", "Total kg año", "Clientes", "Productos"],
+        ["Líneas", "Total USD año", "Total Tn año", "Clientes", "Productos"],
         [
-            f"{kpis['lineas']:,}", fmt_usd(kpis["total_usd"]), fmt_kg(kpis["total_kg"]),
+            f"{kpis['lineas']:,}", fmt_usd(kpis["total_usd"]), fmt_ton(kpis["total_kg"]),
             f"{kpis['num_clientes']:,}", f"{kpis['num_productos']:,}",
         ],
     ]
@@ -2966,12 +3084,39 @@ def _generar_reporte_ver_todos_pdf(pivote: pd.DataFrame, filtros: dict) -> bytes
     ]))
     story += [t_kpi, Spacer(1, 4)]
 
+    png_usd = _grafica_mensual_png("USD", "USD por mes", es_usd=True)
+    png_ton = _grafica_mensual_png("kg", "Toneladas por mes", es_usd=False)
+    if png_usd or png_ton:
+        story.append(Paragraph("Tendencia mensual", h2))
+        ancho_img = 8.6 * cm
+        alto_img = ancho_img * (2.6 / 6.4)
+        fila_graficas = []
+        if png_usd:
+            fila_graficas.append(Image(png_usd, width=ancho_img, height=alto_img))
+        if png_ton:
+            fila_graficas.append(Image(png_ton, width=ancho_img, height=alto_img))
+        t_graficas = Table([fila_graficas], colWidths=[ancho_img + 0.2 * cm] * len(fila_graficas))
+        t_graficas.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+        story += [t_graficas, Spacer(1, 4)]
+
     if not df_meses.empty:
-        story.append(Paragraph("USD y kg por mes", h2))
-        mes_data = [["Mes", "USD", "kg"]] + [
-            [r["mes"], fmt_usd(r["USD"]), fmt_kg(r["kg"])] for _, r in df_meses.iterrows()
-        ]
-        t_mes = Table(mes_data, colWidths=[3 * cm, 5 * cm, 5 * cm], repeatRows=1)
+        # "Tipo" solo se muestra como columna si el período mezcla venta y
+        # compra — son flujos económicos opuestos, nunca se suman en una
+        # sola cifra (mismo criterio que las gráficas en pantalla)
+        con_tipo_mes = "tipo" in df_meses.columns and df_meses["tipo"].nunique() > 1
+        story.append(Paragraph("USD y Tn por mes", h2))
+        if con_tipo_mes:
+            mes_data = [["Mes", "Tipo", "USD", "Tn"]] + [
+                [r["mes"], str(r["tipo"]).capitalize(), fmt_usd(r["USD"]), fmt_ton(r["kg"])]
+                for _, r in df_meses.iterrows()
+            ]
+            col_widths = [3 * cm, 2.5 * cm, 4.25 * cm, 4.25 * cm]
+        else:
+            mes_data = [["Mes", "USD", "Tn"]] + [
+                [r["mes"], fmt_usd(r["USD"]), fmt_ton(r["kg"])] for _, r in df_meses.iterrows()
+            ]
+            col_widths = [3 * cm, 5 * cm, 5 * cm]
+        t_mes = Table(mes_data, colWidths=col_widths, repeatRows=1)
         t_mes.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), GRIS_HDR),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -3013,10 +3158,37 @@ def _generar_reporte_ver_todos_pdf(pivote: pd.DataFrame, filtros: dict) -> bytes
         elementos.append(t)
         return elementos
 
-    story += tabla_ranking(f"Top {len(top_cli)} clientes por USD", top_cli, "cliente_excel")
-    story += tabla_ranking(f"Top {len(top_prod)} productos por USD", top_prod, "producto_excel")
-    if len(top_vend) > 1:
-        story += tabla_ranking("Ventas por vendedor", top_vend, "usuario_nombre")
+    # venta y compra son flujos económicos opuestos — un solo top 10
+    # combinado dejaba casi siempre fuera a venta (montos de compra mucho
+    # más grandes); se calcula el top N de CADA tipo por separado, igual
+    # que en pantalla (_grafica_top_por_tipo)
+    tipos_col_pdf = (
+        pivote["tipo"].astype(str).str.strip() if "tipo" in pivote.columns
+        else pd.Series("venta", index=pivote.index)
+    )
+    tipos_presentes_pdf = sorted(tipos_col_pdf[tipos_col_pdf != ""].unique()) or ["venta"]
+    multi_tipo_pdf = len(tipos_presentes_pdf) > 1
+
+    def _tops_por_tipo(columna: str, top_n: int | None):
+        return [
+            (tipo_val, _top_por_categoria(pivote[tipos_col_pdf == tipo_val], columna, top_n=top_n))
+            for tipo_val in tipos_presentes_pdf
+        ]
+
+    for tipo_val, top_df in _tops_por_tipo("cliente_excel", 10):
+        if not top_df.empty:
+            sufijo = f" ({tipo_val.capitalize()})" if multi_tipo_pdf else ""
+            story += tabla_ranking(f"Top {len(top_df)} clientes por USD{sufijo}", top_df, "cliente_excel")
+
+    for tipo_val, top_df in _tops_por_tipo("producto_excel", 10):
+        if not top_df.empty:
+            sufijo = f" ({tipo_val.capitalize()})" if multi_tipo_pdf else ""
+            story += tabla_ranking(f"Top {len(top_df)} productos por USD{sufijo}", top_df, "producto_excel")
+
+    for tipo_val, top_df in _tops_por_tipo("usuario_nombre", None):
+        if len(top_df) > 1:
+            sufijo = f" ({tipo_val.capitalize()})" if multi_tipo_pdf else ""
+            story += tabla_ranking(f"USD por vendedor{sufijo}", top_df, "usuario_nombre")
 
     # ── detalle mensual: cliente × producto, verde donde hay kg, blanco
     # donde es 0 — separado en una tabla por tipo (venta / compra) para no
@@ -3051,7 +3223,7 @@ def _generar_reporte_ver_todos_pdf(pivote: pd.DataFrame, filtros: dict) -> bytes
             header = [
                 Paragraph("Cliente", h_mes_header), Paragraph("Producto", h_mes_header),
             ] + [Paragraph(m.upper(), h_mes_header) for m in meses_presentes] + [
-                Paragraph("Total Kg", h_mes_header), Paragraph("Total USD", h_mes_header),
+                Paragraph("Total Tn", h_mes_header), Paragraph("Total USD", h_mes_header),
             ]
             data = [header]
             estilos_extra = []
@@ -3064,13 +3236,13 @@ def _generar_reporte_ver_todos_pdf(pivote: pd.DataFrame, filtros: dict) -> bytes
                     valor = pd.to_numeric(r.get(m), errors="coerce") or 0.0
                     col_idx = 2 + j
                     if valor != 0:
-                        fila.append(Paragraph(f"{valor:,.0f}", h_mes))
+                        fila.append(Paragraph(f"{valor / 1000:,.2f}", h_mes))
                         estilos_extra.append(("BACKGROUND", (col_idx, i), (col_idx, i), VERDE))
                     else:
                         fila.append("")
                 total_kg = pd.to_numeric(r.get("total_kg_anio"), errors="coerce") or 0.0
                 total_usd = pd.to_numeric(r.get("total_usd_anio"), errors="coerce") or 0.0
-                fila.append(Paragraph(f"{total_kg:,.0f}", h_mes))
+                fila.append(Paragraph(f"{total_kg / 1000:,.2f}", h_mes))
                 fila.append(Paragraph(f"${total_usd:,.0f}", h_mes))
                 data.append(fila)
 
