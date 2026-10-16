@@ -81,3 +81,32 @@ def build_links_autorizacion_presupuesto(*, id_carga: int, tipo: str, nombre_rol
         "approve": f"{base_url}/?{qs}&pv_action=approve",
         "reject": f"{base_url}/?{qs}&pv_action=reject",
     }
+
+
+def build_links_autorizacion_forecast(
+    *, id_version: int, tipo: str, anio: int, mes: int, nombre_rol: str,
+) -> dict:
+    """Links firmados (HMAC, expiran en 72h) para autorizar/rechazar desde el
+    correo el forecast mensual (venta o compra) de una versión
+    (?fc_v=&fc_tipo=&fc_anio=&fc_mes=&fc_t=&fc_action=) — mismo esquema que
+    build_links_autorizacion_presupuesto, a nivel (id_version, tipo, anio,
+    mes) en vez de (id_carga, tipo)."""
+    base_url, secret = get_app_link_cfg()
+    if not base_url or not secret:
+        return {"ok": False, "error": "falta APP_BASE_URL o APP_LINK_SECRET en secrets.toml"}
+
+    payload = {
+        "fc_v": int(id_version),
+        "fc_tipo": tipo,
+        "fc_anio": int(anio),
+        "fc_mes": int(mes),
+        "exp": token_exp(72),
+        "autoriza_rol": nombre_rol,
+    }
+    t = sign_payload(payload, secret)
+    qs = f"fc_v={int(id_version)}&fc_tipo={tipo}&fc_anio={int(anio)}&fc_mes={int(mes)}&fc_t={t}"
+    return {
+        "ok": True,
+        "approve": f"{base_url}/?{qs}&fc_action=approve",
+        "reject": f"{base_url}/?{qs}&fc_action=reject",
+    }

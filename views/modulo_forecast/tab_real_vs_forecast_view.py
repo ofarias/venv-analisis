@@ -40,6 +40,22 @@ _SERIES_META = {
 }
 _SERIES_ORDEN = ["real", "real_filtrado", "real_compras", "fc", "pv", "pc", "pf"]
 
+# color fijo por identidad de serie (no por posición/orden de selección) —
+# paleta categórica validada (skill dataviz: blue/orange/aqua/yellow, Delta E
+# CVD >= 8). Real y sus variantes siempre azul, Forecast siempre naranja,
+# Presupuesto (ventas/compras, mismo rol) siempre aqua, Presupuesto Finanzas
+# amarillo — así el color de cada serie es el mismo en cualquier gráfica de
+# esta pantalla, sin importar qué combinación de series se elija.
+_SERIES_COLOR = {
+    "real": "#2a78d6",
+    "real_filtrado": "#2a78d6",
+    "real_compras": "#2a78d6",
+    "fc": "#eb6834",
+    "pv": "#1baf7a",
+    "pc": "#1baf7a",
+    "pf": "#eda100",
+}
+
 
 def _col_sae(seccion: str) -> str:
     return "cantidad" if seccion == "KG" else "importe"
@@ -510,7 +526,7 @@ def mostrar_tab_real_vs_forecast(
     sel_labels = st.multiselect(
         "comparar",
         options=[_SERIES_META[k]["label"] for k in _SERIES_ORDEN],
-        default=["Real (SAE)", "Forecast"],
+        default=["Real (SAE)", "Forecast", "Presupuesto Ventas"],
         key="rvf_series_sel",
         help=(
             "elige 2 o más series (ej. Forecast vs Real, Presupuesto Ventas vs Presupuesto Finanzas, "
@@ -725,19 +741,35 @@ def mostrar_tab_real_vs_forecast(
                 height=min(56 + len(df_show) * 35, 680),
             )
 
-            # ── gráfica de las series elegidas, por mes ──────────────────────
-            with st.expander("📊 gráfica por mes"):
-                datos_grafica: list[dict] = []
-                for mes in meses:
-                    mn = _MESES[mes]
-                    fila_g = {"mes": mn.upper()}
-                    for k in series_sel:
-                        c = f"{mn}{_SERIES_META[k]['mes_suffix']}"
-                        fila_g[_SERIES_META[k]["label"]] = df_comp[c].sum() if c in df_comp.columns else 0
-                    datos_grafica.append(fila_g)
-                df_g = pd.DataFrame(datos_grafica).set_index("mes")
-                cols_chart = [_SERIES_META[k]["label"] for k in series_sel]
-                st.bar_chart(df_g[cols_chart], use_container_width=True, height=300)
+            # ── gráficas de las series elegidas, por mes — visibles por
+            # defecto (no un expander: con el mínimo de 3 series por defecto
+            # arriba, la comparación presupuesto/forecast/real debe verse sin
+            # un clic extra) ─────────────────────────────────────────────────
+            datos_grafica: list[dict] = []
+            for mes in meses:
+                mn = _MESES[mes]
+                fila_g = {"mes": mn.upper()}
+                for k in series_sel:
+                    c = f"{mn}{_SERIES_META[k]['mes_suffix']}"
+                    fila_g[_SERIES_META[k]["label"]] = df_comp[c].sum() if c in df_comp.columns else 0
+                datos_grafica.append(fila_g)
+            df_g = pd.DataFrame(datos_grafica).set_index("mes")
+            cols_chart = [_SERIES_META[k]["label"] for k in series_sel]
+            # mismo color para la misma serie en ambas gráficas, sin importar
+            # el orden en que se eligieron (ver _SERIES_COLOR)
+            colores_chart = [_SERIES_COLOR[k] for k in series_sel]
+
+            st.markdown("##### 📊 por mes")
+            st.bar_chart(
+                df_g[cols_chart], use_container_width=True, height=300, color=colores_chart,
+            )
+
+            st.markdown("##### 📈 acumulado del período")
+            st.caption("dónde va el período: cada serie suma su propio avance mes a mes")
+            df_g_acum = df_g[cols_chart].cumsum()
+            st.line_chart(
+                df_g_acum, use_container_width=True, height=300, color=colores_chart,
+            )
 
             # ── descarga ──────────────────────────────────────────────────
             df_export = df_show.rename(columns=encabezados)

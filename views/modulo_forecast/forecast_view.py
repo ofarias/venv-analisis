@@ -7,6 +7,7 @@ from controllers.forecast_controller import obtener_forecast_versiones_ctrl
 from controllers.usuario_controller import get_usuarios
 from views.modulo_forecast.tab_versiones_view import mostrar_tab_versiones
 from views.modulo_forecast.tab_construccion_view import mostrar_tab_construccion
+from views.modulo_forecast.tab_autorizaciones_forecast_view import mostrar_tab_autorizaciones_forecast
 from views.modulo_forecast.tab_real_vs_forecast_view import mostrar_tab_real_vs_forecast
 from views.modulo_forecast.tab_mdi_view import mostrar_tab_mdi
 from views.modulo_forecast.tab_compras_view import mostrar_tab_compras
@@ -161,6 +162,7 @@ def _selector_version() -> dict | None:
 _SECCIONES_FORECAST = [
     "📊 Dashboard",
     "📈 Construcción del Forecast",
+    "✅ Autorizaciones",
     "📉 Real vs Forecast",
     "🗺️ MDI — Mapa de Inventario",
     "📦 Necesidades de Compra",
@@ -185,6 +187,10 @@ def mostrar_modulo_forecast() -> None:
 
     if seccion == "⚙️ Versiones":
         mostrar_tab_versiones()
+        return
+
+    if seccion == "✅ Autorizaciones":
+        mostrar_tab_autorizaciones_forecast()
         return
 
     # para las demás secciones necesitamos una versión seleccionada

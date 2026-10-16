@@ -14,6 +14,10 @@ from controllers.forecast_controller import (
     _ventas_historicas_sae,
     _existencias_sae,
 )
+from controllers.forecast_autorizacion_controller import (
+    cambiar_estatus_forecast_mes_ctrl,
+    obtener_forecast_mes_estatus_ctrl,
+)
 from controllers.presupuesto_ventas_controller import (
     obtener_cargas_presupuesto_ventas_ctrl,
     obtener_catalogo_productos_pv_ctrl,
@@ -21,6 +25,9 @@ from controllers.presupuesto_ventas_controller import (
 from controllers.presupuesto_compras_controller import (
     obtener_cargas_presupuesto_compras_ctrl,
 )
+from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
+from utils.deeplink_tokens import build_links_autorizacion_forecast
+from utils.envio_correo import enviar_correo
 
 
 _MESES = {1:"ene",2:"feb",3:"mar",4:"abr",5:"may",6:"jun",
@@ -57,16 +64,16 @@ function(params) {
 }
 """)
 
-# ventana de urgencia de Compra (Demand Plan): mes actual + 2 siguientes —
-# todas las celdas en amarillo, sin importar el valor
+# ventana de urgencia de Forecast (Venta y Compra): mes actual + 2 siguientes
+# — todas las celdas en amarillo, sin importar el valor
 _CELL_STYLE_VENTANA_AMARILLO = JsCode("""
 function(params) {
     return {backgroundColor: '#fff3cd', color: '#856404'};
 }
 """)
 
-# ventana de urgencia de Compra (Demand Plan): los 2 meses siguientes a la
-# ventana amarilla — en rojo solo si la celda tiene valor mayor a 0
+# ventana de urgencia de Forecast (Venta y Compra): los 2 meses siguientes a
+# la ventana amarilla — en rojo solo si la celda tiene valor mayor a 0
 _CELL_STYLE_VENTANA_ROJA = JsCode("""
 function(params) {
     if (params.value > 0) {
@@ -214,12 +221,90 @@ def _puede_editar_sin_restriccion() -> bool:
     return _tiene_rol(usuario.get("roles"), "admin", "superadmin", "forecastadmin")
 
 
-def _mes_editable_compra(anio: int, mes: int) -> bool:
-    """Regla de los 3 meses (solo forecast de Compra / Demand Plan): el mes
-    actual y los 2 siguientes quedan bloqueados (3 meses en total, misma
-    ventana que se resalta en amarillo) — si estamos en agosto,
-    agosto/septiembre/octubre quedan bloqueados y noviembre en adelante
-    (incluido cualquier año futuro) queda editable."""
+# ── autorización mensual — misma cascada que presupuesto de ventas/compras ───
+# (ver views/modulo_presupuesto_ventas/presupuesto_compras_view.py), sin
+# matices nuevos, confirmado con el usuario.
+
+def _tipo_autorizacion_linea() -> str:
+    usuario = st.session_state.get("usuario") or {}
+    roles = usuario.get("roles")
+    if _tiene_rol(roles, "gerente de ventas", "gerente ventas"):
+        return "sin_autorizacion"
+    if _tiene_rol(roles, "jefe de ventas", "supervisor de ventas"):
+        return "autoriza_gerente_ventas"
+    return "autoriza_jefe_ventas"
+
+
+def _rol_autorizador_linea() -> str:
+    tipo = _tipo_autorizacion_linea()
+    if tipo == "autoriza_gerente_ventas":
+        return "Gerente de Ventas"
+    if tipo == "autoriza_jefe_ventas":
+        return "Jefe de Ventas"
+    return ""
+
+
+def _enviar_notificacion_autorizador_forecast(
+    *, id_version: int, tipo: str, anio: int, mes: int, totales: dict,
+    nombre_rol: str, token, remitente: str,
+) -> tuple[bool, str]:
+    """Correo al rol autorizador — calco de
+    `_enviar_notificacion_autorizador_compras` (presupuesto_compras_view.py),
+    adaptado a totales mensuales de forecast en vez de líneas de Excel."""
+    destinatarios = sorted({
+        str(e).strip() for e in (get_correos_usuarios_por_rol_ctrl(nombre_rol) or []) if str(e or "").strip()
+    })
+    if not destinatarios:
+        return False, f"no hay correos configurados para el rol \"{nombre_rol}\""
+
+    mes_nombre = _MESES.get(mes, str(mes)).upper()
+    etiqueta_tipo = "venta" if tipo == "venta" else "compra (DP)"
+    filas_html = "".join(
+        f"<tr><td>{k}</td><td>{v:,.2f}</td></tr>" for k, v in totales.items()
+    )
+    links = build_links_autorizacion_forecast(
+        id_version=id_version, tipo=tipo, anio=anio, mes=mes, nombre_rol=nombre_rol,
+    )
+    if links.get("ok"):
+        links_html = f"""
+        <p style="margin:14px 0">
+          <a href="{links['approve']}"
+             style="display:inline-block;padding:10px 14px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            autorizar
+          </a>
+          <a href="{links['reject']}"
+             style="display:inline-block;margin-left:10px;padding:10px 14px;background:#dc2626;color:#fff;text-decoration:none;border-radius:6px;font-weight:700">
+            rechazar
+          </a>
+        </p>
+        """
+    else:
+        links_html = ""
+    asunto = f"Forecast de {etiqueta_tipo} {mes_nombre} {anio} — solicitud de autorización"
+    cuerpo_html = f"""
+    <div style="font-family: Arial, sans-serif; font-size: 14px; color: #111;">
+        <p>Se solicitó autorización para el forecast de {etiqueta_tipo} de
+        <b>{mes_nombre} {anio}</b> (versión {id_version}).</p>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse;">
+            <tr style="background:#1F4E78; color:#fff;"><th>Concepto</th><th>Total</th></tr>
+            {filas_html}
+        </table>
+        {links_html}
+        <p>O entra a la app, módulo <b>Forecast → ✅ Autorizaciones</b>, para autorizar o rechazar.</p>
+    </div>
+    """
+    return enviar_correo(
+        destinatario=destinatarios, asunto=asunto, cuerpo_html=cuerpo_html,
+        token=token, remitente=remitente,
+    )
+
+
+def _mes_editable_forecast(anio: int, mes: int) -> bool:
+    """Regla de los 3 meses (Venta y Compra por igual): el mes actual y los 2
+    siguientes quedan bloqueados (3 meses en total, misma ventana que se
+    resalta en amarillo) — si estamos en octubre, octubre/noviembre/diciembre
+    quedan bloqueados y enero del año siguiente en adelante (incluido
+    cualquier año futuro) queda editable."""
     hoy = date.today()
     idx_hoy = hoy.year * 12 + hoy.month
     idx_celda = int(anio) * 12 + int(mes)
@@ -229,32 +314,17 @@ def _mes_editable_compra(anio: int, mes: int) -> bool:
 def _offset_mes_actual(anio: int, mes: int) -> int:
     """Diferencia en meses entre (anio, mes) y el mes actual — 0 = mes
     actual, 1 = mes siguiente, etc. (puede ser negativo). Usado para la
-    ventana de colores de urgencia de Compra (Demand Plan): mes actual + 2
-    siguientes en amarillo, los 2 siguientes a esos en rojo (si hay valor)."""
+    ventana de colores de urgencia de Forecast (Venta y Compra): mes actual +
+    2 siguientes en amarillo, los 2 siguientes a esos en rojo (si hay valor)."""
     hoy = date.today()
     idx_hoy = hoy.year * 12 + hoy.month
     idx_celda = int(anio) * 12 + int(mes)
     return idx_celda - idx_hoy
 
 
-def _mes_editable_venta(anio: int, mes: int) -> bool:
-    """Regla de Venta (Forecast): se ven los 12 meses, pero solo es editable
-    desde el mes actual hasta diciembre del año en curso — los meses ya
-    transcurridos del año actual quedan bloqueados; un año completo futuro
-    es editable sin restricción."""
-    hoy = date.today()
-    if int(anio) > hoy.year:
-        return True
-    if int(anio) < hoy.year:
-        return False
-    return int(mes) >= hoy.month
-
-
 def _mes_editable(tipo: str, anio: int, mes: int) -> bool:
-    """Despacha a la regla de meses editables según el tipo de forecast."""
-    if tipo == "compra":
-        return _mes_editable_compra(anio, mes)
-    return _mes_editable_venta(anio, mes)
+    """Misma regla de los 3 meses para Venta y Compra."""
+    return _mes_editable_forecast(anio, mes)
 
 
 def _real_sae_map(df_sae: pd.DataFrame, seccion: str, anio: int, meses: list[int]) -> dict[str, float]:
@@ -445,27 +515,25 @@ def _mostrar_construccion_tipo(
     df_ventas_sae: pd.DataFrame,
     df_compras_sae: pd.DataFrame,
 ) -> None:
-    # regla de meses editables — distinta para Venta y Compra
-    # (Admin/SuperAdmin/forecastAdmin sin restricción en ambas): se ven
-    # todos los meses seleccionados, pero los bloqueados quedan de solo
-    # lectura en la tabla y no se tocan al generar propuesta ni al agregar
-    # un producto manualmente.
-    # - Compra: regla de los 3 meses (mes actual + 2 siguientes bloqueados).
-    # - Venta: se puede mover el forecast desde el mes actual hasta
-    #   diciembre del año en curso (los meses ya transcurridos del año
-    #   quedan bloqueados).
+    # regla de meses editables — igual para Venta y Compra (Admin/SuperAdmin/
+    # forecastAdmin sin restricción en ambas): se ven todos los meses
+    # seleccionados, pero los bloqueados quedan de solo lectura en la tabla y
+    # no se tocan al generar propuesta ni al agregar un producto manualmente.
+    # Regla de los 3 meses: el mes actual y los 2 siguientes bloqueados.
     meses_editables = [m for m in meses_sel if es_admin or _mes_editable(tipo, anio, m)]
     if not es_admin and len(meses_editables) < len(meses_sel):
-        if tipo == "compra":
-            st.caption(
-                "🔒 el mes actual y los 2 siguientes están bloqueados — solo se puede mover "
-                "el forecast a partir del 4º mes en adelante"
-            )
-        else:
-            st.caption(
-                "🔒 los meses ya transcurridos del año están bloqueados — solo se puede mover "
-                "el forecast desde el mes actual hasta diciembre"
-            )
+        st.caption(
+            "🔒 el mes actual y los 2 siguientes están bloqueados — solo se puede mover "
+            "el forecast a partir del 4º mes en adelante"
+        )
+
+    # estatus de autorización por mes de este tipo — un mes sin fila es
+    # 'borrador' implícito. Editar y guardar un mes 'autorizada' lo reenvía
+    # automáticamente a 'enviada' (ver _guardar_cambios_pivot más abajo).
+    df_estatus = obtener_forecast_mes_estatus_ctrl(id_version=id_version, tipo=tipo, anio=anio)
+    estatus_map: dict[int, str] = {}
+    if df_estatus is not None and not df_estatus.empty:
+        estatus_map = dict(zip(df_estatus["mes"].astype(int), df_estatus["estatus"]))
 
     # botón generar propuesta automática
     metodos_opciones = _metodos_opciones(usuario_datos_id, tipo)
@@ -493,10 +561,7 @@ def _mostrar_construccion_tipo(
         st.write("")
         if st.button("⚡ generar propuesta", use_container_width=True, key=f"fc_btn_generar_{tipo}"):
             if not meses_editables:
-                if tipo == "compra":
-                    st.warning("los meses seleccionados están dentro de la ventana bloqueada (mes actual + 2 siguientes)")
-                else:
-                    st.warning("los meses seleccionados ya pasaron — solo se puede mover el forecast desde el mes actual hasta diciembre")
+                st.warning("los meses seleccionados están dentro de la ventana bloqueada (mes actual + 2 siguientes)")
             else:
                 with st.spinner("calculando propuesta…"):
                     for _, seccion, region in _TABS_SEC:
@@ -612,22 +677,31 @@ def _mostrar_construccion_tipo(
                 if mn not in pivot_orig.columns:
                     continue
                 editable_mes = es_admin or _mes_editable(tipo, anio, m)
+                estatus_mes = estatus_map.get(m)
 
-                # ventana de urgencia (solo Compra / Demand Plan): mes actual
+                # ventana de urgencia (Venta y Compra por igual): mes actual
                 # + 2 siguientes en amarillo (toda la columna), los 2
                 # siguientes a esos en rojo (solo celdas con valor > 0); el
                 # resto conserva el criterio normal verde/rojo por signo
                 cell_style_mes = _CELL_STYLE_VALORES
-                if tipo == "compra":
-                    offset = _offset_mes_actual(anio, m)
-                    if 0 <= offset <= 2:
-                        cell_style_mes = _CELL_STYLE_VENTANA_AMARILLO
-                    elif offset in (3, 4):
-                        cell_style_mes = _CELL_STYLE_VENTANA_ROJA
+                offset = _offset_mes_actual(anio, m)
+                if 0 <= offset <= 2:
+                    cell_style_mes = _CELL_STYLE_VENTANA_AMARILLO
+                elif offset in (3, 4):
+                    cell_style_mes = _CELL_STYLE_VENTANA_ROJA
+
+                if not editable_mes:
+                    header_mes = f"🔒 {mn.upper()}"
+                elif estatus_mes == "autorizada":
+                    header_mes = f"✅ {mn.upper()}"
+                elif estatus_mes == "enviada":
+                    header_mes = f"⏳ {mn.upper()}"
+                else:
+                    header_mes = mn.upper()
 
                 gb.configure_column(
                     mn,
-                    headerName=mn.upper() if editable_mes else f"🔒 {mn.upper()}",
+                    headerName=header_mes,
                     editable=editable_mes,
                     width=90,
                     type=["numericColumn"],
@@ -652,10 +726,11 @@ def _mostrar_construccion_tipo(
                     fila_total[mn] = float(pd.to_numeric(pivot_orig[mn], errors="coerce").fillna(0.0).sum())
             gb.configure_grid_options(pinnedBottomRowData=[fila_total], getRowStyle=_ROW_STYLE_TOTAL)
 
-            regla_caption = (
-                "regla de los 3 meses" if tipo == "compra" else "solo mes actual → diciembre"
+            st.caption(
+                "🟩 valor positivo  |  🟥 valor negativo  |  🔒 mes bloqueado (regla de los 3 meses)  "
+                "|  ⏳ enviado a autorización  |  ✅ autorizado (editable; si lo cambias se "
+                "reenvía solo)  |  fila TOTAL = suma de todos los productos"
             )
-            st.caption(f"🟩 valor positivo  |  🟥 valor negativo  |  🔒 mes bloqueado ({regla_caption})  |  fila TOTAL = suma de todos los productos")
 
             grid_response = AgGrid(
                 pivot_orig,
@@ -672,14 +747,47 @@ def _mostrar_construccion_tipo(
             if st.button("💾 guardar cambios", type="primary",
                          use_container_width=True,
                          key=f"fc_save_{tipo}_{seccion}_{region}_{id_version}"):
-                cambios = _guardar_cambios_pivot(
+                cambios, meses_tocados = _guardar_cambios_pivot(
                     pivot_orig, edited, df_det, id_version, seccion, region, anio, meses_sel, usuario_id, es_admin, tipo,
                 )
                 if cambios:
+                    # mes editado/guardado que ya estaba 'autorizada' — se
+                    # permite el cambio, pero se reenvía solo a autorización
+                    # (instrucción del usuario: no hace falta un paso extra).
+                    meses_reenviados = sorted(m for m in meses_tocados if estatus_map.get(m) == "autorizada")
+                    usuario_sesion = st.session_state.get("usuario") or {}
+                    for mes_r in meses_reenviados:
+                        cambiar_estatus_forecast_mes_ctrl(
+                            id_version=id_version, tipo=tipo, anio=anio, mes=mes_r,
+                            estatus_nuevo="enviada", usuario_id=usuario_id,
+                            usuario_nombre=usuario_sesion.get("nombre"),
+                            usuario_email=usuario_sesion.get("email"),
+                            comentario="reenvío automático por edición",
+                        )
+                        nombre_rol = _rol_autorizador_linea()
+                        if nombre_rol:
+                            mn_r = _MESES[mes_r]
+                            _enviar_notificacion_autorizador_forecast(
+                                id_version=id_version, tipo=tipo, anio=anio, mes=mes_r,
+                                totales={"total forecast": float(fila_total.get(mn_r) or 0.0)},
+                                nombre_rol=nombre_rol,
+                                token=st.session_state.get("microsoft_token"),
+                                remitente=str(usuario_sesion.get("email") or "").strip(),
+                            )
                     st.success(f"{cambios} registros guardados")
+                    if meses_reenviados:
+                        meses_txt = ", ".join(_MESES[m].upper() for m in meses_reenviados)
+                        st.toast(f"📤 se reenvió a autorización automáticamente: {meses_txt}")
                     st.rerun()
                 else:
                     st.info("sin cambios detectados")
+
+            _panel_solicitar_autorizacion(
+                id_version=id_version, tipo=tipo, anio=anio,
+                meses_editables=meses_editables, estatus_map=estatus_map,
+                fila_total=fila_total, usuario_id=usuario_id,
+                key_suffix=f"{tipo}_{seccion}_{region}_{id_version}",
+            )
 
             forecast_label = "Presupuesto" if tipo == "venta" else "DP"
             titulo_grafica = (
@@ -719,8 +827,9 @@ def _guardar_cambios_pivot(
     usuario_id: int,
     es_admin: bool,
     tipo: str,
-) -> int:
+) -> tuple[int, set[int]]:
     cambios = 0
+    meses_tocados: set[int] = set()
     for i in range(len(orig)):
         cve_prod = str(orig.iloc[i].get("cve_prod") or "").strip()
         prod_excel = str(orig.iloc[i].get("producto_excel") or "").strip()
@@ -760,7 +869,86 @@ def _guardar_cambios_pivot(
                 tipo=tipo,
             )
             cambios += 1
-    return cambios
+            meses_tocados.add(mes)
+    return cambios, meses_tocados
+
+
+_ESTATUS_BADGE_MES = {
+    None: "🔵 borrador",
+    "borrador": "🔵 borrador",
+    "enviada": "⏳ enviada",
+    "autorizada": "✅ autorizada",
+    "rechazada": "🔴 rechazada",
+}
+
+
+def _panel_solicitar_autorizacion(
+    *,
+    id_version: int,
+    tipo: str,
+    anio: int,
+    meses_editables: list[int],
+    estatus_map: dict[int, str],
+    fila_total: dict,
+    usuario_id: int,
+    key_suffix: str,
+) -> None:
+    """Botón "solicitar autorización" por mes individual — granularidad
+    recomendada en el plan: rara vez hay más de 2-3 meses editables
+    simultáneos (la regla de los 3 meses solo deja entrar un mes nuevo por
+    vez), y así el autorizador ve exactamente qué mes está aprobando."""
+    if not meses_editables:
+        return
+
+    opciones = {
+        f"{_MESES[m].upper()} — {_ESTATUS_BADGE_MES.get(estatus_map.get(m), '🔵 borrador')}": m
+        for m in meses_editables
+    }
+    col_sel, col_btn = st.columns([2, 1])
+    with col_sel:
+        etiqueta_sel = st.selectbox(
+            "mes a enviar a autorización",
+            list(opciones.keys()),
+            key=f"fc_auth_mes_{key_suffix}",
+        )
+    mes_sel = opciones[etiqueta_sel]
+    estatus_actual = estatus_map.get(mes_sel)
+    etiqueta_btn = "🔁 reenviar autorización" if estatus_actual == "enviada" else "📤 solicitar autorización"
+
+    with col_btn:
+        st.write("")
+        if st.button(etiqueta_btn, use_container_width=True, key=f"fc_auth_btn_{key_suffix}"):
+            usuario_sesion = st.session_state.get("usuario") or {}
+            nombre_rol = _rol_autorizador_linea()
+            if not nombre_rol:
+                cambiar_estatus_forecast_mes_ctrl(
+                    id_version=id_version, tipo=tipo, anio=anio, mes=mes_sel,
+                    estatus_nuevo="autorizada", usuario_id=usuario_id,
+                    usuario_nombre=usuario_sesion.get("nombre"),
+                    usuario_email=usuario_sesion.get("email"),
+                    comentario="autoaprobado (Gerente de Ventas)",
+                )
+                st.success("autorizado automáticamente (tu rol no requiere autorización adicional)")
+            else:
+                cambiar_estatus_forecast_mes_ctrl(
+                    id_version=id_version, tipo=tipo, anio=anio, mes=mes_sel,
+                    estatus_nuevo="enviada", usuario_id=usuario_id,
+                    usuario_nombre=usuario_sesion.get("nombre"),
+                    usuario_email=usuario_sesion.get("email"),
+                )
+                mn_sel = _MESES[mes_sel]
+                ok, msg = _enviar_notificacion_autorizador_forecast(
+                    id_version=id_version, tipo=tipo, anio=anio, mes=mes_sel,
+                    totales={"total forecast": float(fila_total.get(mn_sel) or 0.0)},
+                    nombre_rol=nombre_rol,
+                    token=st.session_state.get("microsoft_token"),
+                    remitente=str(usuario_sesion.get("email") or "").strip(),
+                )
+                if ok:
+                    st.success(f"solicitud enviada a {nombre_rol}")
+                else:
+                    st.warning(f"se guardó la solicitud, pero el correo no se pudo enviar: {msg}")
+            st.rerun()
 
 
 def _panel_carga_manual(

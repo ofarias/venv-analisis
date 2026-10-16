@@ -3,6 +3,7 @@ import streamlit as st
 from views.modulo_compras.tab_catalogos_unificados_view import mostrar_tab_catalogos_unificados
 from views.modulo_compras.tab_solicitudes_compras_view import mostrar_tab_solicitudes_compras
 from views.modulo_compras.tab_solicitudes_pendientes_view import mostrar_tab_solicitudes_pendientes
+from views.modulo_compras.tab_demanda_forecast_view import mostrar_tab_demanda_forecast
 
 
 def mostrar_modulo_compras():
@@ -20,7 +21,7 @@ def mostrar_modulo_compras():
     tabs = ["Solicitudes", "Pendientes"]
 
     if es_admin_compras:
-        tabs.insert(0, "Catálogos")
+        tabs = ["Catálogos"] + tabs + ["📦 Demanda (Forecast)"]
 
     tabs_render = st.tabs(tabs)
 
@@ -37,3 +38,8 @@ def mostrar_modulo_compras():
 
     with tabs_render[i]:
         mostrar_tab_solicitudes_pendientes()
+    i += 1
+
+    if es_admin_compras:
+        with tabs_render[i]:
+            mostrar_tab_demanda_forecast()
