@@ -130,9 +130,13 @@ def mostrar_formulario_compra_estandar(id_tipo_compra: int):
         if int(r.get("id_forma_pago") or 0) > 0 and str(r.get("nombre") or "").strip()
     }
 
+    # "UnidadesProrrateos" (BIO) no trae ninguna columna literal "sigla" —
+    # "dsunineg" es el nombre real de la unidad de negocio (ej. "Jugos",
+    # "Cervecería"); se deja "sigla"/sinónimos como fallback por si el
+    # esquema de origen cambia algún día.
     opciones_unidades = []
     if not df_unidades.empty:
-        for col in ["sigla", "Sigla", "SIGLA"]:
+        for col in ["dsunineg", "sigla", "Sigla", "SIGLA"]:
             if col in df_unidades.columns:
                 opciones_unidades = [
                     str(x).strip() for x in df_unidades[col].dropna().tolist() if str(x).strip()
@@ -141,175 +145,184 @@ def mostrar_formulario_compra_estandar(id_tipo_compra: int):
 
     st.markdown("### solicitud de compra - formato estándar")
 
-    c1, c2, c3 = st.columns([2, 1, 1])
+    # todo el cuerpo del formulario va dentro de un st.form: sin esto, cada
+    # edición de celda en la tabla de detalle (o cambio de cualquier otro
+    # campo) dispara un rerun completo de inmediato — con el form, Streamlit
+    # junta todos los cambios y solo corre al presionar un botón de abajo.
+    with st.form("sce_form", clear_on_submit=False):
+        c1, c2, c3 = st.columns([2, 1, 1])
 
-    with c1:
-        st.text_input(
-            "solicitante interno",
-            value=solicitante_actual,
-            disabled=True,
-            key="sce_solicitante_mostrar",
-        )
-
-    with c2:
-        st.date_input(
-            "fecha elaboración",
-            value=fecha_hoy,
-            disabled=True,
-            format="DD/MM/YYYY",
-            key="sce_fecha_mostrar",
-        )
-
-    with c3:
-        st.text_input(
-            "folio",
-            value="se genera al guardar",
-            disabled=True,
-            key="sce_folio_mostrar",
-        )
-
-    c4, c5 = st.columns(2)
-
-    with c4:
-        st.selectbox(
-            "departamento",
-            options=[""] + list(opciones_departamentos.keys()),
-            key="sce_departamento",
-        )
-
-    with c5:
-        st.selectbox(
-            "forma de pago",
-            options=[""] + list(opciones_forma_pago.keys()),
-            key="sce_forma_pago",
-        )
-
-    st.text_area(
-        "observaciones",
-        key="sce_observaciones",
-        height=100,
-    )
-
-    st.divider()
-    st.markdown("### detalle de solicitud")
-
-    if (
-        "sce_detalle" not in st.session_state
-        or not isinstance(st.session_state.sce_detalle, pd.DataFrame)
-        or st.session_state.sce_detalle.empty
-    ):
-        st.session_state.sce_detalle = pd.DataFrame([_fila_vacia_estandar()])
-
-    df_base = st.session_state.sce_detalle.copy()
-    editor_key = f"sce_editor_{st.session_state.sce_editor_nonce}"
-
-    df_edit = st.data_editor(
-        df_base,
-        num_rows="dynamic",
-        use_container_width=True,
-        hide_index=True,
-        key=editor_key,
-        column_config={
-            "cantidad": st.column_config.NumberColumn("cantidad", min_value=0.0, step=1.0, format="%.2f"),
-            "descripcion_producto_servicio": st.column_config.TextColumn("descripción del producto y/o servicio"),
-            "unidad_negocio_sigla": st.column_config.SelectboxColumn(
-                "unidad de negocio sigla",
-                options=opciones_unidades,
-            ),
-            "porcentaje": st.column_config.NumberColumn("%", min_value=0.0, max_value=100.0, step=1.0, format="%.2f"),
-            "fecha_requerida": st.column_config.DateColumn("fecha requerida", format="DD/MM/YYYY"),
-            "proveedor": st.column_config.TextColumn("proveedor"),
-            "precio_unitario": st.column_config.NumberColumn("precio unitario", min_value=0.0, step=1.0, format="%.2f"),
-            "costo_total_sin_iva": st.column_config.NumberColumn("costo total sin IVA", min_value=0.0, step=1.0, format="%.2f"),
-        },
-    )
-
-    st.divider()
-
-    b1, b2 = st.columns(2)
-
-    with b1:
-        if st.button("guardar solicitud estándar", use_container_width=True):
-            nombre_departamento = st.session_state.sce_departamento
-            nombre_forma_pago = st.session_state.sce_forma_pago
-
-            id_departamento = opciones_departamentos.get(nombre_departamento, 0)
-            id_forma_pago = opciones_forma_pago.get(nombre_forma_pago, 0)
-
-            df_det = _normalizar_df_estandar(df_edit)
-
-            mask_vacias = (
-                df_det["cantidad"].isna()
-                & df_det["descripcion_producto_servicio"].eq("")
-                & df_det["proveedor"].eq("")
-                & df_det["precio_unitario"].isna()
-                & df_det["costo_total_sin_iva"].isna()
-            )
-            df_det = df_det[~mask_vacias].copy()
-
-            if df_det.empty:
-                st.warning("agrega al menos un renglón con datos")
-                return
-
-            errores = []
-            detalle_final = []
-
-            for idx, row in df_det.reset_index(drop=True).iterrows():
-                fila = idx + 1
-
-                cantidad = row["cantidad"]
-                descripcion = row["descripcion_producto_servicio"]
-                unidad = row["unidad_negocio_sigla"]
-                porcentaje = row["porcentaje"]
-                fecha_requerida = row["fecha_requerida"]
-                proveedor = row["proveedor"]
-                precio_unitario = row["precio_unitario"]
-                costo_total = row["costo_total_sin_iva"]
-
-                if pd.isna(cantidad) or float(cantidad) <= 0:
-                    errores.append(f"fila {fila}: cantidad inválida")
-                if not descripcion:
-                    errores.append(f"fila {fila}: falta descripción del producto y/o servicio")
-
-                detalle_final.append({
-                    "cantidad": float(cantidad) if not pd.isna(cantidad) else None,
-                    "descripcion_producto_servicio": descripcion,
-                    "unidad_negocio_sigla": unidad,
-                    "porcentaje": float(porcentaje) if not pd.isna(porcentaje) else None,
-                    "fecha_requerida": fecha_requerida.isoformat() if fecha_requerida else None,
-                    "proveedor": proveedor,
-                    "precio_unitario": float(precio_unitario) if not pd.isna(precio_unitario) else None,
-                    "costo_total_sin_iva": float(costo_total) if not pd.isna(costo_total) else None,
-                })
-
-            if not id_departamento:
-                errores.append("falta seleccionar departamento")
-
-            if not id_forma_pago:
-                errores.append("falta seleccionar forma de pago")
-
-            if errores:
-                st.error("no se puede guardar:\n\n" + "\n".join(errores[:15]))
-                return
-
-            ok, mensaje = crear_solicitud_estandar_ctrl(
-                id_tipo_compra=id_tipo_compra,
-                fecha_solicitud=fecha_hoy,
-                solicitante=solicitante_actual,
-                observaciones_generales=st.session_state.sce_observaciones,
-                id_departamento=id_departamento,
-                id_forma_pago=id_forma_pago,
-                detalle=detalle_final,
+        with c1:
+            st.text_input(
+                "solicitante interno",
+                value=solicitante_actual,
+                disabled=True,
+                key="sce_solicitante_mostrar",
             )
 
-            if ok:
-                st.success(mensaje)
-                st.session_state.sce_limpiar_pendiente = True
-                st.rerun()
-            else:
-                st.error(mensaje)
+        with c2:
+            st.date_input(
+                "fecha elaboración",
+                value=fecha_hoy,
+                disabled=True,
+                format="DD/MM/YYYY",
+                key="sce_fecha_mostrar",
+            )
 
-    with b2:
-        if st.button("limpiar formulario estándar", use_container_width=True):
+        with c3:
+            st.text_input(
+                "folio",
+                value="se genera al guardar",
+                disabled=True,
+                key="sce_folio_mostrar",
+            )
+
+        c4, c5 = st.columns(2)
+
+        with c4:
+            st.selectbox(
+                "departamento",
+                options=[""] + list(opciones_departamentos.keys()),
+                key="sce_departamento",
+            )
+
+        with c5:
+            st.selectbox(
+                "forma de pago",
+                options=[""] + list(opciones_forma_pago.keys()),
+                key="sce_forma_pago",
+            )
+
+        st.text_area(
+            "observaciones",
+            key="sce_observaciones",
+            height=100,
+        )
+
+        st.divider()
+        st.markdown("### detalle de solicitud")
+
+        if (
+            "sce_detalle" not in st.session_state
+            or not isinstance(st.session_state.sce_detalle, pd.DataFrame)
+            or st.session_state.sce_detalle.empty
+        ):
+            st.session_state.sce_detalle = pd.DataFrame([_fila_vacia_estandar()])
+
+        df_base = st.session_state.sce_detalle.copy()
+        editor_key = f"sce_editor_{st.session_state.sce_editor_nonce}"
+
+        df_edit = st.data_editor(
+            df_base,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key=editor_key,
+            column_config={
+                "cantidad": st.column_config.NumberColumn("cantidad", min_value=0.0, step=1.0, format="%.2f"),
+                "descripcion_producto_servicio": st.column_config.TextColumn("descripción del producto y/o servicio"),
+                "unidad_negocio_sigla": st.column_config.SelectboxColumn(
+                    "unidad de negocio sigla",
+                    options=opciones_unidades,
+                ),
+                "porcentaje": st.column_config.NumberColumn("%", min_value=0.0, max_value=100.0, step=1.0, format="%.2f"),
+                "fecha_requerida": st.column_config.DateColumn("fecha requerida", format="DD/MM/YYYY"),
+                "proveedor": st.column_config.TextColumn("proveedor"),
+                "precio_unitario": st.column_config.NumberColumn("precio unitario", min_value=0.0, step=1.0, format="%.2f"),
+                "costo_total_sin_iva": st.column_config.NumberColumn("costo total sin IVA", min_value=0.0, step=1.0, format="%.2f"),
+            },
+        )
+
+        st.divider()
+
+        b1, b2 = st.columns(2)
+        with b1:
+            guardar = st.form_submit_button(
+                "guardar solicitud estándar", use_container_width=True, type="primary",
+            )
+        with b2:
+            limpiar = st.form_submit_button("limpiar formulario estándar", use_container_width=True)
+
+    if guardar:
+        nombre_departamento = st.session_state.sce_departamento
+        nombre_forma_pago = st.session_state.sce_forma_pago
+
+        id_departamento = opciones_departamentos.get(nombre_departamento, 0)
+        id_forma_pago = opciones_forma_pago.get(nombre_forma_pago, 0)
+
+        df_det = _normalizar_df_estandar(df_edit)
+
+        mask_vacias = (
+            df_det["cantidad"].isna()
+            & df_det["descripcion_producto_servicio"].eq("")
+            & df_det["proveedor"].eq("")
+            & df_det["precio_unitario"].isna()
+            & df_det["costo_total_sin_iva"].isna()
+        )
+        df_det = df_det[~mask_vacias].copy()
+
+        if df_det.empty:
+            st.warning("agrega al menos un renglón con datos")
+            return
+
+        errores = []
+        detalle_final = []
+
+        for idx, row in df_det.reset_index(drop=True).iterrows():
+            fila = idx + 1
+
+            cantidad = row["cantidad"]
+            descripcion = row["descripcion_producto_servicio"]
+            unidad = row["unidad_negocio_sigla"]
+            porcentaje = row["porcentaje"]
+            fecha_requerida = row["fecha_requerida"]
+            proveedor = row["proveedor"]
+            precio_unitario = row["precio_unitario"]
+            costo_total = row["costo_total_sin_iva"]
+
+            if pd.isna(cantidad) or float(cantidad) <= 0:
+                errores.append(f"fila {fila}: cantidad inválida")
+            if not descripcion:
+                errores.append(f"fila {fila}: falta descripción del producto y/o servicio")
+
+            detalle_final.append({
+                "cantidad": float(cantidad) if not pd.isna(cantidad) else None,
+                "descripcion_producto_servicio": descripcion,
+                "unidad_negocio_sigla": unidad,
+                "porcentaje": float(porcentaje) if not pd.isna(porcentaje) else None,
+                "fecha_requerida": fecha_requerida.isoformat() if fecha_requerida else None,
+                "proveedor": proveedor,
+                "precio_unitario": float(precio_unitario) if not pd.isna(precio_unitario) else None,
+                "costo_total_sin_iva": float(costo_total) if not pd.isna(costo_total) else None,
+            })
+
+        if not id_departamento:
+            errores.append("falta seleccionar departamento")
+
+        if not id_forma_pago:
+            errores.append("falta seleccionar forma de pago")
+
+        if errores:
+            st.error("no se puede guardar:\n\n" + "\n".join(errores[:15]))
+            return
+
+        ok, mensaje = crear_solicitud_estandar_ctrl(
+            id_tipo_compra=id_tipo_compra,
+            fecha_solicitud=fecha_hoy,
+            solicitante=solicitante_actual,
+            observaciones_generales=st.session_state.sce_observaciones,
+            id_departamento=id_departamento,
+            id_forma_pago=id_forma_pago,
+            detalle=detalle_final,
+        )
+
+        if ok:
+            st.success(mensaje)
             st.session_state.sce_limpiar_pendiente = True
             st.rerun()
+        else:
+            st.error(mensaje)
+
+    if limpiar:
+        st.session_state.sce_limpiar_pendiente = True
+        st.rerun()
