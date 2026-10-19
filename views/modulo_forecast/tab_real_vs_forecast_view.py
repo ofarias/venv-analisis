@@ -7,6 +7,7 @@ import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, JsCode
 
 from controllers.forecast_controller import (
     obtener_forecast_detalle_ctrl,
@@ -17,7 +18,6 @@ from controllers.forecast_controller import (
     _compras_historicas_sae,
     _ventas_historicas_sae,
 )
-from utils.preferencias_columnas import obtener_columnas_ocultas, guardar_columnas_ocultas
 
 
 _MESES = {1:"ene",2:"feb",3:"mar",4:"abr",5:"may",6:"jun",
@@ -275,24 +275,34 @@ def _construir_comparativo(
     return pd.DataFrame(filas)
 
 
+#  "real" y "real_filtrado" son la MISMA serie de valores (ventas
+# facturadas SAE), fila por fila — lo único que cambia entre ellas es el
+# conjunto de filas que se muestran (ver _construir_comparativo) — así que
+# para la lógica de referencia/baseline de Δ%/cumplimiento se tratan como
+# intercambiables.
+_VARIANTES_REAL = ("real", "real_filtrado")
+
+
 def _elegir_comparacion(series_sel: list[str]) -> tuple[str, list[str]]:
     """De las series elegidas, decide cuál es la referencia (baseline) para los
-    Δ%/cumplimiento: "real" si está entre las elegidas (mantiene el
-    comportamiento histórico de esta pantalla), si no la primera elegida según
-    _SERIES_ORDEN."""
-    baseline = "real" if "real" in series_sel else next(k for k in _SERIES_ORDEN if k in series_sel)
+    Δ%/cumplimiento: "real" o "real_filtrado" si alguna está entre las
+    elegidas (mantiene el comportamiento histórico de esta pantalla), si no
+    la primera elegida según _SERIES_ORDEN."""
+    real_sel = next((k for k in _VARIANTES_REAL if k in series_sel), None)
+    baseline = real_sel if real_sel else next(k for k in _SERIES_ORDEN if k in series_sel)
     otros = [k for k in series_sel if k != baseline]
     return baseline, otros
 
 
 def _referencia_para(otro: str, baseline: str) -> str:
     """Serie que realmente actúa como referencia al comparar contra `otro`:
-    normalmente `baseline`, salvo que la referencia elegida sea "real"
-    (ventas facturadas SAE) y lo comparado sea "Presupuesto Compras" — ahí la
-    referencia real debe ser compras ya recibidas en SAE ("real_compras"), no
-    ventas, porque comparar ventas contra un presupuesto de compras no tiene
-    el mismo significado que comparar real vs plan."""
-    if baseline == "real" and otro == "pc":
+    normalmente `baseline`, salvo que la referencia elegida sea real/real
+    filtrado (ventas facturadas SAE) y lo comparado sea "Presupuesto
+    Compras" — ahí la referencia real debe ser compras ya recibidas en SAE
+    ("real_compras"), no ventas, porque comparar ventas contra un
+    presupuesto de compras no tiene el mismo significado que comparar real
+    vs plan."""
+    if baseline in _VARIANTES_REAL and otro == "pc":
         return "real_compras"
     return baseline
 
@@ -303,16 +313,16 @@ def _agregar_comparaciones(
     """Agrega columnas total_delta_{otro}_%, total_cumpl_{otro}_% y
     {mes}_delta_{otro}_% para cada serie no-baseline, relativas a la
     referencia efectiva de cada `otro` (ver _referencia_para).
-    Si baseline es "real", el numerador es la referencia (igual que el
-    cálculo histórico real-vs-plan); si no, el numerador es la serie "otro" y
-    el denominador es la referencia."""
+    Si baseline es real/real filtrado, el numerador es la referencia (igual
+    que el cálculo histórico real-vs-plan); si no, el numerador es la serie
+    "otro" y el denominador es la referencia."""
     df = df_comp.copy()
 
     for otro in otros:
         referencia = _referencia_para(otro, baseline)
         ref_total_col = _SERIES_META[referencia]["total_col"]
         otro_total_col = _SERIES_META[otro]["total_col"]
-        num, den = (df[ref_total_col], df[otro_total_col]) if baseline == "real" \
+        num, den = (df[ref_total_col], df[otro_total_col]) if baseline in _VARIANTES_REAL \
             else (df[otro_total_col], df[ref_total_col])
         # NaN (no pd.NA): pd.NA hace que la columna pase a dtype "object" y
         # rompe tanto la comparación "val >= 0" del estilo de color como la
@@ -328,7 +338,7 @@ def _agregar_comparaciones(
             otro_mes_col = f"{mn}{_SERIES_META[otro]['mes_suffix']}"
             if ref_mes_col not in df.columns or otro_mes_col not in df.columns:
                 continue
-            num_m, den_m = (df[ref_mes_col], df[otro_mes_col]) if baseline == "real" \
+            num_m, den_m = (df[ref_mes_col], df[otro_mes_col]) if baseline in _VARIANTES_REAL \
                 else (df[otro_mes_col], df[ref_mes_col])
             den_m_safe = den_m.replace(0, float("nan"))
             df[f"{mn}_delta_{otro}_%"] = ((num_m - den_m) / den_m_safe * 100).round(1)
@@ -336,24 +346,23 @@ def _agregar_comparaciones(
     return df
 
 
-def _style_delta(df: pd.DataFrame) -> pd.io.formats.style.Styler:
-    """Colorea columnas Δ%/cumplimiento generadas por _agregar_comparaciones:
-    verde si ≥0, rojo si <0 (mismo criterio que usaba la versión anterior,
-    fija a 4 columnas, ahora aplicado a las que existan según la selección)."""
-    def _color(val):
-        # pd.isna() cubre None/NaN/NaT/pd.NA (este último lo produce
-        # _agregar_comparaciones cuando el denominador es 0); "val >= 0" con
-        # pd.NA lanza TypeError porque su bool() es ambiguo, así que hay que
-        # descartarlo ANTES de comparar.
-        if pd.isna(val):
-            return ""
-        return "background-color: #d4edda; color: #155724" if val >= 0 else "background-color: #f8d7da; color: #721c24"
+_CELL_STYLE_DELTA = JsCode("""
+function(params) {
+    if (params.value === null || params.value === undefined || params.value === '') return null;
+    return params.value >= 0
+        ? {backgroundColor: '#d4edda', color: '#155724'}
+        : {backgroundColor: '#f8d7da', color: '#721c24'};
+}
+""")
 
-    delta_cols = [c for c in df.columns if ("_delta_" in c or "_cumpl_" in c) and c.endswith("_%")]
-    styler = df.style
-    for col in delta_cols:
-        styler = styler.applymap(_color, subset=[col])
-    return styler
+
+def _value_formatter_miles_js(decimales: int) -> JsCode:
+    return JsCode(f"""
+    function(params) {{
+        if (params.value === null || params.value === undefined || params.value === '') return '';
+        return Number(params.value).toLocaleString('en-US', {{minimumFractionDigits: {decimales}, maximumFractionDigits: {decimales}}});
+    }}
+    """)
 
 
 def _comparativo_a_excel_bytes(nombre_hoja: str, df: pd.DataFrame, encabezados: dict[str, str]) -> bytes:
@@ -526,7 +535,7 @@ def mostrar_tab_real_vs_forecast(
     sel_labels = st.multiselect(
         "comparar",
         options=[_SERIES_META[k]["label"] for k in _SERIES_ORDEN],
-        default=["Real (SAE)", "Forecast", "Presupuesto Ventas"],
+        default=["Real (SAE Filtrado)", "Forecast", "Presupuesto Ventas"],
         key="rvf_series_sel",
         help=(
             "elige 2 o más series (ej. Forecast vs Real, Presupuesto Ventas vs Presupuesto Finanzas, "
@@ -644,7 +653,7 @@ def mostrar_tab_real_vs_forecast(
                 referencia = _referencia_para(otro, baseline)
                 referencia_label = _SERIES_META[referencia]["label"]
                 otro_label = _SERIES_META[otro]["label"]
-                num, den = (totales_sum[referencia], totales_sum[otro]) if baseline == "real" \
+                num, den = (totales_sum[referencia], totales_sum[otro]) if baseline in _VARIANTES_REAL \
                     else (totales_sum[otro], totales_sum[referencia])
                 cumpl = round(num / den * 100, 1) if den else 0.0
                 cols_metricas[idx_col].metric(
@@ -661,84 +670,129 @@ def mostrar_tab_real_vs_forecast(
             st.divider()
 
             # ── tabla comparativa ──────────────────────────────────────────
-            fmt_valor = "localized"  # sin decimales, con separador de miles
+            def _titulo_total(k: str) -> str:
+                return f"total {_SERIES_META[k]['label'].lower()} {unidad}"
 
-            col_cfg: dict = {
-                "cve_prod": st.column_config.TextColumn("cve prod", disabled=True, width="small"),
-                "producto": st.column_config.TextColumn("producto", disabled=True),
-            }
+            def _titulo_cumpl(otro: str) -> str:
+                referencia_label = _SERIES_META[_referencia_para(otro, baseline)]["label"]
+                return f"cumplimiento % {_SERIES_META[otro]['label']} (vs {referencia_label})"
+
             encabezados: dict[str, str] = {"cve_prod": "Cve prod", "producto": "Producto"}
             cols_orden = ["cve_prod", "producto"]
+            cols_valor: set[str] = set()
+            cols_pct: set[str] = set()
+            # las 5 columnas de identidad (si están presentes) van SIEMPRE
+            # primero y en este orden fijo — independiente del orden en que
+            # el usuario haya elegido las series en el multiselect "comparar"
+            # de arriba — y quedan inmovilizadas y angostas (~10 caracteres).
+            cols_pin = {"cve_prod", "producto"}
+            cols_angostas: set[str] = set()
 
+            for _real_k in _VARIANTES_REAL:
+                if _real_k in series_sel:
+                    c = _SERIES_META[_real_k]["total_col"]
+                    encabezados[c] = _titulo_total(_real_k); cols_orden.append(c)
+                    cols_valor.add(c); cols_pin.add(c); cols_angostas.add(c)
+            if "fc" in series_sel:
+                c = _SERIES_META["fc"]["total_col"]
+                encabezados[c] = _titulo_total("fc"); cols_orden.append(c)
+                cols_valor.add(c); cols_pin.add(c); cols_angostas.add(c)
+            if "pv" in series_sel:
+                c = _SERIES_META["pv"]["total_col"]
+                encabezados[c] = _titulo_total("pv"); cols_orden.append(c)
+                cols_valor.add(c); cols_pin.add(c); cols_angostas.add(c)
+            if "fc" in otros:
+                c = "total_cumpl_fc_%"
+                encabezados[c] = _titulo_cumpl("fc"); cols_orden.append(c)
+                cols_pct.add(c); cols_pin.add(c); cols_angostas.add(c)
+            if "pv" in otros:
+                c = "total_cumpl_pv_%"
+                encabezados[c] = _titulo_cumpl("pv"); cols_orden.append(c)
+                cols_pct.add(c); cols_pin.add(c); cols_angostas.add(c)
+
+            # resto de totales/cumplimiento (otras series elegidas que no
+            # sean real/fc/pv, ej. Presupuesto Compras/Finanzas) — detrás de
+            # las 5 de identidad, sin fijar ni angostar.
             for k in series_sel:
                 total_col = _SERIES_META[k]["total_col"]
-                titulo = f"total {_SERIES_META[k]['label'].lower()} {unidad}"
-                col_cfg[total_col] = st.column_config.NumberColumn(titulo, format=fmt_valor, disabled=True)
-                encabezados[total_col] = titulo
-                cols_orden.append(total_col)
-
+                if total_col in cols_orden:
+                    continue
+                encabezados[total_col] = _titulo_total(k)
+                cols_orden.append(total_col); cols_valor.add(total_col)
             for otro in otros:
-                referencia_label = _SERIES_META[_referencia_para(otro, baseline)]["label"]
                 ccol = f"total_cumpl_{otro}_%"
-                titulo = f"cumplimiento % {_SERIES_META[otro]['label']} (vs {referencia_label})"
-                col_cfg[ccol] = st.column_config.NumberColumn(titulo, format="%.1f", disabled=True)
-                encabezados[ccol] = titulo
-                cols_orden.append(ccol)
+                if ccol in cols_orden:
+                    continue
+                encabezados[ccol] = _titulo_cumpl(otro)
+                cols_orden.append(ccol); cols_pct.add(ccol)
 
             for mes in meses:
                 mn = _MESES[mes]
                 for k in series_sel:
                     c = f"{mn}{_SERIES_META[k]['mes_suffix']}"
                     titulo = f"{mn.upper()} {_SERIES_META[k]['label'].lower()}"
-                    col_cfg[c] = st.column_config.NumberColumn(titulo, format=fmt_valor, disabled=True)
                     encabezados[c] = titulo
                     cols_orden.append(c)
+                    cols_valor.add(c)
                 for otro in otros:
                     referencia_label = _SERIES_META[_referencia_para(otro, baseline)]["label"]
                     c = f"{mn}_delta_{otro}_%"
                     titulo = f"{mn.upper()} Δ% {_SERIES_META[otro]['label']} (vs {referencia_label})"
-                    col_cfg[c] = st.column_config.NumberColumn(titulo, format="%.1f", disabled=True)
                     encabezados[c] = titulo
                     cols_orden.append(c)
+                    cols_pct.add(c)
 
-            # ── selector de columnas visibles (persistido por usuario) ─────
-            cols_disponibles = [c for c in cols_orden if c in df_comp.columns]
-            columnas_fijas = [c for c in ("cve_prod", "producto") if c in cols_disponibles]
-            columnas_opcionales = [c for c in cols_disponibles if c not in columnas_fijas]
-            labels_por_col = {c: encabezados.get(c, c) for c in columnas_opcionales}
-            col_por_label = {v: k for k, v in labels_por_col.items()}
+            cols_orden_final = [c for c in cols_orden if c in df_comp.columns]
+            df_show = df_comp[cols_orden_final].copy()
 
-            grid_key_rvf = f"real_vs_forecast_{seccion}_{region}"
-            ocultas_guardadas = set(obtener_columnas_ocultas(usuario_datos_id, grid_key_rvf))
-            default_labels = [labels_por_col[c] for c in columnas_opcionales if c not in ocultas_guardadas]
-            labels_sel = st.multiselect(
-                "columnas visibles",
-                options=[labels_por_col[c] for c in columnas_opcionales],
-                default=default_labels,
-                key=f"rvf_columnas_visibles_{seccion}_{region}",
-            )
-            cols_sel_opcionales = [col_por_label[l] for l in labels_sel] or columnas_opcionales
-            nuevas_ocultas = set(columnas_opcionales) - set(cols_sel_opcionales)
-            if nuevas_ocultas != ocultas_guardadas:
-                guardar_columnas_ocultas(usuario_datos_id, grid_key_rvf, sorted(nuevas_ocultas))
-            cols_orden_final = columnas_fijas + [c for c in columnas_opcionales if c in cols_sel_opcionales]
-
-            df_show = df_comp[[c for c in cols_orden_final if c in df_comp.columns]].copy()
-
-            # columnas de valores (kg/USD): redondear a entero para que "localized" no muestre decimales
-            cols_valor = {_SERIES_META[k]["total_col"] for k in series_sel} | {
-                f"{_MESES[m]}{_SERIES_META[k]['mes_suffix']}" for m in meses for k in series_sel
-            }
+            # redondear a entero las columnas de valor (kg/USD) antes del
+            # formateo de miles en la grilla
             for c in cols_valor & set(df_show.columns):
                 df_show[c] = pd.to_numeric(df_show[c], errors="coerce").round(0)
 
-            styled = _style_delta(df_show)
-            st.dataframe(
-                styled,
-                use_container_width=True,
-                hide_index=True,
-                column_config=col_cfg,
+            # ── grilla AgGrid (enterprise: panel de columnas/filtros, igual
+            # criterio que las demás tablas de Forecast) — encabezados en
+            # varias líneas para aprovechar el espacio con los títulos largos
+            # de esta pantalla. from_dataframe() fija de entrada un
+            # autoSizeStrategy "fitCellContents" que pisa cualquier width
+            # explícito por columna — hay que anularlo o el ancho/pin de las
+            # columnas de identidad no se respeta.
+            gb = GridOptionsBuilder.from_dataframe(df_show)
+            gb.configure_grid_options(autoSizeStrategy=None)
+            gb.configure_default_column(
+                resizable=True, filter=True, sortable=True, editable=False,
+                wrapHeaderText=True, autoHeaderHeight=True,
+            )
+            gb.configure_side_bar()
+
+            for c in cols_orden_final:
+                extra: dict = {"pinned": "left"} if c in cols_pin else {}
+                if c == "cve_prod":
+                    extra["width"] = 110
+                elif c == "producto":
+                    extra["width"] = 220
+                elif c in cols_angostas:
+                    extra["width"] = 90  # ~10 caracteres
+                else:
+                    extra["width"] = 140
+                if c in cols_valor:
+                    extra["type"] = ["numericColumn"]
+                    extra["valueFormatter"] = _value_formatter_miles_js(0)
+                elif c in cols_pct:
+                    extra["type"] = ["numericColumn"]
+                    extra["valueFormatter"] = _value_formatter_miles_js(1)
+                    extra["cellStyle"] = _CELL_STYLE_DELTA
+                gb.configure_column(c, headerName=encabezados.get(c, c), **extra)
+
+            AgGrid(
+                df_show,
+                gridOptions=gb.build(),
+                data_return_mode=DataReturnMode.AS_INPUT,
+                fit_columns_on_grid_load=False,
+                allow_unsafe_jscode=True,
+                enable_enterprise_modules=True,
                 height=min(56 + len(df_show) * 35, 680),
+                key=f"rvf_grid_v2_{seccion}_{region}",
             )
 
             # ── gráficas de las series elegidas, por mes — visibles por
@@ -753,7 +807,13 @@ def mostrar_tab_real_vs_forecast(
                     c = f"{mn}{_SERIES_META[k]['mes_suffix']}"
                     fila_g[_SERIES_META[k]["label"]] = df_comp[c].sum() if c in df_comp.columns else 0
                 datos_grafica.append(fila_g)
-            df_g = pd.DataFrame(datos_grafica).set_index("mes")
+            df_g = pd.DataFrame(datos_grafica)
+            # categórica ordenada cronológicamente (no alfabéticamente, que es
+            # lo que hacen los gráficos de Streamlit con un índice de texto
+            # plano) — mismo criterio que _grafica_rendimiento en
+            # tab_construccion_view.py
+            df_g["mes"] = pd.Categorical(df_g["mes"], categories=df_g["mes"].tolist(), ordered=True)
+            df_g = df_g.set_index("mes")
             cols_chart = [_SERIES_META[k]["label"] for k in series_sel]
             # mismo color para la misma serie en ambas gráficas, sin importar
             # el orden en que se eligieron (ver _SERIES_COLOR)
@@ -762,6 +822,7 @@ def mostrar_tab_real_vs_forecast(
             st.markdown("##### 📊 por mes")
             st.bar_chart(
                 df_g[cols_chart], use_container_width=True, height=300, color=colores_chart,
+                stack=False,
             )
 
             st.markdown("##### 📈 acumulado del período")
