@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
-from datetime import date
+import os
+from datetime import date, datetime
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -13,6 +15,7 @@ from controllers.forecast_controller import (
     _catalogo_productos_sae,
 )
 from controllers.forecast_autorizacion_controller import calcular_necesidad_compra_consolidada_ctrl
+from settings import BASE_DIR
 
 
 _MESES = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
@@ -21,6 +24,12 @@ _MESES = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
 _ORIGEN_BADGE = {
     "autorizado": "✅ autorizado",
     "presupuesto (fallback)": "🟡 presupuesto (pendiente de autorizar)",
+}
+# mismo texto sin emoji — ReportLab/Helvetica no trae glifos de emoji, salen
+# como un cuadro negro en el PDF
+_ORIGEN_LABEL_PDF = {
+    "autorizado": "Autorizado",
+    "presupuesto (fallback)": "Presupuesto (pendiente de autorizar)",
 }
 
 # por cada mes se repiten estas 5 columnas. Resultado = Stock - Forecast + DP
@@ -119,6 +128,234 @@ def _construir_tabla_mensual(df_f: pd.DataFrame, meses_sel: list[int]) -> pd.Dat
         filas.append(fila)
 
     return pd.DataFrame(filas)
+
+
+def _construir_tabla_necesidad_mensual(df_f: pd.DataFrame, meses_sel: list[int]) -> pd.DataFrame:
+    """Necesidad (faltante proyectado) por producto × mes, SIN la
+    concentración en el mes actual que aplica "Orden Sugerida" en la tabla
+    principal — para el reporte se quiere ver el faltante real de cada mes
+    individual, con su total y de dónde sale cada número (origen/vendedores).
+
+    "Stock hoy" es la existencia real (SAE, almacén 17) con la que arrancó
+    el cálculo — el mismo valor que usa el motor como `existencia_inicio`
+    del primer mes seleccionado; un producto puede dar Total 0 con toda
+    normalidad si ese stock ya alcanza para cubrir la venta proyectada de
+    todo el período (sin que haga falta comprar nada todavía) — esos
+    productos se excluyen del reporte: solo se listan los que sí hay que
+    solicitar.
+
+    Se ordena por línea (unidad de negocio) y, dentro de cada línea,
+    alfabéticamente por producto — así el reporte PDF puede agrupar una
+    tabla por línea en ese mismo orden."""
+    cols_base = ["producto", "linea", "tiempo_resurtido", "origen_forecast", "vendedores"]
+    base = (
+        df_f.drop_duplicates("cve_prod")
+        .set_index("cve_prod")[[c for c in cols_base if c in df_f.columns]]
+    )
+    mes_actual = min(meses_sel) if meses_sel else None
+    filas = []
+    for cve, info in base.iterrows():
+        sub = df_f[df_f["cve_prod"] == cve].set_index("mes")
+        stock_hoy = float(sub.loc[mes_actual, "existencia_inicio"]) if mes_actual in sub.index else 0.0
+        linea = str(info.get("linea") or "").strip() or "(sin línea SAE)"
+        tiempo_resurtido = info.get("tiempo_resurtido")
+        fila = {
+            "cve_prod": cve, "producto": info["producto"], "linea": linea,
+            "tiempo_resurtido": tiempo_resurtido, "Stock hoy": stock_hoy,
+        }
+        total = 0.0
+        for mes in meses_sel:
+            mn = _MESES[mes].upper()
+            valor = float(sub.loc[mes, "necesidad"]) if mes in sub.index else 0.0
+            fila[mn] = valor
+            total += valor
+        fila["Total"] = total
+        fila["origen"] = info["origen_forecast"]
+        fila["vendedores"] = info["vendedores"]
+        if total > 0:
+            filas.append(fila)
+    if not filas:
+        return pd.DataFrame(columns=["cve_prod", "producto", "linea", "tiempo_resurtido", "Stock hoy", "Total", "origen", "vendedores"])
+    return (
+        pd.DataFrame(filas)
+        .sort_values(["linea", "producto"], key=lambda s: s.astype(str).str.upper())
+        .reset_index(drop=True)
+    )
+
+
+def _generar_reporte_necesidad_pdf(
+    tabla_nec: pd.DataFrame, meses_sel: list[int], anio_sel: int,
+    kpis: dict, filtros_resumen: str,
+) -> bytes:
+    """Reporte de necesidad de compra por mes (una fila por producto), con
+    total del período, origen del forecast y vendedor(es) — para compartir
+    con Compras/dirección sin tener que leer la tabla completa en pantalla."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (
+        Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    )
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(letter),
+        leftMargin=1.0 * cm, rightMargin=1.0 * cm, topMargin=1.2 * cm, bottomMargin=1.2 * cm,
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=18, spaceAfter=2)
+    meta = ParagraphStyle("meta", parent=styles["Normal"], fontSize=8.5, textColor=colors.HexColor("#4a505c"), spaceAfter=10)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=12.5, spaceBefore=10, spaceAfter=6)
+    celda = ParagraphStyle("celda", parent=styles["Normal"], fontSize=7.5, leading=9)
+    celda_header = ParagraphStyle("celda_header", parent=celda, textColor=colors.white)
+
+    GRIS_HDR = colors.HexColor("#12151a")
+    GRIS_LINEA = colors.HexColor("#e3e6ea")
+
+    titulo = [
+        Paragraph("Reporte de Necesidad de Compra — Demanda (Forecast)", h1),
+        Paragraph(
+            f"Generado: <b>{datetime.now().strftime('%d/%m/%Y %H:%M')}</b> &nbsp;·&nbsp; "
+            f"Año {anio_sel} &nbsp;·&nbsp; Filtros: {filtros_resumen or 'sin filtros adicionales'}",
+            meta,
+        ),
+    ]
+
+    logo_path = os.path.join(BASE_DIR, "assets", "biotecsaicon.png")
+    if os.path.exists(logo_path):
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(logo_path) as im:
+                im.thumbnail((300, 300))
+                ancho_px, alto_px = im.size
+                buf_logo = BytesIO()
+                im.convert("RGBA").save(buf_logo, format="PNG")
+                buf_logo.seek(0)
+            alto_logo = 2.0 * cm
+            ancho_logo = alto_logo * (ancho_px / alto_px)
+            encabezado = Table(
+                [[Image(buf_logo, width=ancho_logo, height=alto_logo), titulo]],
+                colWidths=[ancho_logo + 0.4 * cm, None],
+            )
+            encabezado.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (0, 0), 0),
+                ("RIGHTPADDING", (0, 0), (0, 0), 0),
+            ]))
+            story = [encabezado]
+        except Exception:
+            story = titulo
+    else:
+        story = titulo
+
+    story.append(Spacer(1, 6))
+
+    kpi_data = [
+        ["Productos", "Necesidad total (kg)", "Productos con algún mes sin autorizar"],
+        [
+            f"{kpis['productos']:,}", f"{kpis['necesidad_total']:,.0f}",
+            f"{kpis['productos_fallback']:,}",
+        ],
+    ]
+    t_kpi = Table(kpi_data, colWidths=[7 * cm] * 3)
+    t_kpi.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), GRIS_HDR),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 1), (-1, 1), 12),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BOX", (0, 0), (-1, -1), 0.5, GRIS_LINEA),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, GRIS_LINEA),
+    ]))
+    story += [t_kpi, Spacer(1, 4)]
+
+    story.append(Paragraph("Necesidad por mes", h2))
+    story.append(Paragraph(
+        "Solo se listan los productos que sí hay que solicitar (Total &gt; 0) — los que ya están "
+        "cubiertos por su \"Stock hoy\" (existencia real SAE, almacén 17, al momento de generar el "
+        "reporte) quedan fuera. Una tabla por unidad de negocio (línea), productos en orden alfabético.",
+        meta,
+    ))
+    if tabla_nec.empty:
+        story.append(Paragraph("No hay productos pendientes de solicitar con los filtros aplicados.", styles["Normal"]))
+        doc.build(story)
+        return buf.getvalue()
+
+    meses_labels = [_MESES[m].upper() for m in meses_sel]
+    idx_total = 4 + len(meses_labels)
+    idx_origen = idx_total + 1
+    idx_vend = idx_origen + 1
+
+    ancho_cve = 2.0 * cm
+    ancho_prod = 4.0 * cm
+    ancho_resurtido = 1.6 * cm
+    ancho_stock = 1.6 * cm
+    ancho_total = 1.8 * cm
+    ancho_origen = 3.6 * cm
+    ancho_vend = 3.6 * cm
+    ancho_fijo = ancho_cve + ancho_prod + ancho_resurtido + ancho_stock + ancho_total + ancho_origen + ancho_vend
+    ancho_mes = (doc.width - ancho_fijo) / max(len(meses_labels), 1)
+    col_widths = (
+        [ancho_cve, ancho_prod, ancho_resurtido, ancho_stock] + [ancho_mes] * len(meses_labels)
+        + [ancho_total, ancho_origen, ancho_vend]
+    )
+
+    h_linea = ParagraphStyle("h_linea", parent=styles["Heading3"], fontSize=10.5, spaceBefore=10, spaceAfter=4)
+    header = (
+        [
+            Paragraph("Cve Prod", celda_header), Paragraph("Producto", celda_header),
+            Paragraph("T. Resurtido (días)", celda_header), Paragraph("Stock hoy", celda_header),
+        ]
+        + [Paragraph(m, celda_header) for m in meses_labels]
+        + [Paragraph("Total", celda_header), Paragraph("Origen", celda_header), Paragraph("Vendedor(es)", celda_header)]
+    )
+
+    # tabla_nec ya viene ordenada por línea y producto (ver
+    # _construir_tabla_necesidad_mensual) — se agrupa preservando ese orden,
+    # sin volver a ordenar las líneas, así el reporte respeta el mismo
+    # criterio alfabético en ambos niveles.
+    for linea_val in tabla_nec["linea"].drop_duplicates():
+        df_linea = tabla_nec[tabla_nec["linea"] == linea_val]
+        story.append(Paragraph(f"{linea_val} ({len(df_linea)} producto(s))", h_linea))
+
+        data = [header]
+        for r in df_linea.to_dict("records"):
+            tiempo_resurtido = r.get("tiempo_resurtido")
+            resurtido_txt = f"{float(tiempo_resurtido):,.0f}" if pd.notna(tiempo_resurtido) else "—"
+            fila = [
+                Paragraph(str(r["cve_prod"]), celda), Paragraph(str(r["producto"]), celda),
+                Paragraph(resurtido_txt, celda), Paragraph(f"{float(r['Stock hoy']):,.0f}", celda),
+            ]
+            for mn in meses_labels:
+                valor = float(r.get(mn) or 0.0)
+                fila.append(Paragraph(f"{valor:,.0f}", celda) if valor else "")
+            fila.append(Paragraph(f"{float(r['Total']):,.0f}", celda))
+            fila.append(Paragraph(_ORIGEN_LABEL_PDF.get(r["origen"], str(r["origen"])), celda))
+            fila.append(Paragraph(str(r["vendedores"] or ""), celda))
+            data.append(fila)
+
+        t = Table(data, colWidths=col_widths, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), GRIS_HDR),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+            ("ALIGN", (2, 0), (idx_total, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("GRID", (0, 0), (-1, -1), 0.3, GRIS_LINEA),
+            ("FONTNAME", (idx_total, 1), (idx_total, -1), "Helvetica-Bold"),
+            ("BACKGROUND", (idx_total, 1), (idx_total, -1), GRIS_LINEA),
+        ]))
+        story += [t, Spacer(1, 2)]
+
+    doc.build(story)
+    return buf.getvalue()
 
 
 def mostrar_tab_demanda_forecast() -> None:
@@ -270,6 +507,49 @@ def mostrar_tab_demanda_forecast() -> None:
     c1.metric("productos", df_f["cve_prod"].nunique())
     c2.metric("necesidad total del período (kg)", f"{necesidad_total:,.0f}")
     c3.metric("productos con algún mes sin autorizar", productos_fallback)
+
+    filtros_partes = [f"Año {anio_sel}", f"Meses {', '.join(_MESES[m].upper() for m in meses_sel)}"]
+    if cve_sel:
+        filtros_partes.append(f"Cve prod: {', '.join(cve_sel)}")
+    if prod_sel:
+        filtros_partes.append(f"Producto: {', '.join(prod_sel)}")
+    if linea_sel:
+        filtros_partes.append(f"Línea: {', '.join(linea_sel)}")
+    if cliente_sel:
+        filtros_partes.append(f"Cliente: {', '.join(cliente_sel)}")
+    if vendedor_sel:
+        filtros_partes.append(f"Vendedor: {', '.join(vendedor_sel)}")
+    if origen_sel:
+        filtros_partes.append(f"Origen: {', '.join(_ORIGEN_BADGE.get(o, o) for o in origen_sel)}")
+    filtros_resumen = " · ".join(filtros_partes)
+
+    pdf_key = f"comp_fc_pdf_bytes_{anio_sel}"
+    if st.button("📄 preparar reporte de necesidad por mes (PDF)", key="comp_fc_btn_pdf"):
+        with st.spinner("generando PDF…"):
+            # solo productos que sí hay que solicitar (Total > 0) — los que
+            # ya están cubiertos por su stock actual se excluyen del reporte
+            tabla_nec = _construir_tabla_necesidad_mensual(df_f, meses_sel)
+            productos_fallback_nec = (
+                int((tabla_nec["origen"] == "presupuesto (fallback)").sum()) if not tabla_nec.empty else 0
+            )
+            st.session_state[pdf_key] = _generar_reporte_necesidad_pdf(
+                tabla_nec, meses_sel, int(anio_sel),
+                {
+                    "productos": int(len(tabla_nec)),
+                    "necesidad_total": float(tabla_nec["Total"].sum()) if not tabla_nec.empty else 0.0,
+                    "productos_fallback": productos_fallback_nec,
+                },
+                filtros_resumen,
+            )
+    pdf_bytes = st.session_state.get(pdf_key)
+    if pdf_bytes:
+        st.download_button(
+            "⬇️ descargar reporte de necesidad (PDF)",
+            data=pdf_bytes,
+            file_name=f"necesidad_compra_por_mes_{anio_sel}.pdf",
+            mime="application/pdf",
+            key="comp_fc_pdf_dl",
+        )
 
     st.divider()
     st.caption(
