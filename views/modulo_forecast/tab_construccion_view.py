@@ -431,19 +431,26 @@ def _pivot_forecast(
 
 def _grafica_rendimiento(
     fila_total: dict, meses_sel: list[int], real_col_prefix: str | None,
-    forecast_label: str, real_label: str,
+    presupuesto_label: str, real_label: str, presupuesto_map: dict[str, float],
 ) -> pd.DataFrame:
-    """Forecast/presupuesto vs Real, una columna por serie (en vez de pares
-    de filas) para que `st.bar_chart` las pinte con colores distintos — a
-    partir de los totales ya sumados en `fila_total` (fila TOTAL pinneada
-    del grid). `real_label` solo tiene valor en los meses que tienen esa
-    columna (mes actual y anteriores; ver _mostrar_construccion_tipo)."""
+    """Forecast vs Presupuesto/DP vs Real — tres columnas separadas (en vez
+    de pares de filas) para que `st.bar_chart` las pinte agrupadas, con
+    colores distintos. "Forecast" sale de los totales ya sumados en
+    `fila_total` (fila TOTAL pinneada del grid, columna ene..dic — el valor
+    capturado/editado por el vendedor). `presupuesto_label` es el
+    presupuesto/DP de REFERENCIA (`presupuesto_valor` de `forecast_detalle`,
+    ya no se muestra como columna en la tabla pero sigue siendo un valor
+    distinto al Forecast, y viene de `presupuesto_map`). `real_label` solo
+    tiene valor en los meses que tienen esa columna (mes actual y
+    anteriores; ver _mostrar_construccion_tipo)."""
     filas: list[dict] = []
     for m in sorted(meses_sel):
         mn = _MESES[m]
         if mn not in fila_total:
             continue
-        fila = {"categoria": mn.capitalize(), forecast_label: fila_total[mn]}
+        fila = {"categoria": mn.capitalize(), "Forecast": fila_total[mn]}
+        if mn in presupuesto_map:
+            fila[presupuesto_label] = presupuesto_map[mn]
         if real_col_prefix:
             real_mes_col = f"{real_col_prefix}_{mn}"
             if real_mes_col in fila_total:
@@ -789,11 +796,15 @@ def _mostrar_construccion_tipo(
                 key_suffix=f"{tipo}_{seccion}_{region}_{id_version}",
             )
 
-            forecast_label = "Presupuesto" if tipo == "venta" else "DP"
+            presupuesto_label = "Presupuesto" if tipo == "venta" else "DP"
+            presupuesto_map = (
+                df_det.groupby("mes")["presupuesto_valor"].sum().rename(index=_MESES).to_dict()
+                if "presupuesto_valor" in df_det.columns else {}
+            )
             titulo_grafica = (
-                "📊 mostrar gráfica de rendimiento (presupuesto vs venta real por mes)"
+                "📊 mostrar gráfica de rendimiento (Forecast vs Presupuesto vs Venta Real por mes)"
                 if tipo == "venta" else
-                "📊 mostrar gráfica de rendimiento (DP vs Real por mes)"
+                "📊 mostrar gráfica de rendimiento (Forecast vs DP vs Compra Real por mes)"
             )
             mostrar_grafica = st.checkbox(
                 titulo_grafica,
@@ -802,12 +813,12 @@ def _mostrar_construccion_tipo(
             )
             if mostrar_grafica:
                 df_grafica = _grafica_rendimiento(
-                    fila_total, meses_sel, real_col_prefix, forecast_label, real_label,
+                    fila_total, meses_sel, real_col_prefix, presupuesto_label, real_label, presupuesto_map,
                 )
                 if not df_grafica.empty:
                     st.bar_chart(
-                        df_grafica, use_container_width=True, height=300,
-                        color=["#4C78A8", "#2ca02c"],
+                        df_grafica, use_container_width=True, height=300, stack=False,
+                        color=["#2a78d6", "#eb6834", "#1baf7a"],
                     )
                 else:
                     st.info("sin datos suficientes para la gráfica")
