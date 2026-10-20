@@ -740,7 +740,10 @@ def get_detalle_solicitud_mp_inventario_model(id_solicitud_compra: int) -> pd.Da
                 anio,
                 mes,
                 id_version_forecast,
-                observaciones
+                observaciones,
+                cve_doc_sae,
+                folio_sae,
+                fecha_generado_sae
             FROM compras_solicitudes_mp_inventario_detalle
             WHERE id_solicitud_compra = %s
             ORDER BY id_detalle_mp_inv
@@ -759,9 +762,38 @@ def get_detalle_solicitud_mp_inventario_model(id_solicitud_compra: int) -> pd.Da
                 "mes",
                 "id_version_forecast",
                 "observaciones",
+                "cve_doc_sae",
+                "folio_sae",
+                "fecha_generado_sae",
             ])
 
         return pd.DataFrame(rows)
+
+    finally:
+        conn.close()
+
+
+def obtener_mp_solicitadas_sae_model(anio: int, meses: list[int]) -> pd.DataFrame:
+    """(cve_mp, mes) ya generados como Orden de Compra en SAE (cve_doc_sae NO
+    nulo) para ese año — usado en Compras -> Demanda (Forecast) para marcar
+    qué ya se solicitó, evitar duplicar solicitudes sobre lo mismo."""
+    if not meses:
+        return pd.DataFrame(columns=["cve_mp", "mes", "folio_sae"])
+
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        placeholders = ",".join(["%s"] * len(meses))
+        sql = f"""
+            SELECT DISTINCT cve_mp, mes, folio_sae
+            FROM compras_solicitudes_mp_inventario_detalle
+            WHERE anio = %s
+              AND mes IN ({placeholders})
+              AND cve_doc_sae IS NOT NULL
+        """
+        cur.execute(sql, (int(anio), *[int(m) for m in meses]))
+        rows = cur.fetchall() or []
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["cve_mp", "mes", "folio_sae"])
 
     finally:
         conn.close()

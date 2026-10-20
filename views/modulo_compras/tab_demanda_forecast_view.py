@@ -14,7 +14,15 @@ from controllers.forecast_controller import (
     clientes_por_producto_ctrl,
     _catalogo_productos_sae,
 )
-from controllers.forecast_autorizacion_controller import calcular_necesidad_compra_consolidada_ctrl
+from controllers.forecast_autorizacion_controller import (
+    calcular_necesidad_compra_consolidada_ctrl,
+    desglosar_necesidad_mp_ctrl,
+)
+from controllers.compras_solicitudes_controller import (
+    obtener_tipo_compra_mp_inventario_ctrl,
+    crear_solicitud_mp_inventario_ctrl,
+    obtener_mp_solicitadas_sae_ctrl,
+)
 from settings import BASE_DIR
 
 
@@ -31,6 +39,20 @@ _ORIGEN_LABEL_PDF = {
     "autorizado": "Autorizado",
     "presupuesto (fallback)": "Presupuesto (pendiente de autorizar)",
 }
+
+
+def _get_usuario_actual():
+    return st.session_state.get("usuario") or {}
+
+
+def _get_solicitante_actual() -> str:
+    usuario = _get_usuario_actual()
+    return (
+        str(usuario.get("nombre") or "").strip()
+        or str(usuario.get("username") or "").strip()
+        or str(usuario.get("email") or "").strip()
+        or ""
+    )
 
 # por cada mes se repiten estas 5 columnas. Resultado = Stock - Forecast + DP
 # (sin acotar a 0, puede quedar negativo) y ES el Stock del mes siguiente —
@@ -358,6 +380,76 @@ def _generar_reporte_necesidad_pdf(
     return buf.getvalue()
 
 
+def _renderizar_desglose_mp(desglose: dict, cve_mp: str, nombre_producto: str) -> None:
+    """Pinta el desglose de `desglosar_necesidad_mp_ctrl`: mes a mes, venta
+    directa (si la hay) + cada producto terminado que explica la demanda vía
+    fórmula, con de dónde sale la venta consolidada de ESE PT (vendedor,
+    autorizado/fallback, y si es fallback qué líneas de Presupuesto de
+    Ventas lo arman)."""
+    st.markdown(f"#### 🔍 {cve_mp} — {nombre_producto}")
+    meses = desglose.get("meses", [])
+    if not meses:
+        st.info("sin meses para desglosar")
+        return
+
+    for mes in meses:
+        directo = desglose["directo"].get(mes, [])
+        formula = desglose["formula"].get(mes, [])
+        total_directo = sum(f["valor"] for f in directo)
+        total_formula = sum(f["aporte"] for f in formula)
+        total_mes = total_directo + total_formula
+
+        with st.expander(
+            f"{_MESES[mes].upper()} — Forecast total: {total_mes:,.2f} kg",
+            expanded=(mes == meses[0]),
+        ):
+            if not directo and not formula:
+                st.caption("sin demanda este mes.")
+                continue
+
+            if directo:
+                st.markdown("**venta directa de este producto**")
+                st.dataframe(
+                    pd.DataFrame([
+                        {"vendedor": f["vendedor"], "origen": f["origen"], "kg": f["valor"]}
+                        for f in directo
+                    ]),
+                    hide_index=True, use_container_width=True,
+                )
+
+            if formula:
+                st.markdown(
+                    "**vía fórmula** — producto terminado que usa esta materia prima como insumo, "
+                    "cruzado contra su propia venta consolidada y su existencia (almacén 18)"
+                )
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "PT": f["cve_pt"], "producto": f["producto_pt"], "rol en fórmula": f["rol"],
+                            "%": f["pct"], "venta forecast consolidada (kg)": f["venta_consolidada"],
+                            "stock PT inicio mes (kg)": f["existencia_pt_inicio"],
+                            "a producir (kg)": f["a_producir"], "aporte a esta MP (kg)": f["aporte"],
+                        }
+                        for f in formula
+                    ]),
+                    hide_index=True, use_container_width=True,
+                )
+
+                for f in formula:
+                    if not f["fuentes"]:
+                        continue
+                    st.caption(f"**{f['cve_pt']} ({f['producto_pt']})** — de dónde sale esa venta consolidada:")
+                    for fu in f["fuentes"]:
+                        st.caption(f"- {fu['vendedor']} · {fu['origen']} · {fu['valor']:,.2f} kg")
+                        if fu.get("lineas"):
+                            st.dataframe(
+                                pd.DataFrame(fu["lineas"]).rename(columns={
+                                    "cliente": "cliente", "cve_clie": "cve cliente", "cantidad_kg": "kg",
+                                }),
+                                hide_index=True, use_container_width=True,
+                            )
+
+
 def mostrar_tab_demanda_forecast() -> None:
     st.caption(
         "Necesidad de **materia prima** consolidada de todos los vendedores — los productos "
@@ -552,6 +644,154 @@ def mostrar_tab_demanda_forecast() -> None:
         )
 
     st.divider()
+    st.markdown("### 🛒 generar solicitud de compra")
+    st.caption(
+        "Arma una Solicitud de Compra (tipo *Materia Prima (Inventario)*) con la necesidad "
+        "calculada arriba — filtra por línea, desmarca lo que no quieras incluir y ajusta "
+        "cantidades antes de guardar. La trazabilidad (línea, mes, origen, vendedor) queda en "
+        "las observaciones de cada renglón."
+    )
+
+    preview_key = f"comp_fc_solicitud_preview_{anio_sel}"
+    if st.button("🛒 generar solicitud de compra", key="comp_fc_btn_generar_solicitud"):
+        df_nec = df_f[pd.to_numeric(df_f["necesidad"], errors="coerce") > 0].copy()
+        if df_nec.empty:
+            st.warning("no hay productos con necesidad > 0 para generar una solicitud")
+            st.session_state.pop(preview_key, None)
+        else:
+            filas_propuesta = []
+            for r in df_nec.to_dict("records"):
+                origen_txt = _ORIGEN_LABEL_PDF.get(r["origen_forecast"], str(r["origen_forecast"]))
+                linea_txt = str(r.get("linea") or "").strip() or "(sin línea SAE)"
+                mn = _MESES[int(r["mes"])].upper()
+                obs = (
+                    f"Línea: {linea_txt} · Mes: {mn} · Origen: {origen_txt} · "
+                    f"Vendedor(es): {r.get('vendedores') or '-'}"
+                )
+                filas_propuesta.append({
+                    "incluir": True,
+                    "cve_mp": r["cve_prod"],
+                    "mp_nombre": r["producto"],
+                    "linea": linea_txt,
+                    "mes_nombre": mn,
+                    "cantidad_kg": round(float(r["necesidad"]), 2),
+                    "existencia_mp_kg": round(float(r.get("existencia_inicio") or 0.0), 2),
+                    "anio": int(anio_sel),
+                    "mes": int(r["mes"]),
+                    "observaciones": obs,
+                })
+            st.session_state[preview_key] = pd.DataFrame(filas_propuesta)
+
+    df_preview = st.session_state.get(preview_key)
+    if df_preview is not None and not df_preview.empty:
+        lineas_preview = sorted(df_preview["linea"].unique())
+        linea_filtro_sel = st.multiselect(
+            "filtrar por línea (solo para revisar más fácil — no excluye nada por sí solo)",
+            options=lineas_preview, default=[], key=f"comp_fc_solicitud_linea_filtro_{anio_sel}",
+        )
+        df_mostrar = (
+            df_preview if not linea_filtro_sel
+            else df_preview[df_preview["linea"].isin(linea_filtro_sel)]
+        )
+
+        df_editado = st.data_editor(
+            df_mostrar,
+            hide_index=True,
+            use_container_width=True,
+            key=f"comp_fc_solicitud_editor_{anio_sel}",
+            column_config={
+                "incluir": st.column_config.CheckboxColumn("incluir"),
+                "cve_mp": st.column_config.TextColumn("cve MP", disabled=True),
+                "mp_nombre": st.column_config.TextColumn("materia prima", disabled=True),
+                "linea": st.column_config.TextColumn("línea", disabled=True),
+                "mes_nombre": st.column_config.TextColumn("mes", disabled=True),
+                "cantidad_kg": st.column_config.NumberColumn(
+                    "cantidad (kg)", min_value=0.0, step=1.0, format="%.2f",
+                ),
+                "existencia_mp_kg": st.column_config.NumberColumn(
+                    "stock hoy (kg)", disabled=True, format="%.2f",
+                ),
+                "observaciones": st.column_config.TextColumn(
+                    "trazabilidad", disabled=True, width="large",
+                ),
+            },
+            column_order=[
+                "incluir", "cve_mp", "mp_nombre", "linea", "mes_nombre",
+                "cantidad_kg", "existencia_mp_kg", "observaciones",
+            ],
+        )
+
+        # el editor solo trae las filas filtradas por línea — se combinan de
+        # vuelta con las que quedaron fuera del filtro para no perder sus
+        # ediciones previas al guardar
+        if linea_filtro_sel:
+            resto = df_preview[~df_preview["linea"].isin(linea_filtro_sel)]
+            df_preview_actualizado = pd.concat([df_editado, resto], ignore_index=True)
+        else:
+            df_preview_actualizado = df_editado
+        st.session_state[preview_key] = df_preview_actualizado
+
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            if st.button(
+                "💾 guardar solicitud", type="primary", use_container_width=True,
+                key=f"comp_fc_btn_guardar_solicitud_{anio_sel}",
+            ):
+                df_incluidas = df_preview_actualizado[
+                    df_preview_actualizado["incluir"].astype(bool)
+                    & (pd.to_numeric(df_preview_actualizado["cantidad_kg"], errors="coerce") > 0)
+                ]
+                if df_incluidas.empty:
+                    st.warning("no hay renglones marcados con cantidad > 0")
+                else:
+                    tipo_mp_inv = obtener_tipo_compra_mp_inventario_ctrl()
+                    if not tipo_mp_inv:
+                        st.error(
+                            "no existe el tipo de compra 'Materia Prima (Inventario)' activo — "
+                            "revisa Compras → Catálogos."
+                        )
+                    else:
+                        detalle = [
+                            {
+                                "cve_mp": str(r["cve_mp"]),
+                                "mp_nombre": str(r["mp_nombre"]),
+                                "cantidad_kg": float(r["cantidad_kg"]),
+                                "existencia_mp_kg": float(r["existencia_mp_kg"]),
+                                "anio": int(r["anio"]),
+                                "mes": int(r["mes"]),
+                                "id_version_forecast": None,
+                                "observaciones": str(r["observaciones"]),
+                            }
+                            for _, r in df_incluidas.iterrows()
+                        ]
+                        ok, mensaje = crear_solicitud_mp_inventario_ctrl(
+                            id_tipo_compra=int(tipo_mp_inv["id_tipo_compra"]),
+                            fecha_solicitud=date.today(),
+                            solicitante=_get_solicitante_actual(),
+                            observaciones_generales=(
+                                "Solicitud generada desde Compras → Demanda (Forecast) — "
+                                f"año {anio_sel}, meses {', '.join(_MESES[m].upper() for m in meses_sel)}"
+                            ),
+                            detalle=detalle,
+                        )
+                        if ok:
+                            st.success(
+                                f"{mensaje}. Ve a Solicitudes → Pendientes para revisarla y "
+                                "enviarla a autorización."
+                            )
+                            st.session_state.pop(preview_key, None)
+                            st.rerun()
+                        else:
+                            st.error(mensaje)
+        with col_g2:
+            if st.button(
+                "cancelar", use_container_width=True,
+                key=f"comp_fc_btn_cancelar_solicitud_{anio_sel}",
+            ):
+                st.session_state.pop(preview_key, None)
+                st.rerun()
+
+    st.divider()
     st.caption(
         "🔒 cve prod, producto, tiempo de resurtido y línea quedan fijos al hacer scroll — "
         "Resultado = Stock - Forecast + DP (si queda en rojo/negativo, se arrastra "
@@ -562,6 +802,22 @@ def mostrar_tab_demanda_forecast() -> None:
         "ya cubiertos por ese pedido."
     )
     tabla = _construir_tabla_mensual(df_f, meses_sel).sort_values("Necesidad total", ascending=False)
+
+    # qué (producto, mes) ya se generó como Orden de Compra en SAE —
+    # evita volver a pedirlo por error (siempre vacío hasta que exista la
+    # generación en SAE, ver Fase 2 del plan)
+    df_solicitadas_sae = obtener_mp_solicitadas_sae_ctrl(int(anio_sel), meses_sel)
+    solicitadas_por_prod: dict[str, list[str]] = {}
+    if df_solicitadas_sae is not None and not df_solicitadas_sae.empty:
+        for r in df_solicitadas_sae.to_dict("records"):
+            cve = str(r.get("cve_mp") or "").strip()
+            mn = _MESES.get(int(r.get("mes") or 0), "").upper()
+            folio = str(r.get("folio_sae") or "").strip()
+            if cve and mn:
+                solicitadas_por_prod.setdefault(cve, []).append(f"{mn} (folio {folio})" if folio else mn)
+    tabla["🛒 solicitada SAE"] = tabla["cve_prod"].map(
+        lambda c: ", ".join(solicitadas_por_prod.get(str(c).strip(), []))
+    )
 
     cols_orden = ["cve_prod", "producto", "tiempo_resurtido", "linea"]
     cols_numericas = ["Necesidad total"]
@@ -574,7 +830,7 @@ def mostrar_tab_demanda_forecast() -> None:
             cols_numericas.append(col)
             if etiqueta == "Resultado":
                 cols_resultado.add(col)
-    cols_orden += ["Necesidad total", "origen", "vendedores"]
+    cols_orden += ["Necesidad total", "origen", "vendedores", "🛒 solicitada SAE"]
 
     tabla["tiempo_resurtido"] = pd.to_numeric(tabla["tiempo_resurtido"], errors="coerce")
     for col in cols_numericas:
@@ -593,6 +849,7 @@ def mostrar_tab_demanda_forecast() -> None:
     gb.configure_column("linea", headerName="línea", pinned="left", width=120)
     gb.configure_column("origen", headerName="origen del forecast", width=200)
     gb.configure_column("vendedores", headerName="vendedor(es)", width=220)
+    gb.configure_column("🛒 solicitada SAE", headerName="🛒 solicitada SAE", width=200)
     for col in cols_numericas:
         cell_style = _CELL_STYLE_RESULTADO_JS if col in cols_resultado else None
         gb.configure_column(
@@ -621,3 +878,44 @@ def mostrar_tab_demanda_forecast() -> None:
         mime="text/csv",
         key="comp_fc_dl_csv",
     )
+
+    st.divider()
+    st.markdown("### 🔍 desglosar un producto")
+    st.caption(
+        "Elige una materia prima para ver, mes a mes, de dónde sale su 'Forecast': venta directa "
+        "(si la vende alguien tal cual) y/o la venta consolidada del producto terminado que la usa "
+        "en su fórmula — cruzada contra la existencia de ese PT — con el vendedor y origen "
+        "(autorizado o presupuesto/fallback) de cada cifra, y las líneas de cliente que la arman."
+    )
+    opciones_desglose = {
+        f"{r['cve_prod']} - {r['producto']}": r["cve_prod"]
+        for r in tabla.sort_values("producto").to_dict("records")
+    }
+    if opciones_desglose:
+        col_sel, col_btn = st.columns([3, 1])
+        with col_sel:
+            label_sel = st.selectbox(
+                "producto a desglosar", options=list(opciones_desglose.keys()), key="comp_fc_desglose_sel",
+            )
+        with col_btn:
+            st.write("")
+            st.write("")
+            desglosar_click = st.button(
+                "🔍 desglosar", use_container_width=True, key="comp_fc_desglose_btn",
+            )
+
+        desglose_key = f"comp_fc_desglose_{anio_sel}"
+        if desglosar_click:
+            cve_mp_sel = opciones_desglose[label_sel]
+            nombre_sel = label_sel.split(" - ", 1)[1] if " - " in label_sel else label_sel
+            with st.spinner("calculando desglose…"):
+                desglose = desglosar_necesidad_mp_ctrl(cve_mp_sel, int(anio_sel), meses_sel)
+            st.session_state[desglose_key] = {
+                "cve_mp": cve_mp_sel, "nombre": nombre_sel, "data": desglose,
+            }
+
+        desglose_guardado = st.session_state.get(desglose_key)
+        if desglose_guardado:
+            _renderizar_desglose_mp(
+                desglose_guardado["data"], desglose_guardado["cve_mp"], desglose_guardado["nombre"],
+            )

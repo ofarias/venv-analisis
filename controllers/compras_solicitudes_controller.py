@@ -19,11 +19,13 @@ from models.compras_solicitudes_model import (
     get_detalle_solicitud_estandar_model,
     crear_solicitud_mp_inventario_detalle_model,
     get_detalle_solicitud_mp_inventario_model,
+    obtener_mp_solicitadas_sae_model,
 )
 
 from models.sae45_model import buscar_producto_sae
 
 from utils.envio_correo import enviar_correo
+from controllers.solicitudes_controller import get_correos_usuarios_por_rol_ctrl
 
 def obtener_tipos_compra_activos_ctrl():
     return get_tipos_compra_activos_model()
@@ -106,9 +108,24 @@ def enviar_solicitud_compra_ctrl(id_solicitud_compra: int, token=None):
     if not ok:
         return False, "no se pudo actualizar el estatus"
 
-    correos = get_correos_roles_compras_model()
+    # Materia Prima (Inventario) tiene su propio circuito de autorización
+    # (SuperAdmin/forecastAdmin, ver autorizar_solicitud_compra_ctrl) — se
+    # notifica a esos roles en vez de a Compras MP/Compras Admin, que son
+    # quienes atienden los demás tipos de compra (sin autorización, solo
+    # notificación).
+    tipo_formulario = str(cab.get("tipo_formulario") or "").strip().upper()
+    if tipo_formulario == "MP_INV":
+        correos = list({
+            *get_correos_usuarios_por_rol_ctrl("SuperAdmin"),
+            *get_correos_usuarios_por_rol_ctrl("forecastAdmin"),
+        })
+        rol_destino = "SuperAdmin/forecastAdmin"
+    else:
+        correos = get_correos_roles_compras_model()
+        rol_destino = "Compras MP o Compras Admin"
+
     if not correos:
-        return True, "solicitud enviada, pero no se encontraron correos de Compras MP o Compras Admin"
+        return True, f"solicitud enviada, pero no se encontraron correos de {rol_destino}"
 
     asunto = f"nueva solicitud de compra enviada #{id_solicitud_compra}"
 
@@ -130,12 +147,14 @@ def enviar_solicitud_compra_ctrl(id_solicitud_compra: int, token=None):
     """
 
     destinatario = ", ".join(correos)
+    remitente = str((st.session_state.get("usuario") or {}).get("email") or "").strip()
 
     ok_mail, msg_mail = enviar_correo(
         destinatario=destinatario,
         asunto=asunto,
         cuerpo_html=cuerpo_html,
         token=token,
+        remitente=remitente,
     )
 
     if ok_mail:
@@ -157,6 +176,46 @@ def eliminar_solicitud_compra_ctrl(id_solicitud_compra: int):
         return False, "no se pudo eliminar la solicitud"
 
     return True, "solicitud eliminada correctamente"
+
+
+def autorizar_solicitud_compra_ctrl(id_solicitud_compra: int, usuario_nombre: str):
+    """Autoriza una solicitud 'enviada' — hoy solo lo usa el tipo Materia
+    Prima (Inventario) (ver Compras -> Autorizaciones), SuperAdmin/
+    forecastAdmin."""
+    cab = get_cabecera_solicitud_compra_model(id_solicitud_compra)
+    if not cab:
+        return False, "no se encontró la solicitud"
+
+    estatus_actual = str(cab.get("estatus") or "").strip().lower()
+    if estatus_actual != "enviada":
+        return False, "solo se pueden autorizar solicitudes enviadas"
+
+    ok = cambiar_estatus_solicitud_compra_model(id_solicitud_compra, "autorizada")
+    if not ok:
+        return False, "no se pudo actualizar el estatus"
+
+    return True, f"solicitud #{id_solicitud_compra} autorizada por {usuario_nombre}"
+
+
+def rechazar_solicitud_compra_ctrl(id_solicitud_compra: int, usuario_nombre: str, motivo: str = ""):
+    cab = get_cabecera_solicitud_compra_model(id_solicitud_compra)
+    if not cab:
+        return False, "no se encontró la solicitud"
+
+    estatus_actual = str(cab.get("estatus") or "").strip().lower()
+    if estatus_actual != "enviada":
+        return False, "solo se pueden rechazar solicitudes enviadas"
+
+    ok = cambiar_estatus_solicitud_compra_model(id_solicitud_compra, "rechazada")
+    if not ok:
+        return False, "no se pudo actualizar el estatus"
+
+    return True, f"solicitud #{id_solicitud_compra} rechazada por {usuario_nombre}" + (f" — {motivo}" if motivo else "")
+
+
+def obtener_mp_solicitadas_sae_ctrl(anio: int, meses: list[int]):
+    return obtener_mp_solicitadas_sae_model(anio=anio, meses=meses)
+
 
 def buscar_productos_sae_ctrl(q: str = "", limit: int = 50) -> list[dict]:
     return buscar_producto_sae(st.secrets, q=q, limit=limit)

@@ -12,6 +12,7 @@ from models.forecast_autorizacion_model import (
     upsert_forecast_mes_estatus_model,
 )
 from models.presupuesto_ventas_sae_model import obtener_catalogo_productos_pv_model
+from models.presupuesto_ventas_model import obtener_presupuesto_ventas_model
 from models.formulas_readonly_model import listar_formulas_readonly_model
 from models.formulas_model import listar_mp_sae_model, listar_pt_sae_model
 from utils.forecast_engine import calcular_necesidad_compra_dp_producto
@@ -347,3 +348,178 @@ def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> p
             })
 
     return pd.DataFrame(filas) if filas else pd.DataFrame()
+
+
+def _lineas_presupuesto_fallback(usuario_id: int, anio: int, mes: int, cve_prod: str) -> list[dict]:
+    """Líneas de Presupuesto de Ventas (del dueño `usuario_id`, ya
+    autorizadas) que arman el total usado como fallback para `cve_prod` en
+    `mes` — para poder mostrar, ej., qué cliente(s) componen un total
+    consolidado (ver `desglosar_necesidad_mp_ctrl`)."""
+    try:
+        df = obtener_presupuesto_ventas_model(
+            anio=anio, mes=mes, cve_prod=cve_prod, usuario_id=usuario_id, solo_autorizados=True,
+        )
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    df = df[df["seccion"] == "KG"]
+    if df.empty:
+        return []
+    return [
+        {
+            "cliente": str(r.get("cliente_excel") or "").strip(),
+            "cve_clie": str(r.get("cve_clie") or "").strip(),
+            "cantidad_kg": float(r.get("cantidad_kg") or 0.0),
+        }
+        for r in df.to_dict("records")
+        if float(r.get("cantidad_kg") or 0.0)
+    ]
+
+
+@st.cache_data(ttl=300, show_spinner="calculando desglose…")
+def desglosar_necesidad_mp_ctrl(cve_mp: str, anio: int, meses: list[int]) -> dict:
+    """Desglose, mes a mes, de cómo se arma el "Forecast" (demanda) de UNA
+    materia prima en el consolidado de Compras -> Demanda — mismo cálculo
+    que `calcular_necesidad_compra_consolidada_ctrl`, pero conservando la
+    atribución (qué vendedor, autorizado o presupuesto/fallback, y si es
+    fallback qué líneas de Presupuesto de Ventas lo componen) en vez de solo
+    el total ya sumado. Dos fuentes posibles, no excluyentes:
+    - "directo": la propia materia prima tiene forecast/presupuesto de venta
+      (alguien la vende directamente, ej. para reventa).
+    - "formula": viene de un producto terminado que la usa como insumo
+      (carrier/enzima/auxiliar) — se cruza la venta consolidada de ESE PT
+      contra su existencia (almacén 18) mes a mes, igual que en el
+      consolidado real, y se expone el % que le toca a esta materia prima.
+
+    Retorna {"meses": [...], "directo": {mes: [fuente,...]},
+    "formula": {mes: [{"cve_pt","producto_pt","rol","pct",
+    "venta_consolidada","existencia_pt_inicio","a_producir","aporte",
+    "fuentes":[...]}]}} — cada "fuente" es
+    {"vendedor","origen","valor","id_version","lineas"} (lineas solo si
+    origen es fallback)."""
+    cve_mp = str(cve_mp).strip().upper()
+    meses_ordenados = sorted(meses)
+
+    df_versiones = obtener_forecast_versiones_ctrl(usuario_id=0, anio=anio, ver_todas=True)
+    if df_versiones is None or df_versiones.empty:
+        return {"meses": meses_ordenados, "directo": {m: [] for m in meses_ordenados}, "formula": {m: [] for m in meses_ordenados}}
+
+    # fórmulas que usan cve_mp como componente (carrier/enzima/auxiliar)
+    try:
+        formulas = listar_formulas_readonly_model()
+    except Exception:
+        formulas = []
+    pts_relevantes: dict[str, tuple[str, float]] = {}
+    for f in formulas:
+        cve_sae = str(f.get("cve_sae") or "").strip()
+        if not cve_sae:
+            continue
+        componentes = []
+        carrier = f.get("carrier")
+        if isinstance(carrier, dict) and carrier.get("mp"):
+            componentes.append(("carrier", carrier))
+        for grupo in ("enzimas", "auxiliares"):
+            for c in (f.get(grupo) or []):
+                if isinstance(c, dict) and c.get("mp"):
+                    componentes.append((grupo, c))
+        for rol, c in componentes:
+            if str(c.get("mp") or "").strip().upper() == cve_mp:
+                pts_relevantes[cve_sae] = (rol, float(c.get("pct") or 0))
+
+    cve_prods_fuente = {cve_mp} | set(pts_relevantes.keys())
+
+    # venta consolidada CON atribución, solo de los cve_prod relevantes
+    # (la propia materia prima + los PT que la usan en su fórmula)
+    venta_acc: dict[tuple[str, int], float] = {}
+    fuentes: dict[tuple[str, int], list[dict]] = {}
+
+    for v in df_versiones.to_dict("records"):
+        id_version = int(v["id_version"])
+        usuario_id_v = int(v.get("usuario_id") or 0)
+        nombre_v = str(v.get("propietario") or f"usuario {usuario_id_v}")
+
+        df_estatus = obtener_forecast_mes_estatus_ctrl(id_version=id_version, anio=anio)
+        estatus_venta: dict[int, str] = {}
+        if df_estatus is not None and not df_estatus.empty:
+            for r in df_estatus.to_dict("records"):
+                if r["tipo"] == "venta":
+                    estatus_venta[int(r["mes"])] = r["estatus"]
+
+        df_fc_venta = obtener_forecast_detalle_ctrl(id_version=id_version, seccion="KG", tipo="venta")
+        df_pv_v = obtener_presupuesto_resumen_por_anio_ctrl(
+            anio=anio, seccion="KG", region=None, usuario_id=usuario_id_v, solo_autorizados=True,
+        )
+
+        for mes in meses_ordenados:
+            autorizado = estatus_venta.get(mes) == "autorizada"
+            if autorizado and df_fc_venta is not None and not df_fc_venta.empty:
+                df_mes = df_fc_venta[pd.to_numeric(df_fc_venta["mes"], errors="coerce") == mes]
+                col_valor = "forecast"
+            elif df_pv_v is not None and not df_pv_v.empty:
+                df_mes = df_pv_v[pd.to_numeric(df_pv_v["mes"], errors="coerce") == mes]
+                col_valor = "total_kg"
+            else:
+                continue
+            if df_mes is None or df_mes.empty or col_valor not in df_mes.columns:
+                continue
+
+            for r in df_mes.to_dict("records"):
+                cve = str(r.get("cve_prod") or "").strip()
+                if cve not in cve_prods_fuente:
+                    continue
+                valor = float(r.get(col_valor) or 0.0)
+                if not valor:
+                    continue
+                key = (cve, mes)
+                venta_acc[key] = venta_acc.get(key, 0.0) + valor
+                origen = "autorizado" if autorizado else "presupuesto (fallback)"
+                lineas = _lineas_presupuesto_fallback(usuario_id_v, anio, mes, cve) if not autorizado else None
+                fuentes.setdefault(key, []).append({
+                    "vendedor": nombre_v, "origen": origen, "valor": round(valor, 2),
+                    "id_version": id_version, "lineas": lineas,
+                })
+
+    directo = {mes: fuentes.get((cve_mp, mes), []) for mes in meses_ordenados}
+
+    # explosión de fórmula, igual que en el consolidado real — arrastre de
+    # existencia PT mes a mes, solo para los PT que sí usan esta MP
+    try:
+        rows_pt = listar_pt_sae_model()
+        df_pt_exist = pd.DataFrame(rows_pt) if rows_pt else pd.DataFrame()
+    except Exception:
+        df_pt_exist = pd.DataFrame()
+    if not df_pt_exist.empty:
+        df_pt_exist.columns = [c.lower() for c in df_pt_exist.columns]
+    pt_exist_map: dict = {}
+    pt_nombre_map: dict = {}
+    if not df_pt_exist.empty and "cve_art" in df_pt_exist.columns:
+        for r in df_pt_exist.to_dict("records"):
+            cve = str(r.get("cve_art") or "").strip().upper()
+            if cve:
+                pt_exist_map[cve] = float(r.get("exist") or 0)
+                pt_nombre_map[cve] = str(r.get("descr") or cve).strip()
+
+    formula_detalle: dict[int, list[dict]] = {mes: [] for mes in meses_ordenados}
+    for cve_pt, (rol, pct) in pts_relevantes.items():
+        stock_pt = pt_exist_map.get(cve_pt.strip().upper(), 0.0)
+        for mes in meses_ordenados:
+            fc_kg = venta_acc.get((cve_pt, mes), 0.0)
+            existencia_pt_mes = stock_pt
+            a_producir_kg = max(0.0, fc_kg - existencia_pt_mes)
+            stock_pt = max(0.0, existencia_pt_mes - fc_kg)
+            aporte = a_producir_kg * (pct / 100) if a_producir_kg > 0 else 0.0
+            if fc_kg or aporte:
+                formula_detalle[mes].append({
+                    "cve_pt": cve_pt,
+                    "producto_pt": pt_nombre_map.get(cve_pt.strip().upper(), cve_pt),
+                    "rol": rol,
+                    "pct": pct,
+                    "venta_consolidada": round(fc_kg, 2),
+                    "existencia_pt_inicio": round(existencia_pt_mes, 2),
+                    "a_producir": round(a_producir_kg, 2),
+                    "aporte": round(aporte, 3),
+                    "fuentes": fuentes.get((cve_pt, mes), []),
+                })
+
+    return {"meses": meses_ordenados, "directo": directo, "formula": formula_detalle}

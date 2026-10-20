@@ -77,7 +77,7 @@ def _mostrar_detalle_mp_inventario(id_solicitud: int):
 
     cols_det = [
         "cve_mp", "mp_nombre", "cantidad_kg", "existencia_mp_kg",
-        "anio", "mes", "observaciones",
+        "anio", "mes", "observaciones", "folio_sae", "fecha_generado_sae",
     ]
     cols_det = [c for c in cols_det if c in df_show.columns]
 
@@ -85,6 +85,29 @@ def _mostrar_detalle_mp_inventario(id_solicitud: int):
         df_show[cols_det],
         use_container_width=True,
         hide_index=True,
+    )
+
+
+def _mostrar_accion_generar_sae(cab: dict):
+    """Punto de enganche para la Fase 2 del plan (generar la Orden de Compra
+    real en SAE, tabla COMPO01/PAR_COMPO01) — todavía no implementada: faltan
+    por confirmar proveedor, precio/costo por línea y la fórmula exacta de
+    CVE_DOC/FOLIO antes de escribir el INSERT (ver plan). Mientras tanto solo
+    informa el estatus, sin ofrecer un botón que no hace nada real."""
+    estatus_actual = str(cab.get("estatus") or "").strip().lower()
+    if estatus_actual != "autorizada":
+        return
+
+    usuario = st.session_state.get("usuario") or {}
+    roles = usuario.get("roles", [])
+    if not ("SuperAdmin" in roles or "forecastAdmin" in roles):
+        return
+
+    st.info(
+        "✅ solicitud autorizada — pendiente generarla como Orden de Compra en SAE. "
+        "Esa parte todavía no está automatizada en la app (falta confirmar proveedor, "
+        "precio/costo y numeración con SAE); mientras tanto, créala manualmente en SAE "
+        "con estos datos y notifícalo."
     )
 
 
@@ -270,5 +293,6 @@ def mostrar_tab_solicitudes_pendientes():
     elif tipo_formulario == "MP_INV":
         st.markdown("#### detalle de materia prima (inventario)")
         _mostrar_detalle_mp_inventario(id_solicitud)
+        _mostrar_accion_generar_sae(cab)
     else:
         _mostrar_detalle_estandar(id_solicitud)
