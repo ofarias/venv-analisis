@@ -85,15 +85,28 @@ def mostrar_tab_autorizaciones_compras():
         st.markdown("#### cabecera")
         g1, g2, g3 = st.columns(3)
         with g1:
-            st.text_input("id solicitud", value=str(cab.get("id_solicitud_compra") or ""), disabled=True)
-            st.text_input("solicitante", value=str(cab.get("solicitante") or ""), disabled=True)
+            st.text_input(
+                "id solicitud", value=str(cab.get("id_solicitud_compra") or ""), disabled=True,
+                key=f"aut_compras_id_{id_solicitud}",
+            )
+            st.text_input(
+                "solicitante", value=str(cab.get("solicitante") or ""), disabled=True,
+                key=f"aut_compras_solicitante_{id_solicitud}",
+            )
         with g2:
-            st.text_input("fecha solicitud", value=str(cab.get("fecha_solicitud") or ""), disabled=True)
-            st.text_input("estatus", value=str(cab.get("estatus") or ""), disabled=True)
+            st.text_input(
+                "fecha solicitud", value=str(cab.get("fecha_solicitud") or ""), disabled=True,
+                key=f"aut_compras_fecha_{id_solicitud}",
+            )
+            st.text_input(
+                "estatus", value=str(cab.get("estatus") or ""), disabled=True,
+                key=f"aut_compras_estatus_{id_solicitud}",
+            )
         with g3:
             st.text_area(
                 "observaciones generales",
                 value=str(cab.get("observaciones_generales") or ""), disabled=True, height=90,
+                key=f"aut_compras_obs_{id_solicitud}",
             )
 
         st.markdown("#### detalle — necesidad de materia prima a autorizar")
