@@ -36,6 +36,155 @@ function(params) {
 _MESES = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
           7: "jul", 8: "ago", 9: "sep", 10: "oct", 11: "nov", 12: "dic"}
 
+# diagrama del flujo de reglas de autorización + envío por línea de Materia
+# Prima (Inventario) — mismo contenido que se compartió como Artifact, pero
+# fijo dentro de la app (st.dialog) para que no dependa de un link externo
+# de claude.ai ni de que el resto del equipo tenga acceso a esa cuenta.
+_FLUJO_MP_INV_HTML = """
+<style>
+  body { margin:0; background:#fbfaf7; font-family:system-ui,-apple-system,sans-serif; }
+  .wrap { overflow-x:auto; padding:8px 4px 16px; }
+  .mermaid { min-width:920px; }
+  .legend { display:flex; flex-wrap:wrap; gap:8px 18px; font-size:12.5px; color:#5b6560; padding:0 4px 10px; }
+  .legend .item { display:flex; align-items:center; gap:6px; }
+  .swatch { width:12px; height:12px; border-radius:3px; flex:none; border:1.5px solid transparent; }
+  .toolbar { padding:0 4px 10px; }
+  #btn-descargar {
+    font-family:inherit; font-size:13px; padding:7px 14px; border-radius:7px;
+    border:1px solid #2f6b5e; background:#2f6b5e; color:#fff; cursor:pointer;
+  }
+  #btn-descargar:disabled { opacity:.5; cursor:default; }
+</style>
+<div class="toolbar">
+  <button id="btn-descargar" disabled>⬇️ descargar como imagen (PNG)</button>
+</div>
+<div class="legend">
+  <div class="item"><span class="swatch" style="background:#e3efe9;border-color:#2f6b5e;"></span>Proceso / dato</div>
+  <div class="item"><span class="swatch" style="background:#fdf1dd;border-color:#b5760b;"></span>Decisión</div>
+  <div class="item"><span class="swatch" style="background:#e6f4ea;border-color:#2f7d4f;"></span>Resultado aprobado</div>
+  <div class="item"><span class="swatch" style="background:#fbe9e9;border-color:#b23b3b;"></span>Rechazado / requiere autorización</div>
+  <div class="item"><span class="swatch" style="background:#eceeec;border-color:#454f4a;"></span>Estatus de la cabecera</div>
+</div>
+<div class="wrap">
+<pre class="mermaid">
+flowchart TD
+    classDef proceso fill:#e3efe9,stroke:#2f6b5e,color:#1c3a32
+    classDef decision fill:#fdf1dd,stroke:#b5760b,color:#4a3210
+    classDef ok fill:#e6f4ea,stroke:#2f7d4f,color:#16401f
+    classDef no fill:#fbe9e9,stroke:#b23b3b,color:#541c1c
+    classDef cabecera fill:#eceeec,stroke:#454f4a,color:#20251f,stroke-width:2px
+
+    subgraph S1["1 . Generar - Demanda (Forecast)"]
+        A1["Calcula necesidad por producto y mes"] --> A2["Captura Precio USD por linea<br/>+ Cantidad a Solicitar"]
+        A2 --> A3["Guarda solicitud<br/>cabecera = captura"]
+    end
+
+    subgraph S2["2 . Pendientes - tablero de control"]
+        B1["Una fila por materia prima<br/>(solo lineas con estatus = captura)"]
+        B1 --> B2{"Marca checkbox<br/>y elige accion"}
+        B2 -->|eliminar| B3["Sale de la solicitud"]
+        B2 -->|"enviar a autorizar"| C1
+    end
+
+    subgraph S3["3 . Motor de reglas - por unidad de negocio"]
+        C1["Agrupa las lineas marcadas<br/>por linea de negocio"] --> C2{"¿Precio USD completo<br/>en todos los renglones?"}
+        C2 -->|no| C6["Sin monto confiable"]
+        C2 -->|si| C3["Monto MXN = Σ(kg x USD) x tipo de cambio SAE"]
+        C3 --> C4["Busca la regla mas especifica<br/>usuario / tipo / linea"]
+        C4 --> C5{"¿monto mayor o igual<br/>al limite por solicitud?"}
+        C5 -->|si| C6
+        C5 -->|no| C7{"¿acumulado autorizado del mes<br/>+ este monto supera el limite mensual?"}
+        C7 -->|si| C6
+        C7 -->|no| C8["Se autoriza sola"]
+    end
+
+    C8 --> D1["estatus de linea = autorizada"]
+    C6 --> D2["estatus de linea = enviada<br/>(receptores de la regla, o el destino<br/>por defecto si ninguna regla aplico)"]
+
+    subgraph S4["4 . Autorizaciones - solo lineas 'enviada'"]
+        D2 --> E1["Cola por linea:<br/>receptor asignado o SuperAdmin / forecastAdmin"]
+        E1 --> E2{"Autorizar o rechazar"}
+        E2 -->|autorizar| D1
+        E2 -->|rechazar| D3["estatus de linea = rechazada"]
+    end
+
+    D1 --> F1{"¿Quedan lineas<br/>en captura?"}
+    D3 --> F1
+    F1 -->|si| B1
+    F1 -->|no| F2["Cabecera = enviada"]
+
+    F2 --> F3{"¿Quedan lineas<br/>'enviada' sin resolver?"}
+    F3 -->|si| E1
+    F3 -->|no| F4{"¿alguna linea<br/>quedo autorizada?"}
+    F4 -->|si| F5["Cabecera = autorizada<br/>-> lista para generar en SAE (fase 2, pendiente)"]
+    F4 -->|no| F6["Cabecera = rechazada"]
+
+    class A1,A2,A3,B1,C1,C3,C4,E1 proceso
+    class B2,C2,C5,C7,E2,F1,F3,F4 decision
+    class C8,D1,F5 ok
+    class C6,D3,F6 no
+    class F2 cabecera
+</pre>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: false, theme: "base" });
+  mermaid.run().then(function () {
+    var btn = document.getElementById("btn-descargar");
+    btn.disabled = false;
+    btn.addEventListener("click", function () {
+      var svg = document.querySelector(".mermaid svg");
+      if (!svg) return;
+      var rect = svg.getBoundingClientRect();
+      var width = Math.ceil(rect.width) || 1200;
+      var height = Math.ceil(rect.height) || 800;
+      var escala = 2;
+
+      var clon = svg.cloneNode(true);
+      clon.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      clon.setAttribute("width", width);
+      clon.setAttribute("height", height);
+
+      var svgTexto = new XMLSerializer().serializeToString(clon);
+      var svgBlob = new Blob([svgTexto], { type: "image/svg+xml;charset=utf-8" });
+      var urlSvg = URL.createObjectURL(svgBlob);
+
+      var img = new Image();
+      img.onload = function () {
+        var canvas = document.createElement("canvas");
+        canvas.width = width * escala;
+        canvas.height = height * escala;
+        var ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#fbfaf7";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(urlSvg);
+        canvas.toBlob(function (pngBlob) {
+          var urlPng = URL.createObjectURL(pngBlob);
+          var link = document.createElement("a");
+          link.download = "flujo_autorizacion_mp_inventario.png";
+          link.href = urlPng;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(urlPng);
+        }, "image/png");
+      };
+      img.src = urlSvg;
+    });
+  });
+</script>
+"""
+
+
+@st.dialog("flujo de autorización — materia prima (inventario)", width="large")
+def _mostrar_dialog_flujo_mp_inv():
+    st.caption(
+        "Mismo diagrama que el resto del proceso explicó por fuera — queda fijo aquí para no "
+        "depender de un link externo."
+    )
+    st.components.v1.html(_FLUJO_MP_INV_HTML, height=690, scrolling=True)
+
 
 def _get_usuario_actual():
     return st.session_state.get("usuario") or {}
@@ -596,7 +745,15 @@ def mostrar_tab_solicitudes_pendientes():
         st.markdown("#### detalle de materias primas")
         _mostrar_detalle_materias_primas(id_solicitud)
     elif tipo_formulario == "MP_INV":
-        st.markdown("#### detalle de materia prima (inventario)")
+        col_h1, col_h2 = st.columns([4, 1])
+        with col_h1:
+            st.markdown("#### detalle de materia prima (inventario)")
+        with col_h2:
+            if st.button(
+                "📊 ver flujo", use_container_width=True,
+                key=f"btn_ver_flujo_mp_inv_{id_solicitud}",
+            ):
+                _mostrar_dialog_flujo_mp_inv()
         _mostrar_detalle_mp_inventario(id_solicitud, editable=(estatus_actual == "captura"))
         _mostrar_accion_generar_sae(cab)
     else:

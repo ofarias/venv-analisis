@@ -69,8 +69,9 @@ def _mostrar_lineas_mp_inventario_pendientes(usuario_id, es_superadmin: bool):
     ).round(2)
 
     df_show = df[[
-        "id_detalle_mp_inv", "id_solicitud_compra", "solicitante", "fecha_solicitud",
+        "id_solicitud_compra", "solicitante", "fecha_solicitud",
         "cve_mp", "mp_nombre", "linea", "cantidad_kg", "precio_usd", "costo_usd", "motivo_autorizacion",
+        "id_detalle_mp_inv",
     ]].rename(columns={
         "id_solicitud_compra": "solicitud", "mp_nombre": "materia prima", "linea": "línea",
         "cantidad_kg": "cantidad (kg)", "precio_usd": "precio USD", "costo_usd": "costo USD",
@@ -80,10 +81,13 @@ def _mostrar_lineas_mp_inventario_pendientes(usuario_id, es_superadmin: bool):
     gb = GridOptionsBuilder.from_dataframe(df_show)
     gb.configure_grid_options(autoSizeStrategy=None)
     gb.configure_default_column(editable=False, resizable=True, filter=True, sortable=True)
+    # el checkbox se pega a la PRIMERA columna del dataframe — por eso
+    # "solicitud" va primero y "id_detalle_mp_inv" (oculto, solo para
+    # identificar qué se marcó) va al final, nunca al inicio.
     gb.configure_selection(selection_mode="multiple", use_checkbox=True, header_checkbox=True)
-    gb.configure_column("id_detalle_mp_inv", hide=True)
     gb.configure_column("solicitud", pinned="left", width=100)
     gb.configure_column("solicitante", pinned="left", width=150)
+    gb.configure_column("id_detalle_mp_inv", hide=True)
     gb.configure_column("precio USD", valueFormatter=_VALUE_FORMATTER_USD_JS, width=110)
     gb.configure_column("costo USD", valueFormatter=_VALUE_FORMATTER_USD_JS, width=130)
     gb.configure_column("motivo", width=320, wrapText=True, autoHeight=True)

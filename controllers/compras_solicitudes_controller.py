@@ -568,11 +568,10 @@ def enviar_lineas_mp_inventario_ctrl(ids_detalle: list[int], token=None) -> tupl
     n_autorizadas = 0
     n_enviadas = 0
     receptor_ids_notificar: set[int] = set()
+    lineas_enviadas_detalle: list[dict] = []
     for linea in lineas_presentes:
-        ids_linea = [
-            int(f["id_detalle_mp_inv"]) for f in filas
-            if (str(f.get("linea") or "").strip() or None) == linea
-        ]
+        filas_linea = [f for f in filas if (str(f.get("linea") or "").strip() or None) == linea]
+        ids_linea = [int(f["id_detalle_mp_inv"]) for f in filas_linea]
         if not ids_linea:
             continue
         resultado = evaluar_autorizacion_ctrl(
@@ -593,6 +592,17 @@ def enviar_lineas_mp_inventario_ctrl(ids_detalle: list[int], token=None) -> tupl
         else:
             n_enviadas += len(ids_linea)
             receptor_ids_notificar.update(resultado.get("receptor_ids") or [])
+            for f in filas_linea:
+                cantidad = float(f.get("cantidad_kg") or 0.0)
+                precio = float(f.get("precio_usd") or 0.0) if f.get("precio_usd") not in (None, "") else None
+                lineas_enviadas_detalle.append({
+                    "mp_nombre": f.get("mp_nombre") or f.get("cve_mp") or "",
+                    "linea": linea or "-",
+                    "cantidad_kg": cantidad,
+                    "precio_usd": precio,
+                    "total_usd": round(cantidad * precio, 2) if precio is not None else None,
+                    "motivo": resultado.get("motivo", ""),
+                })
 
     if not hay_lineas_captura_mp_inventario_model(id_solicitud_compra):
         cambiar_estatus_solicitud_compra_model(id_solicitud_compra, "enviada")
@@ -613,13 +623,44 @@ def enviar_lineas_mp_inventario_ctrl(ids_detalle: list[int], token=None) -> tupl
             })
         if correos:
             asunto = f"líneas de materia prima enviadas a autorización — solicitud #{id_solicitud_compra}"
+            filas_tabla = "".join(
+                f"""
+                <tr>
+                  <td style="padding:4px 10px;border-bottom:1px solid #eee">{f['mp_nombre']}</td>
+                  <td style="padding:4px 10px;border-bottom:1px solid #eee">{f['linea']}</td>
+                  <td style="padding:4px 10px;border-bottom:1px solid #eee;text-align:right">{f['cantidad_kg']:,.2f}</td>
+                  <td style="padding:4px 10px;border-bottom:1px solid #eee;text-align:right">{f'${f["precio_usd"]:,.2f}' if f['precio_usd'] is not None else '—'}</td>
+                  <td style="padding:4px 10px;border-bottom:1px solid #eee;text-align:right"><b>{f'${f["total_usd"]:,.2f}' if f['total_usd'] is not None else '—'}</b></td>
+                </tr>
+                """
+                for f in lineas_enviadas_detalle
+            )
+            total_usd_general = sum(f["total_usd"] for f in lineas_enviadas_detalle if f["total_usd"] is not None)
+            motivo_general = next((f["motivo"] for f in lineas_enviadas_detalle if f["motivo"]), "")
             cuerpo_html = f"""
             <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
               <p>se enviaron {n_enviadas} línea(s) de materia prima a autorización.</p>
               <p>
                 <b>solicitud:</b> #{id_solicitud_compra}<br>
-                <b>solicitante:</b> {cab.get('solicitante', '')}
+                <b>solicitante:</b> {cab.get('solicitante', '')}<br>
+                <b>fecha:</b> {cab.get('fecha_solicitud', '')}
               </p>
+              <table style="border-collapse:collapse;margin-top:8px">
+                <thead>
+                  <tr style="background:#f5f5f5">
+                    <th style="padding:4px 10px;text-align:left">materia prima</th>
+                    <th style="padding:4px 10px;text-align:left">línea</th>
+                    <th style="padding:4px 10px;text-align:right">cantidad (kg)</th>
+                    <th style="padding:4px 10px;text-align:right">precio USD</th>
+                    <th style="padding:4px 10px;text-align:right">total USD</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas_tabla}
+                </tbody>
+              </table>
+              <p><b>total USD de esta solicitud:</b> ${total_usd_general:,.2f}</p>
+              {f'<p><b>motivo:</b> {motivo_general}</p>' if motivo_general else ''}
             </div>
             """
             destinatario = ", ".join(correos)
