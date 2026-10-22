@@ -21,7 +21,7 @@ from controllers.forecast_autorizacion_controller import (
 from controllers.compras_solicitudes_controller import (
     obtener_tipo_compra_mp_inventario_ctrl,
     crear_solicitud_mp_inventario_ctrl,
-    obtener_mp_solicitadas_sae_ctrl,
+    obtener_mp_con_solicitud_ctrl,
 )
 from settings import BASE_DIR
 
@@ -82,6 +82,13 @@ _VALUE_FORMATTER_MILES_JS = JsCode("""
 function(params) {
     if (params.value === null || params.value === undefined || params.value === '') return '';
     return Number(params.value).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+}
+""")
+
+_VALUE_FORMATTER_USD_JS = JsCode("""
+function(params) {
+    if (params.value === null || params.value === undefined || params.value === '') return '';
+    return '$' + Number(params.value).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
 """)
 
@@ -645,91 +652,213 @@ def mostrar_tab_demanda_forecast() -> None:
 
     st.divider()
     st.markdown("### 🛒 generar solicitud de compra")
+    meses_ventana = sorted(meses_sel)[:3]
+    meses_ventana_txt = ", ".join(_MESES[m].upper() for m in meses_ventana)
     st.caption(
         "Arma una Solicitud de Compra (tipo *Materia Prima (Inventario)*) con la necesidad "
-        "calculada arriba — filtra por línea, desmarca lo que no quieras incluir y ajusta "
-        "cantidades antes de guardar. La trazabilidad (línea, mes, origen, vendedor) queda en "
-        "las observaciones de cada renglón."
+        f"calculada arriba, acotada a los próximos {len(meses_ventana)} meses "
+        f"({meses_ventana_txt} — lo que tarda en llegar un pedido). Desmarca lo que no quieras "
+        "incluir y ajusta la **Cant. a Solicitar** de cada mes antes de guardar; lo que ya tiene "
+        "solicitud pendiente no se vuelve a proponer."
     )
 
     preview_key = f"comp_fc_solicitud_preview_{anio_sel}"
+    obs_key = f"comp_fc_solicitud_obs_{anio_sel}"
     if st.button("🛒 generar solicitud de compra", key="comp_fc_btn_generar_solicitud"):
-        df_nec = df_f[pd.to_numeric(df_f["necesidad"], errors="coerce") > 0].copy()
+        df_nec = df_f[
+            (pd.to_numeric(df_f["necesidad"], errors="coerce") > 0)
+            & (df_f["mes"].isin(meses_ventana))
+        ].copy()
+
+        df_pend_existente = obtener_mp_con_solicitud_ctrl(int(anio_sel), meses_ventana)
+        ya_pedidos = set()
+        if df_pend_existente is not None and not df_pend_existente.empty:
+            ya_pedidos = {
+                (str(r["cve_mp"]).strip(), int(r["mes"]))
+                for r in df_pend_existente.to_dict("records")
+            }
+        excluidos = 0
+        if ya_pedidos and not df_nec.empty:
+            mask_ya = df_nec.apply(
+                lambda r: (str(r["cve_prod"]).strip(), int(r["mes"])) in ya_pedidos, axis=1,
+            )
+            excluidos = int(mask_ya.sum())
+            df_nec = df_nec[~mask_ya]
+
         if df_nec.empty:
-            st.warning("no hay productos con necesidad > 0 para generar una solicitud")
             st.session_state.pop(preview_key, None)
+            st.session_state.pop(obs_key, None)
+            if excluidos:
+                st.warning(
+                    f"los {excluidos} renglón(es) con necesidad en {meses_ventana_txt} ya tienen "
+                    "una solicitud de compra pendiente — no se vuelven a proponer."
+                )
+            else:
+                st.warning(f"no hay productos con necesidad > 0 en {meses_ventana_txt} para generar una solicitud")
         else:
-            filas_propuesta = []
+            filas_por_prod: dict[str, dict] = {}
+            obs_por_prod: dict[str, dict[int, str]] = {}
             for r in df_nec.to_dict("records"):
+                cve = r["cve_prod"]
+                mes = int(r["mes"])
+                mn = _MESES[mes].upper()
                 origen_txt = _ORIGEN_LABEL_PDF.get(r["origen_forecast"], str(r["origen_forecast"]))
                 linea_txt = str(r.get("linea") or "").strip() or "(sin línea SAE)"
-                mn = _MESES[int(r["mes"])].upper()
-                obs = (
-                    f"Línea: {linea_txt} · Mes: {mn} · Origen: {origen_txt} · "
-                    f"Vendedor(es): {r.get('vendedores') or '-'}"
+                if cve not in filas_por_prod:
+                    fila_nueva = {
+                        "cve_mp": cve,
+                        "mp_nombre": r["producto"],
+                        "linea": linea_txt,
+                        "tiempo_resurtido": r.get("tiempo_resurtido"),
+                        "precio_usd": 0.0,
+                    }
+                    # columnas de mes pre-sembradas en orden cronológico —
+                    # si no, la columna queda insertada en el dict (y luego
+                    # en el DataFrame) en el orden en que aparece cada fila
+                    # de df_nec, no en orden de mes (ej. OCT se corre al
+                    # final si un producto no tenía necesidad en OCT pero sí
+                    # en NOV/DIC y esas filas se procesan primero)
+                    for m in meses_ventana:
+                        mn2 = _MESES[m].upper()
+                        fila_nueva[f"{mn2} Cant. Requerida"] = 0.0
+                        fila_nueva[f"{mn2} Cant. a Solicitar"] = 0.0
+                    filas_por_prod[cve] = fila_nueva
+                    obs_por_prod[cve] = {}
+                necesidad_val = round(float(r["necesidad"]), 2)
+                filas_por_prod[cve][f"{mn} Cant. Requerida"] = necesidad_val
+                filas_por_prod[cve][f"{mn} Cant. a Solicitar"] = necesidad_val
+                obs_por_prod[cve][mes] = (
+                    f"{mn}: Línea {linea_txt} · Origen {origen_txt} · "
+                    f"Vendedor(es) {r.get('vendedores') or '-'}"
                 )
-                filas_propuesta.append({
-                    "incluir": True,
-                    "cve_mp": r["cve_prod"],
-                    "mp_nombre": r["producto"],
-                    "linea": linea_txt,
-                    "mes_nombre": mn,
-                    "cantidad_kg": round(float(r["necesidad"]), 2),
-                    "existencia_mp_kg": round(float(r.get("existencia_inicio") or 0.0), 2),
-                    "anio": int(anio_sel),
-                    "mes": int(r["mes"]),
-                    "observaciones": obs,
-                })
+
+            filas_propuesta = []
+            for cve, fila in filas_por_prod.items():
+                for m in meses_ventana:
+                    mn = _MESES[m].upper()
+                    fila.setdefault(f"{mn} Cant. Requerida", 0.0)
+                    fila.setdefault(f"{mn} Cant. a Solicitar", 0.0)
+                fila["Total Requerido"] = round(
+                    sum(fila[f"{_MESES[m].upper()} Cant. Requerida"] for m in meses_ventana), 2,
+                )
+                fila["Total a Solicitar"] = round(
+                    sum(fila[f"{_MESES[m].upper()} Cant. a Solicitar"] for m in meses_ventana), 2,
+                )
+                fila["Trazabilidad"] = " | ".join(
+                    obs_por_prod[cve][m] for m in meses_ventana if m in obs_por_prod[cve]
+                )
+                filas_propuesta.append(fila)
+
             st.session_state[preview_key] = pd.DataFrame(filas_propuesta)
+            st.session_state[obs_key] = obs_por_prod
+            if excluidos:
+                st.info(
+                    f"{excluidos} renglón(es) con necesidad ya tenían solicitud pendiente y se "
+                    "excluyeron automáticamente de esta propuesta."
+                )
 
     df_preview = st.session_state.get(preview_key)
     if df_preview is not None and not df_preview.empty:
-        lineas_preview = sorted(df_preview["linea"].unique())
-        linea_filtro_sel = st.multiselect(
-            "filtrar por línea (solo para revisar más fácil — no excluye nada por sí solo)",
-            options=lineas_preview, default=[], key=f"comp_fc_solicitud_linea_filtro_{anio_sel}",
+        col_req = [f"{_MESES[m].upper()} Cant. Requerida" for m in meses_ventana]
+        col_sol = [f"{_MESES[m].upper()} Cant. a Solicitar" for m in meses_ventana]
+
+        gb = GridOptionsBuilder.from_dataframe(df_preview)
+        gb.configure_grid_options(autoSizeStrategy=None)
+        gb.configure_default_column(
+            editable=False, resizable=True, filter=True, sortable=True,
+            wrapHeaderText=True, autoHeaderHeight=True,
         )
-        df_mostrar = (
-            df_preview if not linea_filtro_sel
-            else df_preview[df_preview["linea"].isin(linea_filtro_sel)]
+        gb.configure_side_bar()
+        gb.configure_selection(
+            selection_mode="multiple", use_checkbox=True, header_checkbox=True,
+            # pre_select_all_rows es código muerto en esta versión de
+            # st_aggrid (está comentado en la librería) — hay que usar
+            # pre_selected_rows con los índices explícitos para que todas
+            # las filas arranquen incluidas por default.
+            pre_selected_rows=list(range(len(df_preview))),
+        )
+        gb.configure_column("cve_mp", headerName="cve MP", pinned="left", width=110)
+        gb.configure_column("mp_nombre", headerName="Materia Prima", pinned="left", width=220)
+        gb.configure_column("linea", headerName="línea", pinned="left", width=130)
+        gb.configure_column(
+            "tiempo_resurtido", headerName="tiempo resurtido (días)", width=130,
+            type=["numericColumn"], valueFormatter=_VALUE_FORMATTER_MILES_JS,
+        )
+        gb.configure_column(
+            "precio_usd", headerName="Precio USD (por kg)", pinned="left", width=140,
+            type=["numericColumn"], editable=True, cellEditor="agNumberCellEditor",
+            valueFormatter=_VALUE_FORMATTER_USD_JS,
+            cellStyle=JsCode("function(p){return {backgroundColor:'#fff8e1'};}"),
+        )
+        for c in col_req:
+            gb.configure_column(c, type=["numericColumn"], width=120, valueFormatter=_VALUE_FORMATTER_MILES_JS)
+        for c in col_sol:
+            gb.configure_column(
+                c, type=["numericColumn"], width=120, editable=True,
+                cellEditor="agNumberCellEditor", valueFormatter=_VALUE_FORMATTER_MILES_JS,
+                cellStyle=JsCode("function(p){return {backgroundColor:'#fff8e1'};}"),
+            )
+        gb.configure_column(
+            "Total Requerido", type=["numericColumn"], width=130, valueFormatter=_VALUE_FORMATTER_MILES_JS,
+        )
+        # suma calculada en el navegador — se recalcula sola al editar
+        # cualquier "Cant. a Solicitar" del mes, sin ida y vuelta a Python
+        _suma_col_sol_js = " + ".join(f"(Number(params.data['{c}']) || 0)" for c in col_sol)
+        gb.configure_column(
+            "Total a Solicitar", type=["numericColumn"], width=130, valueFormatter=_VALUE_FORMATTER_MILES_JS,
+            valueGetter=JsCode(f"""
+            function(params) {{
+                return Math.round(({_suma_col_sol_js}) * 100) / 100;
+            }}
+            """),
+        )
+        # Costo Total USD se recalcula en el navegador (como Total a
+        # Solicitar) a partir de las Cant. a Solicitar vigentes × Precio USD
+        # — no se puede leer el campo "Total a Solicitar" porque ese es él
+        # mismo un valueGetter (no se escribe de vuelta en params.data al
+        # editar), así que se vuelve a sumar aquí para no quedar atrás de un
+        # render.
+        gb.configure_column(
+            "Costo Total USD", type=["numericColumn"], width=150, valueFormatter=_VALUE_FORMATTER_USD_JS,
+            valueGetter=JsCode(f"""
+            function(params) {{
+                var total_kg = {_suma_col_sol_js};
+                var precio = Number(params.data['precio_usd']) || 0;
+                return Math.round(total_kg * precio * 100) / 100;
+            }}
+            """),
+        )
+        gb.configure_column("Trazabilidad", width=320, wrapText=True, autoHeight=True)
+
+        cols_orden_preview = (
+            ["cve_mp", "mp_nombre", "linea", "tiempo_resurtido", "precio_usd"]
+            + [c for par in zip(col_req, col_sol) for c in par]
+            + ["Total Requerido", "Total a Solicitar", "Costo Total USD", "Trazabilidad"]
         )
 
-        df_editado = st.data_editor(
-            df_mostrar,
-            hide_index=True,
-            use_container_width=True,
-            key=f"comp_fc_solicitud_editor_{anio_sel}",
-            column_config={
-                "incluir": st.column_config.CheckboxColumn("incluir"),
-                "cve_mp": st.column_config.TextColumn("cve MP", disabled=True),
-                "mp_nombre": st.column_config.TextColumn("materia prima", disabled=True),
-                "linea": st.column_config.TextColumn("línea", disabled=True),
-                "mes_nombre": st.column_config.TextColumn("mes", disabled=True),
-                "cantidad_kg": st.column_config.NumberColumn(
-                    "cantidad (kg)", min_value=0.0, step=1.0, format="%.2f",
-                ),
-                "existencia_mp_kg": st.column_config.NumberColumn(
-                    "stock hoy (kg)", disabled=True, format="%.2f",
-                ),
-                "observaciones": st.column_config.TextColumn(
-                    "trazabilidad", disabled=True, width="large",
-                ),
-            },
-            column_order=[
-                "incluir", "cve_mp", "mp_nombre", "linea", "mes_nombre",
-                "cantidad_kg", "existencia_mp_kg", "observaciones",
-            ],
+        grid_resp = AgGrid(
+            df_preview[cols_orden_preview],
+            gridOptions=gb.build(),
+            update_on=[("cellValueChanged", 600)],
+            data_return_mode=DataReturnMode.AS_INPUT,
+            fit_columns_on_grid_load=False,
+            allow_unsafe_jscode=True,
+            enable_enterprise_modules=True,
+            height=min(56 + len(df_preview) * 35, 500),
+            key=f"comp_fc_solicitud_grid_{anio_sel}",
         )
 
-        # el editor solo trae las filas filtradas por línea — se combinan de
-        # vuelta con las que quedaron fuera del filtro para no perder sus
-        # ediciones previas al guardar
-        if linea_filtro_sel:
-            resto = df_preview[~df_preview["linea"].isin(linea_filtro_sel)]
-            df_preview_actualizado = pd.concat([df_editado, resto], ignore_index=True)
-        else:
-            df_preview_actualizado = df_editado
-        st.session_state[preview_key] = df_preview_actualizado
+        df_actual = pd.DataFrame(grid_resp.get("data", []))
+        if not df_actual.empty:
+            st.session_state[preview_key] = df_actual
+
+        # AgGridReturn.selected_rows: None si no hay nada seleccionado, si no
+        # un DataFrame (nunca una lista de dicts, pese a lo que sugiere el
+        # nombre) — ver st_aggrid/AgGridReturn.py
+        seleccionadas = grid_resp.get("selected_rows")
+        cves_incluidos = (
+            set(seleccionadas["cve_mp"].astype(str)) if isinstance(seleccionadas, pd.DataFrame) else set()
+        )
 
         col_g1, col_g2 = st.columns(2)
         with col_g1:
@@ -737,12 +866,35 @@ def mostrar_tab_demanda_forecast() -> None:
                 "💾 guardar solicitud", type="primary", use_container_width=True,
                 key=f"comp_fc_btn_guardar_solicitud_{anio_sel}",
             ):
-                df_incluidas = df_preview_actualizado[
-                    df_preview_actualizado["incluir"].astype(bool)
-                    & (pd.to_numeric(df_preview_actualizado["cantidad_kg"], errors="coerce") > 0)
-                ]
-                if df_incluidas.empty:
-                    st.warning("no hay renglones marcados con cantidad > 0")
+                df_incluidas = df_actual[df_actual["cve_mp"].astype(str).isin(cves_incluidos)] if not df_actual.empty else df_actual
+                obs_por_prod = st.session_state.get(obs_key) or {}
+                detalle = []
+                for _, r in df_incluidas.iterrows():
+                    cve = str(r["cve_mp"])
+                    precio_usd = float(r.get("precio_usd") or 0.0)
+                    for m in meses_ventana:
+                        mn = _MESES[m].upper()
+                        cantidad = float(r.get(f"{mn} Cant. a Solicitar") or 0.0)
+                        if cantidad <= 0:
+                            continue
+                        cantidad_requerida = float(r.get(f"{mn} Cant. Requerida") or 0.0)
+                        obs = (obs_por_prod.get(cve) or {}).get(m, f"{mn}: generado desde Demanda (Forecast)")
+                        detalle.append({
+                            "cve_mp": cve,
+                            "mp_nombre": str(r["mp_nombre"]),
+                            "linea": str(r.get("linea") or ""),
+                            "cantidad_kg": cantidad,
+                            "cantidad_requerida_kg": cantidad_requerida,
+                            "precio_usd": precio_usd if precio_usd > 0 else None,
+                            "existencia_mp_kg": None,
+                            "anio": int(anio_sel),
+                            "mes": m,
+                            "id_version_forecast": None,
+                            "observaciones": obs,
+                        })
+
+                if not detalle:
+                    st.warning("no hay renglones incluidos con cantidad a solicitar > 0")
                 else:
                     tipo_mp_inv = obtener_tipo_compra_mp_inventario_ctrl()
                     if not tipo_mp_inv:
@@ -751,26 +903,13 @@ def mostrar_tab_demanda_forecast() -> None:
                             "revisa Compras → Catálogos."
                         )
                     else:
-                        detalle = [
-                            {
-                                "cve_mp": str(r["cve_mp"]),
-                                "mp_nombre": str(r["mp_nombre"]),
-                                "cantidad_kg": float(r["cantidad_kg"]),
-                                "existencia_mp_kg": float(r["existencia_mp_kg"]),
-                                "anio": int(r["anio"]),
-                                "mes": int(r["mes"]),
-                                "id_version_forecast": None,
-                                "observaciones": str(r["observaciones"]),
-                            }
-                            for _, r in df_incluidas.iterrows()
-                        ]
                         ok, mensaje = crear_solicitud_mp_inventario_ctrl(
                             id_tipo_compra=int(tipo_mp_inv["id_tipo_compra"]),
                             fecha_solicitud=date.today(),
                             solicitante=_get_solicitante_actual(),
                             observaciones_generales=(
                                 "Solicitud generada desde Compras → Demanda (Forecast) — "
-                                f"año {anio_sel}, meses {', '.join(_MESES[m].upper() for m in meses_sel)}"
+                                f"año {anio_sel}, meses {meses_ventana_txt}"
                             ),
                             detalle=detalle,
                         )
@@ -780,6 +919,7 @@ def mostrar_tab_demanda_forecast() -> None:
                                 "enviarla a autorización."
                             )
                             st.session_state.pop(preview_key, None)
+                            st.session_state.pop(obs_key, None)
                             st.rerun()
                         else:
                             st.error(mensaje)
@@ -789,6 +929,7 @@ def mostrar_tab_demanda_forecast() -> None:
                 key=f"comp_fc_btn_cancelar_solicitud_{anio_sel}",
             ):
                 st.session_state.pop(preview_key, None)
+                st.session_state.pop(obs_key, None)
                 st.rerun()
 
     st.divider()
@@ -803,20 +944,26 @@ def mostrar_tab_demanda_forecast() -> None:
     )
     tabla = _construir_tabla_mensual(df_f, meses_sel).sort_values("Necesidad total", ascending=False)
 
-    # qué (producto, mes) ya se generó como Orden de Compra en SAE —
-    # evita volver a pedirlo por error (siempre vacío hasta que exista la
-    # generación en SAE, ver Fase 2 del plan)
-    df_solicitadas_sae = obtener_mp_solicitadas_sae_ctrl(int(anio_sel), meses_sel)
-    solicitadas_por_prod: dict[str, list[str]] = {}
-    if df_solicitadas_sae is not None and not df_solicitadas_sae.empty:
-        for r in df_solicitadas_sae.to_dict("records"):
+    # qué (producto, mes) ya tiene una solicitud de compra viva (cualquier
+    # estatus salvo rechazada) — evita proponerla otra vez/duplicarla; si ya
+    # se generó en SAE (cve_doc_sae) se muestra el folio en vez del estatus
+    df_con_solicitud = obtener_mp_con_solicitud_ctrl(int(anio_sel), meses_sel)
+    solicitudes_por_prod: dict[str, list[str]] = {}
+    if df_con_solicitud is not None and not df_con_solicitud.empty:
+        for r in df_con_solicitud.to_dict("records"):
             cve = str(r.get("cve_mp") or "").strip()
             mn = _MESES.get(int(r.get("mes") or 0), "").upper()
             folio = str(r.get("folio_sae") or "").strip()
+            estatus = str(r.get("estatus") or "").strip()
+            id_sol = r.get("id_solicitud_compra")
+            if folio:
+                etiqueta = f"{mn} (SAE folio {folio})"
+            else:
+                etiqueta = f"{mn} ({estatus}, sol. #{id_sol})"
             if cve and mn:
-                solicitadas_por_prod.setdefault(cve, []).append(f"{mn} (folio {folio})" if folio else mn)
-    tabla["🛒 solicitada SAE"] = tabla["cve_prod"].map(
-        lambda c: ", ".join(solicitadas_por_prod.get(str(c).strip(), []))
+                solicitudes_por_prod.setdefault(cve, []).append(etiqueta)
+    tabla["🛒 solicitud"] = tabla["cve_prod"].map(
+        lambda c: ", ".join(solicitudes_por_prod.get(str(c).strip(), []))
     )
 
     cols_orden = ["cve_prod", "producto", "tiempo_resurtido", "linea"]
@@ -830,7 +977,7 @@ def mostrar_tab_demanda_forecast() -> None:
             cols_numericas.append(col)
             if etiqueta == "Resultado":
                 cols_resultado.add(col)
-    cols_orden += ["Necesidad total", "origen", "vendedores", "🛒 solicitada SAE"]
+    cols_orden += ["Necesidad total", "origen", "vendedores", "🛒 solicitud"]
 
     tabla["tiempo_resurtido"] = pd.to_numeric(tabla["tiempo_resurtido"], errors="coerce")
     for col in cols_numericas:
@@ -849,7 +996,7 @@ def mostrar_tab_demanda_forecast() -> None:
     gb.configure_column("linea", headerName="línea", pinned="left", width=120)
     gb.configure_column("origen", headerName="origen del forecast", width=200)
     gb.configure_column("vendedores", headerName="vendedor(es)", width=220)
-    gb.configure_column("🛒 solicitada SAE", headerName="🛒 solicitada SAE", width=200)
+    gb.configure_column("🛒 solicitud", headerName="🛒 solicitud", width=220)
     for col in cols_numericas:
         cell_style = _CELL_STYLE_RESULTADO_JS if col in cols_resultado else None
         gb.configure_column(

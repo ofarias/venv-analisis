@@ -5,6 +5,8 @@ from views.modulo_compras.tab_solicitudes_compras_view import mostrar_tab_solici
 from views.modulo_compras.tab_solicitudes_pendientes_view import mostrar_tab_solicitudes_pendientes
 from views.modulo_compras.tab_demanda_forecast_view import mostrar_tab_demanda_forecast
 from views.modulo_compras.tab_autorizaciones_compras_view import mostrar_tab_autorizaciones_compras
+from views.modulo_compras.tab_reglas_autorizacion_view import mostrar_tab_reglas_autorizacion
+from controllers.compras_solicitudes_controller import usuario_tiene_solicitudes_asignadas_ctrl
 
 
 def mostrar_modulo_compras():
@@ -18,10 +20,14 @@ def mostrar_modulo_compras():
         or "superadmin" in roles
         or "compras" in roles
     )
-    # autoriza Solicitudes de Compra tipo Materia Prima (Inventario) — no
-    # hay jerarquía de Jefe/Gerente de Compras, se decidió que solo
-    # SuperAdmin/forecastAdmin autorizan (ver plan)
-    es_autorizador_compras = "superadmin" in roles or "forecastadmin" in roles
+    # SuperAdmin/forecastAdmin siempre autorizan (respaldo); además, si una
+    # regla de autorización (Compras -> Reglas de Autorización) dejó a este
+    # usuario como receptor asignado de alguna solicitud enviada, también ve
+    # la pestaña aunque no tenga esos roles.
+    es_autorizador_compras = (
+        "superadmin" in roles or "forecastadmin" in roles
+        or usuario_tiene_solicitudes_asignadas_ctrl(usuario.get("id"))
+    )
 
     secciones = []
     if es_admin_compras:
@@ -31,6 +37,8 @@ def mostrar_modulo_compras():
         secciones.append("📦 Demanda (Forecast)")
     if es_autorizador_compras:
         secciones.append("✅ Autorizaciones")
+    if es_admin_compras:
+        secciones.append("⚙️ Reglas de Autorización")
 
     # st.pills (a diferencia de st.tabs) informa cuál sección está activa,
     # así que solo se ejecuta el código de esa sección — st.tabs corre todas
@@ -53,3 +61,5 @@ def mostrar_modulo_compras():
         mostrar_tab_demanda_forecast()
     elif seccion == "✅ Autorizaciones":
         mostrar_tab_autorizaciones_compras()
+    elif seccion == "⚙️ Reglas de Autorización":
+        mostrar_tab_reglas_autorizacion()
