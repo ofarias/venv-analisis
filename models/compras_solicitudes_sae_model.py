@@ -32,6 +32,14 @@ def _formatear_cve_doc(folio: int, longitud: int, separador: str) -> str:
     return f"{_SERIE_ONECORE}{separador}{str(folio).rjust(longitud)}"
 
 
+def _formatear_cve_clpv(cve_proveedor: str) -> str:
+    """PROV01.CLAVE (y por lo tanto CVE_CLPV) se guarda en SAE a 10
+    posiciones, relleno con espacios a la izquierda — ej. "0066" ->
+    "      0066". Nuestra app guarda la clave ya sin espacios (.strip());
+    hay que volver a rellenarla justo antes de escribir en SAE."""
+    return str(cve_proveedor or "").strip().rjust(10)
+
+
 def obtener_proximo_folio_requisicion_model() -> dict:
     """Vista previa (de solo lectura) del próximo folio/CVE_DOC — el
     consecutivo real se vuelve a leer dentro de la misma transacción al
@@ -76,6 +84,7 @@ def generar_requisicion_sae_model(
 
     cant_tot = sum(float(l["cant"]) for l in lineas)
     importe = sum(float(l["cant"]) * float(l["cost"]) for l in lineas)
+    cve_clpv_sae = _formatear_cve_clpv(cve_clpv)
 
     statements: list[tuple[str, tuple]] = [
         (
@@ -87,7 +96,7 @@ def generar_requisicion_sae_model(
             VALUES (?, ?, ?, 'O', ?, ?, ?, ?, 'N', 'N', ?, ?, ?, ?)
             """,
             (
-                _TIP_DOC_REQUISICION, cve_doc, cve_clpv, fecha_doc, cant_tot, importe,
+                _TIP_DOC_REQUISICION, cve_doc, cve_clpv_sae, fecha_doc, cant_tot, importe,
                 int(num_alma), int(num_moned), float(tipcamb), _SERIE_ONECORE, folio,
             ),
         ),
