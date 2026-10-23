@@ -1055,6 +1055,63 @@ def cambiar_estatus_lineas_mp_inventario_model(ids_detalle: list[int], nuevo_est
         conn.close()
 
 
+def obtener_lineas_autorizadas_sin_generar_model(id_solicitud_compra: int) -> pd.DataFrame:
+    """Renglones ya autorizados de una solicitud que todavía no se generaron
+    como requisición en SAE (Fase 2) — agrupables por proveedor para decidir
+    cuántas requisiciones hacen falta."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id_detalle_mp_inv, cve_mp, mp_nombre, linea, cve_proveedor,
+                   proveedor_nombre, cantidad_kg, precio_usd
+            FROM compras_solicitudes_mp_inventario_detalle
+            WHERE id_solicitud_compra = %s
+              AND TRIM(LOWER(estatus_linea)) = 'autorizada'
+              AND cve_doc_sae IS NULL
+            ORDER BY id_detalle_mp_inv
+            """,
+            (int(id_solicitud_compra),),
+        )
+        rows = cur.fetchall() or []
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
+            "id_detalle_mp_inv", "cve_mp", "mp_nombre", "linea", "cve_proveedor",
+            "proveedor_nombre", "cantidad_kg", "precio_usd",
+        ])
+
+    finally:
+        conn.close()
+
+
+def marcar_lineas_generadas_sae_model(
+    ids_detalle: list[int], cve_doc_sae: str, folio_sae: str, fecha_generado_sae,
+) -> bool:
+    if not ids_detalle:
+        return False
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join(["%s"] * len(ids_detalle))
+        cur.execute(
+            f"""
+            UPDATE compras_solicitudes_mp_inventario_detalle
+            SET cve_doc_sae = %s, folio_sae = %s, fecha_generado_sae = %s
+            WHERE id_detalle_mp_inv IN ({placeholders})
+            """,
+            (cve_doc_sae, folio_sae, fecha_generado_sae, *[int(i) for i in ids_detalle]),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    except Exception:
+        conn.rollback()
+        return False
+
+    finally:
+        conn.close()
+
+
 def hay_lineas_pendientes_mp_inventario_model(id_solicitud_compra: int) -> bool:
     """True si a la solicitud todavía le queda algún renglón sin resolver
     (en captura o ya enviado pero sin autorizar/rechazar) — se usa para

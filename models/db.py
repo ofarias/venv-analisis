@@ -78,3 +78,24 @@ def run_query_firebird(secret_key: str, sql: str, params: tuple | None = None):
         return cur.rowcount
     finally:
         con.close()
+
+
+def run_firebird_transaccion(secret_key: str, statements: list[tuple[str, tuple]]):
+    """Ejecuta varias instrucciones DML en UNA sola transacción (todo o
+    nada) — a diferencia de run_query_firebird, que abre conexión y hace
+    commit por cada llamada. Se usa para escrituras que deben quedar
+    atómicas (ej. cabecera + detalle + folio de una requisición en SAE)."""
+    con = _make_firebird_conn(secret_key)
+    try:
+        cur = con.cursor()
+        for sql, params in statements:
+            cur.execute(sql, params or ())
+        con.commit()
+        return True
+
+    except Exception:
+        con.rollback()
+        raise
+
+    finally:
+        con.close()

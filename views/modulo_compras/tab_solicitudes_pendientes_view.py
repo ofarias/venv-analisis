@@ -18,6 +18,10 @@ from controllers.compras_solicitudes_controller import (
     listar_proveedores_mp_sae_ctrl,
     enviar_lineas_mp_inventario_ctrl,
 )
+from controllers.compras_solicitudes_sae_controller import (
+    obtener_vista_previa_requisiciones_sae_ctrl,
+    generar_requisicion_sae_ctrl,
+)
 
 _VALUE_FORMATTER_MILES_JS = JsCode("""
 function(params) {
@@ -534,11 +538,11 @@ def _mostrar_detalle_mp_inventario(id_solicitud: int, editable: bool = False):
 
 
 def _mostrar_accion_generar_sae(cab: dict):
-    """Punto de enganche para la Fase 2 del plan (generar la Orden de Compra
-    real en SAE, tabla COMPO01/PAR_COMPO01) — todavía no implementada: faltan
-    por confirmar proveedor, precio/costo por línea y la fórmula exacta de
-    CVE_DOC/FOLIO antes de escribir el INSERT (ver plan). Mientras tanto solo
-    informa el estatus, sin ofrecer un botón que no hace nada real."""
+    """Fase 2 del plan: genera la Requisición real en SAE (COMPQ01/
+    PAR_COMPQ01, folio propio "OneCore") a partir de las líneas ya
+    autorizadas — una requisición por proveedor. Escritura real y no
+    reversible en el ERP: siempre se muestra la vista previa exacta y se
+    exige una casilla de confirmación aparte del botón."""
     estatus_actual = str(cab.get("estatus") or "").strip().lower()
     if estatus_actual != "autorizada":
         return
@@ -548,12 +552,56 @@ def _mostrar_accion_generar_sae(cab: dict):
     if not ("SuperAdmin" in roles or "forecastAdmin" in roles):
         return
 
-    st.info(
-        "✅ solicitud autorizada — pendiente generarla como Orden de Compra en SAE. "
-        "Esa parte todavía no está automatizada en la app (falta confirmar proveedor, "
-        "precio/costo y numeración con SAE); mientras tanto, créala manualmente en SAE "
-        "con estos datos y notifícalo."
+    id_solicitud = int(cab["id_solicitud_compra"])
+    previews = obtener_vista_previa_requisiciones_sae_ctrl(id_solicitud)
+
+    st.divider()
+    st.markdown("#### generar requisición en SAE")
+
+    if not previews:
+        st.success("✅ todas las líneas autorizadas de esta solicitud ya se generaron en SAE.")
+        return
+
+    st.caption(
+        "Una requisición por proveedor (folio OneCore, consecutivo propio). Revisa los valores "
+        "exactos antes de generar — es una escritura real en SAE y no se puede deshacer desde aquí."
     )
+
+    for i, preview in enumerate(previews):
+        with st.container(border=True):
+            st.markdown(f"**proveedor:** {preview['proveedor_nombre']}")
+            if preview["sin_proveedor"]:
+                st.error("falta asignar un proveedor SAE a estas líneas — vuelve a Pendientes y asígnalo.")
+                continue
+            if preview["sin_precio"]:
+                st.error("falta el precio USD en alguna línea — vuelve a Pendientes y complétalo.")
+                continue
+
+            df_prev = pd.DataFrame([{
+                "cve MP": l["cve_art"], "materia prima": l["descr_art"],
+                "cantidad (kg)": l["cant"], "precio USD": l["cost"], "total USD": l["total_usd"],
+            } for l in preview["lineas"]])
+            st.dataframe(df_prev, use_container_width=True, hide_index=True)
+            st.caption(
+                f"folio candidato: **{preview['cve_doc_candidato'].strip()}** · "
+                f"tipo de cambio: {preview['tipo_cambio']:,.4f} · "
+                f"total: **${preview['total_usd']:,.2f} USD**"
+            )
+
+            confirmado = st.checkbox(
+                "confirmo que estos valores son correctos y quiero generar esta requisición en SAE",
+                key=f"sae_confirma_{id_solicitud}_{i}",
+            )
+            if st.button(
+                "🏭 generar requisición en SAE", type="primary", disabled=not confirmado,
+                key=f"sae_generar_{id_solicitud}_{i}",
+            ):
+                ok, mensaje = generar_requisicion_sae_ctrl(id_solicitud, preview["proveedor_nombre"])
+                if ok:
+                    st.success(mensaje)
+                    st.rerun()
+                else:
+                    st.error(mensaje)
 
 
 def _mostrar_detalle_estandar(id_solicitud: int):
