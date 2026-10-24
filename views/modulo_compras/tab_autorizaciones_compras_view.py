@@ -12,6 +12,7 @@ from controllers.compras_solicitudes_controller import (
     obtener_lineas_mp_inventario_pendientes_autorizar_ctrl,
     autorizar_lineas_mp_inventario_ctrl,
     rechazar_lineas_mp_inventario_ctrl,
+    obtener_ids_solicitudes_con_lineas_sin_generar_ctrl,
 )
 from views.modulo_compras.tab_solicitudes_pendientes_view import (
     _mostrar_detalle_mp_inventario,
@@ -277,13 +278,20 @@ def mostrar_tab_autorizaciones_compras():
 
     st.divider()
     st.markdown("### autorizadas — pendientes de generar en SAE (materia prima/inventario)")
+    # por línea, no por solicitud completa: una solicitud puede tener una
+    # línea ya autorizada y lista para SAE aunque otras sigan en
+    # captura/enviada — no depende del estatus de la cabecera.
+    ids_con_pendientes = obtener_ids_solicitudes_con_lineas_sin_generar_ctrl()
+    if not ids_con_pendientes:
+        st.caption("no hay líneas autorizadas pendientes de generar en SAE.")
+        return
+
     df_todas = obtener_solicitudes_pendientes_usuario_ctrl("", ver_todas=True)
     df_autorizadas = df_todas[
-        (df_todas["tipo_compra"].astype(str).str.strip() == nombre_tipo_mp_inv)
-        & (df_todas["estatus"].astype(str).str.strip().str.lower() == "autorizada")
+        df_todas["id_solicitud_compra"].astype(int).isin(ids_con_pendientes)
     ]
     if df_autorizadas.empty:
-        st.caption("no hay solicitudes autorizadas pendientes de generar en SAE.")
+        st.caption("no hay líneas autorizadas pendientes de generar en SAE.")
         return
 
     opciones_aut = {

@@ -35,6 +35,7 @@ from models.compras_solicitudes_model import (
     obtener_lineas_mp_inventario_pendientes_autorizar_model,
     hay_lineas_pendientes_mp_inventario_model,
     hay_linea_autorizada_mp_inventario_model,
+    obtener_ids_solicitudes_con_lineas_sin_generar_model,
 )
 
 from models.sae45_model import buscar_producto_sae
@@ -339,6 +340,10 @@ def obtener_receptores_asignados_ctrl(id_solicitud_compra: int) -> list[int]:
 
 def usuario_tiene_solicitudes_asignadas_ctrl(usuario_id: int | None) -> bool:
     return usuario_tiene_solicitudes_asignadas_model(usuario_id) if usuario_id else False
+
+
+def obtener_ids_solicitudes_con_lineas_sin_generar_ctrl() -> list[int]:
+    return obtener_ids_solicitudes_con_lineas_sin_generar_model()
 
 
 def buscar_productos_sae_ctrl(q: str = "", limit: int = 50) -> list[dict]:
@@ -665,10 +670,14 @@ def enviar_lineas_mp_inventario_ctrl(ids_detalle: list[int], token=None) -> tupl
             """
             destinatario = ", ".join(correos)
             remitente = str((st.session_state.get("usuario") or {}).get("email") or "").strip()
-            enviar_correo(
+            ok_mail, msg_mail = enviar_correo(
                 destinatario=destinatario, asunto=asunto, cuerpo_html=cuerpo_html,
                 token=token, remitente=remitente,
             )
+            if not ok_mail:
+                mensaje += f" — ⚠️ no se pudo mandar el correo: {msg_mail}"
+        else:
+            mensaje += " — ⚠️ no se encontraron correos a quién notificar"
 
     return True, mensaje
 

@@ -1055,6 +1055,25 @@ def cambiar_estatus_lineas_mp_inventario_model(ids_detalle: list[int], nuevo_est
         conn.close()
 
 
+def obtener_ids_solicitudes_con_lineas_sin_generar_model() -> list[int]:
+    """Solicitudes que tienen AL MENOS una línea autorizada y todavía sin
+    generar en SAE — independiente del estatus de la cabecera (una
+    solicitud puede tener algunas líneas listas para SAE y otras todavía
+    en captura/enviada, igual que el resto del flujo por línea)."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT id_solicitud_compra
+            FROM compras_solicitudes_mp_inventario_detalle
+            WHERE TRIM(LOWER(estatus_linea)) = 'autorizada' AND cve_doc_sae IS NULL
+        """)
+        return [row[0] for row in cur.fetchall()]
+
+    finally:
+        conn.close()
+
+
 def obtener_lineas_autorizadas_sin_generar_model(id_solicitud_compra: int) -> pd.DataFrame:
     """Renglones ya autorizados de una solicitud que todavía no se generaron
     como requisición en SAE (Fase 2) — agrupables por proveedor para decidir

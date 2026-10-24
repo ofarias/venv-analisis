@@ -102,18 +102,20 @@ def generar_requisicion_sae_model(
         ),
     ]
     for i, linea in enumerate(lineas, start=1):
+        cant = float(linea["cant"])
+        cost = float(linea["cost"])
         statements.append((
             """
             INSERT INTO PAR_COMPQ01 (
                 CVE_DOC, NUM_PAR, CVE_ART, CANT, PXR, PREC, COST, ACT_INV,
-                UNI_VENTA, NUM_ALM, DESCR_ART, TIP_CAM
+                UNI_VENTA, NUM_ALM, TIP_CAM, TIPO_ELEM, TIPO_PROD, FACTCONV, TOT_PARTIDA
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, 'N', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 0, ?, 'N', ?, ?, ?, 'N', 'P', 1, ?)
             """,
             (
-                cve_doc, i, linea["cve_art"], float(linea["cant"]), float(linea["cant"]),
-                float(linea["cost"]), linea.get("uni_venta") or "KG", int(num_alma),
-                linea.get("descr_art"), float(tipcamb),
+                cve_doc, i, linea["cve_art"], cant, cant,
+                cost, linea.get("uni_venta") or "KG", int(num_alma),
+                float(tipcamb), round(cant * cost, 4),
             ),
         ))
     statements.append((

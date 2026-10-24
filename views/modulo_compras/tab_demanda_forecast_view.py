@@ -744,6 +744,7 @@ def mostrar_tab_demanda_forecast() -> None:
                 fila["Total a Solicitar"] = round(
                     sum(fila[f"{_MESES[m].upper()} Cant. a Solicitar"] for m in meses_ventana), 2,
                 )
+                fila["Costo Total USD"] = round(fila["Total a Solicitar"] * float(fila.get("precio_usd") or 0.0), 2)
                 fila["Trazabilidad"] = " | ".join(
                     obs_por_prod[cve][m] for m in meses_ventana if m in obs_por_prod[cve]
                 )

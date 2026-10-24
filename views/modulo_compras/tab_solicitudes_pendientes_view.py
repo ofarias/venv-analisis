@@ -542,11 +542,11 @@ def _mostrar_accion_generar_sae(cab: dict):
     PAR_COMPQ01, folio propio "OneCore") a partir de las líneas ya
     autorizadas — una requisición por proveedor. Escritura real y no
     reversible en el ERP: siempre se muestra la vista previa exacta y se
-    exige una casilla de confirmación aparte del botón."""
-    estatus_actual = str(cab.get("estatus") or "").strip().lower()
-    if estatus_actual != "autorizada":
-        return
+    exige una casilla de confirmación aparte del botón.
 
+    Por línea, no por solicitud completa: una materia prima ya autorizada
+    se puede generar aunque otras líneas de la misma solicitud sigan en
+    captura/enviada — no depende del estatus de la cabecera."""
     usuario = st.session_state.get("usuario") or {}
     roles = usuario.get("roles", [])
     if not ("SuperAdmin" in roles or "forecastAdmin" in roles):
