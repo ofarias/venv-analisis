@@ -8,15 +8,19 @@ def get_tipos_compra_model() -> pd.DataFrame:
 
         sql = """
             select
-                id_tipo_compra,
-                nombre,
-                descripcion,
-                activo,
-                created_at,
-                updated_at, 
-                tipo_formulario
-            from compras_tipos
-            order by nombre
+                t.id_tipo_compra,
+                t.nombre,
+                t.descripcion,
+                t.activo,
+                t.created_at,
+                t.updated_at,
+                t.tipo_formulario,
+                GROUP_CONCAT(u.nombre ORDER BY u.nombre SEPARATOR ', ') AS usuarios_permitidos_nombres
+            from compras_tipos t
+            left join compras_tipos_usuarios_permitidos p on p.id_tipo_compra = t.id_tipo_compra
+            left join usuarios u on u.id = p.usuario_id
+            group by t.id_tipo_compra
+            order by t.nombre
         """
         cur.execute(sql)
         rows = cur.fetchall() or []
@@ -29,6 +33,7 @@ def get_tipos_compra_model() -> pd.DataFrame:
                 "activo",
                 "created_at",
                 "updated_at",
+                "usuarios_permitidos_nombres",
             ])
 
         return pd.DataFrame(rows)
@@ -38,6 +43,47 @@ def get_tipos_compra_model() -> pd.DataFrame:
             conn.close()
         except Exception:
             pass
+
+
+def obtener_usuarios_permitidos_tipo_model(id_tipo_compra: int) -> list[int]:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT usuario_id FROM compras_tipos_usuarios_permitidos WHERE id_tipo_compra = %s",
+            (int(id_tipo_compra),),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    finally:
+        conn.close()
+
+
+def guardar_usuarios_permitidos_tipo_model(id_tipo_compra: int, usuario_ids: list[int]) -> bool:
+    """Reemplaza la lista completa de usuarios permitidos para un tipo de
+    compra — vacío significa "cualquiera puede crear este tipo" (sin
+    restricción), mismo criterio que el resto de la app."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM compras_tipos_usuarios_permitidos WHERE id_tipo_compra = %s",
+            (int(id_tipo_compra),),
+        )
+        if usuario_ids:
+            cur.executemany(
+                "INSERT INTO compras_tipos_usuarios_permitidos (id_tipo_compra, usuario_id) VALUES (%s, %s)",
+                [(int(id_tipo_compra), int(uid)) for uid in usuario_ids],
+            )
+        conn.commit()
+        return True
+
+    except Exception:
+        conn.rollback()
+        return False
+
+    finally:
+        conn.close()
 
 
 def existe_tipo_compra_model(nombre: str, id_excluir: int | None = None) -> bool:
@@ -73,7 +119,7 @@ def crear_tipo_compra_model(
     descripcion: str | None,
     tipo_formulario: str,
     activo: int = 1,
-) -> bool:
+) -> int | None:
     conn = obtener_conexion()
     try:
         cur = conn.cursor()
@@ -97,7 +143,7 @@ def crear_tipo_compra_model(
             )
         )
         conn.commit()
-        return True
+        return int(cur.lastrowid)
 
     finally:
         conn.close()

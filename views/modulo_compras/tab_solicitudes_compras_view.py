@@ -3,7 +3,7 @@
 import streamlit as st
 
 from controllers.compras_solicitudes_controller import (
-    obtener_tipos_compra_activos_ctrl,
+    obtener_tipos_compra_activos_para_usuario_ctrl,
 )
 from views.modulo_compras.forms.form_producto_view import (
     mostrar_formulario_compra_materias_primas,
@@ -13,6 +13,9 @@ from views.modulo_compras.forms.form_estandar_view import (
 )
 from views.modulo_compras.forms.form_mp_inventario_view import (
     mostrar_formulario_compra_mp_inventario,
+)
+from views.modulo_compras.forms.form_dinamico_view import (
+    mostrar_formulario_compra_dinamico,
 )
 
 
@@ -26,10 +29,11 @@ def _get_tipo_formulario(id_tipo_compra: int, tipos: list) -> str:
 def mostrar_tab_solicitudes_compras():
     st.subheader("solicitudes de compra")
 
-    tipos = obtener_tipos_compra_activos_ctrl() or []
+    usuario_id = (st.session_state.get("usuario") or {}).get("id")
+    tipos = obtener_tipos_compra_activos_para_usuario_ctrl(usuario_id) or []
 
     if not tipos:
-        st.info("no hay tipos de compra activos")
+        st.info("no hay tipos de compra disponibles para tu usuario.")
         return
 
     opciones = {
@@ -61,6 +65,9 @@ def mostrar_tab_solicitudes_compras():
 
     elif tipo_formulario == "MP_INV":
         mostrar_formulario_compra_mp_inventario(id_tipo_compra=id_tipo_compra)
+
+    elif tipo_formulario == "DINAMICO":
+        mostrar_formulario_compra_dinamico(id_tipo_compra=id_tipo_compra)
 
     else:
         st.warning("este tipo de compra no tiene formulario configurado.")

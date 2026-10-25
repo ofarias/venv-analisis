@@ -22,6 +22,11 @@ from controllers.compras_solicitudes_sae_controller import (
     obtener_vista_previa_requisiciones_sae_ctrl,
     generar_requisicion_sae_ctrl,
 )
+from controllers.compras_tipos_campos_controller import obtener_campos_tipo_ctrl
+from controllers.compras_solicitudes_dinamico_controller import (
+    obtener_valores_cabecera_ctrl,
+    obtener_detalle_dinamico_ctrl,
+)
 
 _VALUE_FORMATTER_MILES_JS = JsCode("""
 function(params) {
@@ -604,6 +609,50 @@ def _mostrar_accion_generar_sae(cab: dict):
                     st.error(mensaje)
 
 
+def _mostrar_detalle_dinamico(id_solicitud: int):
+    """Muestra una solicitud de tipo DINAMICO — los campos de cabecera y
+    detalle se definen en Compras → 🧩 Formularios Dinámicos (solo Admin),
+    nunca en código."""
+    cab = obtener_cabecera_solicitud_compra_ctrl(id_solicitud)
+    id_tipo_compra = cab.get("id_tipo_compra")
+    if not id_tipo_compra:
+        st.info("no se encontró el tipo de compra de esta solicitud.")
+        return
+
+    campos_cab = obtener_campos_tipo_ctrl(id_tipo_compra, "cabecera")
+    campos_det = obtener_campos_tipo_ctrl(id_tipo_compra, "detalle")
+
+    st.markdown("#### cabecera")
+    if not campos_cab:
+        st.caption("este tipo de compra no tiene campos de cabecera configurados.")
+    else:
+        valores = obtener_valores_cabecera_ctrl(id_solicitud)
+        cols = st.columns(2)
+        for i, campo in enumerate(campos_cab):
+            with cols[i % 2]:
+                st.text_input(
+                    campo["nombre_campo"], value=str(valores.get(campo["clave_campo"]) or ""),
+                    disabled=True, key=f"sdin_show_cab_{id_solicitud}_{campo['id']}",
+                )
+
+    st.markdown("#### detalle")
+    if not campos_det:
+        st.caption("este tipo de compra no tiene campos de detalle configurados.")
+        return
+
+    df_detalle = obtener_detalle_dinamico_ctrl(id_solicitud)
+    if df_detalle.empty:
+        st.info("esta solicitud no tiene renglones de detalle.")
+        return
+
+    cols_orden = ["orden"] + [c["clave_campo"] for c in campos_det if c["clave_campo"] in df_detalle.columns]
+    nombres = {"orden": "orden"} | {c["clave_campo"]: c["nombre_campo"] for c in campos_det}
+    st.dataframe(
+        df_detalle[cols_orden].rename(columns=nombres),
+        use_container_width=True, hide_index=True,
+    )
+
+
 def _mostrar_detalle_estandar(id_solicitud: int):
     cab_est = obtener_cabecera_solicitud_estandar_ctrl(id_solicitud)
 
@@ -804,5 +853,7 @@ def mostrar_tab_solicitudes_pendientes():
                 _mostrar_dialog_flujo_mp_inv()
         _mostrar_detalle_mp_inventario(id_solicitud, editable=(estatus_actual == "captura"))
         _mostrar_accion_generar_sae(cab)
+    elif tipo_formulario == "DINAMICO":
+        _mostrar_detalle_dinamico(id_solicitud)
     else:
         _mostrar_detalle_estandar(id_solicitud)

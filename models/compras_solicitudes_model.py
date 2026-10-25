@@ -189,6 +189,39 @@ def get_tipos_compra_activos_model():
         conn.close()
 
 
+def get_tipos_compra_activos_para_usuario_model(usuario_id: int | None) -> list[dict]:
+    """Tipos de compra activos que este usuario puede usar en Compras ->
+    Solicitudes — un tipo sin ningún usuario asignado en
+    compras_tipos_usuarios_permitidos sigue visible para cualquiera (sin
+    restricción); si tiene usuarios asignados, solo ellos lo ven."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT t.id_tipo_compra, t.nombre, t.descripcion, t.tipo_formulario
+            FROM compras_tipos t
+            WHERE t.activo = 1
+              AND (
+                NOT EXISTS (
+                    SELECT 1 FROM compras_tipos_usuarios_permitidos p
+                    WHERE p.id_tipo_compra = t.id_tipo_compra
+                )
+                OR EXISTS (
+                    SELECT 1 FROM compras_tipos_usuarios_permitidos p
+                    WHERE p.id_tipo_compra = t.id_tipo_compra AND p.usuario_id = %s
+                )
+              )
+            ORDER BY t.nombre
+            """,
+            (usuario_id,),
+        )
+        return cur.fetchall() or []
+
+    finally:
+        conn.close()
+
+
 def get_solicitudes_pendientes_usuario_model(solicitante: str, ver_todas: bool = False) -> pd.DataFrame:
     conn = obtener_conexion()
     try:

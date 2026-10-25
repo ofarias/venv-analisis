@@ -6,6 +6,7 @@ from views.modulo_compras.tab_solicitudes_pendientes_view import mostrar_tab_sol
 from views.modulo_compras.tab_demanda_forecast_view import mostrar_tab_demanda_forecast
 from views.modulo_compras.tab_autorizaciones_compras_view import mostrar_tab_autorizaciones_compras
 from views.modulo_compras.tab_reglas_autorizacion_view import mostrar_tab_reglas_autorizacion
+from views.modulo_compras.tab_campos_dinamicos_view import mostrar_tab_campos_dinamicos
 from controllers.compras_solicitudes_controller import usuario_tiene_solicitudes_asignadas_ctrl
 
 
@@ -20,6 +21,10 @@ def mostrar_modulo_compras():
         or "superadmin" in roles
         or "compras" in roles
     )
+    # formularios dinámicos: solo rol Admin, como se pidió explícitamente
+    # (es_admin_compras es más amplio — también admite "compras"/"superadmin"
+    # — y aquí no aplica).
+    es_admin_rol = "admin" in roles
     # SuperAdmin/forecastAdmin siempre autorizan (respaldo); además, si una
     # regla de autorización (Compras -> Reglas de Autorización) dejó a este
     # usuario como receptor asignado de alguna solicitud enviada, también ve
@@ -39,6 +44,8 @@ def mostrar_modulo_compras():
         secciones.append("✅ Autorizaciones")
     if es_admin_compras:
         secciones.append("⚙️ Reglas de Autorización")
+    if es_admin_rol:
+        secciones.append("🧩 Formularios Dinámicos")
 
     # st.pills (a diferencia de st.tabs) informa cuál sección está activa,
     # así que solo se ejecuta el código de esa sección — st.tabs corre todas
@@ -63,3 +70,5 @@ def mostrar_modulo_compras():
         mostrar_tab_autorizaciones_compras()
     elif seccion == "⚙️ Reglas de Autorización":
         mostrar_tab_reglas_autorizacion()
+    elif seccion == "🧩 Formularios Dinámicos":
+        mostrar_tab_campos_dinamicos()

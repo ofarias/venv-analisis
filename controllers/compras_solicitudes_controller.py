@@ -4,6 +4,7 @@ from models.compras_solicitudes_model import (
     crear_detalle_productos_model,
     get_unidades_empaque_model,
     get_tipos_compra_activos_model,
+    get_tipos_compra_activos_para_usuario_model,
     get_solicitudes_pendientes_usuario_model,
     get_detalle_solicitud_compra_model,
     cambiar_estatus_solicitud_compra_model,
@@ -50,6 +51,10 @@ from controllers.compras_autorizacion_engine_controller import evaluar_autorizac
 
 def obtener_tipos_compra_activos_ctrl():
     return get_tipos_compra_activos_model()
+
+
+def obtener_tipos_compra_activos_para_usuario_ctrl(usuario_id: int | None):
+    return get_tipos_compra_activos_para_usuario_model(usuario_id)
 
 
 def get_unidades_empaque_ctrl():

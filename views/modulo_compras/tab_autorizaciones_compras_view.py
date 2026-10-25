@@ -18,6 +18,7 @@ from views.modulo_compras.tab_solicitudes_pendientes_view import (
     _mostrar_detalle_mp_inventario,
     _mostrar_detalle_materias_primas,
     _mostrar_detalle_estandar,
+    _mostrar_detalle_dinamico,
     _mostrar_accion_generar_sae,
 )
 
@@ -49,6 +50,8 @@ def _mostrar_detalle_por_tipo(id_solicitud: int, cab: dict, editable: bool = Fal
         _mostrar_detalle_materias_primas(id_solicitud)
     elif tipo_formulario == "MP_INV":
         _mostrar_detalle_mp_inventario(id_solicitud, editable=editable)
+    elif tipo_formulario == "DINAMICO":
+        _mostrar_detalle_dinamico(id_solicitud)
     else:
         _mostrar_detalle_estandar(id_solicitud)
 
