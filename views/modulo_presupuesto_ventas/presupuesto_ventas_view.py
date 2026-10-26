@@ -18,6 +18,7 @@ from controllers.presupuesto_ventas_controller import (
     cargar_excel_directo_presupuesto_ventas_ctrl,
     copiar_carga_presupuesto_ventas_ctrl,
     eliminar_carga_completa_presupuesto_ventas_ctrl,
+    contar_lineas_autorizadas_por_carga_ctrl,
     eliminar_registro_presupuesto_ventas_ctrl,
     guardar_presupuesto_ventas_batch_ctrl,
     insertar_presupuesto_ventas_linea_estatus_ctrl,
@@ -2612,7 +2613,20 @@ def _panel_gestionar_cargas() -> None:
     label = st.selectbox("selecciona la carga a eliminar", options=list(opciones.keys()), key="pv_gc_select")
     id_sel = opciones[label]
 
-    confirmar = st.checkbox(f"confirmo que quiero eliminar la carga {id_sel}", key="pv_gc_confirmar")
+    n_autorizadas = contar_lineas_autorizadas_por_carga_ctrl(id_sel)
+    confirmaciones = [st.checkbox(f"confirmo que quiero eliminar la carga {id_sel}", key="pv_gc_confirmar")]
+    if n_autorizadas:
+        st.warning(
+            f"⚠️ esta carga tiene {n_autorizadas} línea(s) ya autorizada(s) — al eliminarla se pierde "
+            "esa decisión de autorización, no se puede recuperar."
+        )
+        confirmaciones.append(
+            st.checkbox(
+                f"confirmo que quiero eliminar {n_autorizadas} línea(s) ya autorizada(s)",
+                key="pv_gc_confirmar_autorizadas",
+            )
+        )
+    confirmar = all(confirmaciones)
 
     if st.button("🗑️ eliminar carga", type="primary", disabled=not confirmar, key="pv_gc_btn_eliminar"):
         try:

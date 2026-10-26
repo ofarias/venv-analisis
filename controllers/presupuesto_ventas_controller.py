@@ -17,6 +17,7 @@ from models.presupuesto_ventas_model import (
     copiar_carga_presupuesto_ventas_model,
     eliminar_carga_presupuesto_ventas_model,
     eliminar_presupuesto_ventas_por_carga_model,
+    contar_lineas_autorizadas_por_carga_model,
     eliminar_presupuesto_ventas_por_registro_model,
     eliminar_staging_por_carga_presupuesto_ventas_model,
     guardar_presupuesto_ventas_batch_model,
@@ -677,6 +678,10 @@ def eliminar_carga_completa_presupuesto_ventas_ctrl(id_carga: int) -> dict:
     eliminar_staging_por_carga_presupuesto_ventas_model(id_carga)
     eliminar_carga_presupuesto_ventas_model(id_carga)
     return {"id_carga": id_carga, "eliminado": True}
+
+
+def contar_lineas_autorizadas_por_carga_ctrl(id_carga: int) -> int:
+    return contar_lineas_autorizadas_por_carga_model(id_carga)
 
 
 def copiar_carga_presupuesto_ventas_ctrl(id_carga_origen: int, anio_destino: int) -> dict:

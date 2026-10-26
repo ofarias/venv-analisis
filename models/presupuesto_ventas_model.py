@@ -1340,7 +1340,16 @@ def eliminar_presupuesto_ventas_por_registro_model(
 ) -> int:
     """Elimina TODOS los meses (todo el registro de la fila pivoteada) que
     coincidan con la combinación company/cliente/código/producto/linea_uid en una
-    carga+sección+región."""
+    carga+sección+región.
+
+    presupuesto_ventas_lineas (la autorización por línea) no distingue
+    sección/región — una misma identidad puede seguir teniendo renglones en
+    otra sección/región de la misma carga. Por eso, al terminar, revisa si
+    a esa identidad ya no le queda NINGÚN renglón en presupuesto_ventas
+    (en ninguna sección/región de la carga) y solo entonces borra también
+    su fila de presupuesto_ventas_lineas — si no, una recaptura futura de
+    la misma identidad heredaría el estatus viejo (ej. "rechazada") en vez
+    de arrancar en "captura"."""
     conn = obtener_conexion()
     try:
         cur = conn.cursor()
@@ -1369,8 +1378,49 @@ def eliminar_presupuesto_ventas_por_registro_model(
             sql += " and company is null"
 
         cur.execute(sql, tuple(params))
+        eliminados = cur.rowcount
+
+        sql_check = (
+            "select 1 from presupuesto_ventas "
+            "where id_carga = %s and producto_excel = %s and linea_uid = %s"
+        )
+        params_check: list = [int(id_carga), str(producto_excel), str(linea_uid or "")]
+        if cliente_excel is not None:
+            sql_check += " and cliente_excel = %s"; params_check.append(str(cliente_excel))
+        else:
+            sql_check += " and cliente_excel is null"
+        if codigo_origen is not None:
+            sql_check += " and codigo_origen = %s"; params_check.append(str(codigo_origen))
+        else:
+            sql_check += " and codigo_origen is null"
+        if company is not None:
+            sql_check += " and company = %s"; params_check.append(str(company))
+        else:
+            sql_check += " and company is null"
+        sql_check += " limit 1"
+
+        cur.execute(sql_check, tuple(params_check))
+        quedan_otros_renglones = cur.fetchone() is not None
+
+        if not quedan_otros_renglones:
+            cur.execute(
+                """
+                delete from presupuesto_ventas_lineas
+                where id_carga = %s and company <=> %s and cliente_excel <=> %s
+                  and codigo_origen <=> %s and producto_excel = %s and linea_uid = %s
+                """,
+                (
+                    int(id_carga),
+                    str(company).strip() if company else None,
+                    str(cliente_excel).strip() if cliente_excel else None,
+                    str(codigo_origen).strip() if codigo_origen else None,
+                    str(producto_excel),
+                    str(linea_uid or ""),
+                ),
+            )
+
         conn.commit()
-        return cur.rowcount
+        return eliminados
     finally:
         try:
             conn.close()
@@ -1445,6 +1495,25 @@ def copiar_carga_presupuesto_ventas_model(id_carga_origen: int, anio_destino: in
         conn.commit()
         return id_carga_nuevo, total_lineas
 
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def contar_lineas_autorizadas_por_carga_model(id_carga: int) -> int:
+    """Para avisar antes de eliminar una carga completa — si tiene líneas
+    ya autorizadas, borrarla las pierde (presupuesto_ventas_lineas se
+    borra en cascada junto con la carga)."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "select count(*) from presupuesto_ventas_lineas where id_carga = %s and estatus = 'autorizada'",
+            (int(id_carga),),
+        )
+        return int(cur.fetchone()[0])
     finally:
         try:
             conn.close()
