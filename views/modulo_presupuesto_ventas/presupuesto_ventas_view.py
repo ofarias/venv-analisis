@@ -1857,7 +1857,7 @@ def _tabla_filtrada_presupuesto(
 
 # ── panel: tabla pivot ────────────────────────────────────────────────────────
 
-def _panel_pivot(id_carga: int, col_generar=None, col_descargar=None) -> None:
+def _panel_pivot(id_carga: int, col_generar=None, col_descargar=None, col_jefe=None) -> None:
     df_all = obtener_presupuesto_ventas_ctrl(id_carga=id_carga)
     if df_all is None:
         df_all = pd.DataFrame()
@@ -1934,6 +1934,40 @@ def _panel_pivot(id_carga: int, col_generar=None, col_descargar=None) -> None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key=f"pv_export_dl_{id_carga}",
+            )
+
+    # "Reporte Jefe de Ventas por Unidad de Negocio" — cada vendedor lo
+    # genera desde SU propia carga y se lo envía a su jefe (que no tiene
+    # acceso a la pantalla "ver todos"), por eso siempre lleva el nombre
+    # del vendedor dueño de la carga, no del usuario que lo genera.
+    col_jefe = col_jefe if col_jefe is not None else st
+    jefe_export_key = f"pv_export_jefe_bytes_{id_carga}"
+    with col_jefe:
+        if st.button("📋 generar reporte Jefe", key=f"pv_export_jefe_gen_{id_carga}", use_container_width=True):
+            carga_meta = obtener_cargas_presupuesto_ventas_ctrl(id_carga=id_carga, limit=1)
+            propietario = (
+                str(carga_meta.iloc[0].get("propietario") or "").strip()
+                if carga_meta is not None and not carga_meta.empty else ""
+            )
+            # code_to_linea guarda (cve_linea, "cve — desc") — el reporte
+            # necesita solo el nombre descriptivo de la línea, no el código
+            mapa_linea = {
+                cve: (etq.split(" — ", 1)[1] if " — " in etq else etq)
+                for cve, (_, etq) in code_to_linea.items()
+            }
+            st.session_state[jefe_export_key] = _generar_reporte_jefe_ventas_bytes(
+                df_all, mapa_linea, anio_actual, vendedor_nombre=propietario or None,
+            )
+
+    if st.session_state.get(jefe_export_key):
+        with col_jefe:
+            st.download_button(
+                "⬇️ descargar reporte Jefe",
+                data=st.session_state[jefe_export_key],
+                file_name=f"reporte_jefe_ventas_unidad_negocio_{id_carga}_{anio_actual}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"pv_export_jefe_dl_{id_carga}",
             )
 
     mostrar_panel_reporte_gerente(id_carga, anio_actual)
@@ -2688,6 +2722,173 @@ def _tabla_generica_a_excel_bytes(nombre_hoja: str, df: pd.DataFrame, encabezado
         if valores:
             largo = max(largo, max(len(v) for v in valores))
         ws.column_dimensions[get_column_letter(idx)].width = min(largo + 2, 40)
+
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+_MESES_NOMBRE_COMPLETO = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+
+
+def _generar_reporte_jefe_ventas_bytes(
+    df_venta: pd.DataFrame, mapa_linea: dict[str, str], anio_titulo, vendedor_nombre: str | None = None,
+) -> bytes:
+    """"Reporte Jefe de Ventas por Unidad de Negocio" — lo genera cada
+    vendedor desde SU propia carga (pantalla Tabla), para enviárselo a su
+    jefe; por eso siempre lleva el nombre del vendedor (columna VENDEDOR y
+    en el título), ya que el jefe no tiene acceso a la pantalla "ver todos"
+    y solo ve este Excel suelto. Mismo formato que el Excel de referencia:
+    Clave/Cliente/SKU/Producto/Área/Vendedor/Precio/Tipo + 12 meses de
+    Cantidad y 12 meses de Valor USD, con un "TOTAL <área>" después de cada
+    unidad de negocio y un total general al final — calculado en vivo
+    desde la BD, no copiando las fórmulas del Excel de referencia (venían
+    con rangos desalineados por ediciones manuales previas)."""
+    df = df_venta.copy()
+    if "seccion" in df.columns:
+        df = df[df["seccion"].astype(str).str.upper() == "KG"]
+
+    df["cve_prod"] = df["cve_prod"].fillna("").astype(str).str.strip()
+    if vendedor_nombre:
+        df["usuario_nombre"] = vendedor_nombre
+    df["AREA"] = df["cve_prod"].map(mapa_linea).fillna("(SIN LÍNEA)")
+
+    claves_id = ["cve_clie", "cliente_excel", "cve_prod", "producto_excel", "AREA", "usuario_nombre", "precio", "estatus_excel"]
+    for c in claves_id:
+        if c not in df.columns:
+            df[c] = None
+    df[claves_id] = df[claves_id].fillna("")
+    df["mes"] = pd.to_numeric(df["mes"], errors="coerce").fillna(0).astype(int)
+
+    agg = df.groupby(claves_id + ["mes"], dropna=False, as_index=False).agg(
+        cantidad_kg=("cantidad_kg", "sum"), valor=("valor", "sum"),
+    )
+    pivot_cant = agg.pivot_table(index=claves_id, columns="mes", values="cantidad_kg", aggfunc="sum", fill_value=0)
+    pivot_usd = agg.pivot_table(index=claves_id, columns="mes", values="valor", aggfunc="sum", fill_value=0)
+
+    columnas = [
+        "CLAVE", "CLIENTE", "CLAVE DEL PRODUCTO SKU", "PRODUCTO", "AREA", "VENDEDOR",
+        "PRECIO UNITARIO EN DOLARES", "TIPO",
+    ] + [_MESES_NOMBRE_COMPLETO[m] for m in range(1, 13)] + ["TOTAL"] + [None] + [
+        f"{_MESES_NOMBRE_COMPLETO[m]} " for m in range(1, 13)
+    ] + ["TOTAL "]
+    # los nombres de mes se repiten en los dos bloques (cantidad y USD) —
+    # un espacio al final en el segundo bloque los distingue como claves de
+    # dict sin que se vean distintos como encabezado de Excel.
+
+    filas: list[dict] = []
+    subtotales_area: dict[str, dict] = {}
+    orden_area: list[str] = []
+
+    identidades = sorted(pivot_cant.index.tolist(), key=lambda t: (t[4], t[1]))  # AREA, CLIENTE
+    for ident in identidades:
+        cve_clie, cliente, cve_prod, producto, area, vendedor, precio, tipo = ident
+        cant_mensual = [float(pivot_cant.loc[ident, m]) if m in pivot_cant.columns else 0.0 for m in range(1, 13)]
+        usd_mensual = [float(pivot_usd.loc[ident, m]) if m in pivot_usd.columns else 0.0 for m in range(1, 13)]
+
+        fila = {
+            "CLAVE": cve_clie or None, "CLIENTE": cliente, "CLAVE DEL PRODUCTO SKU": cve_prod or None,
+            "PRODUCTO": producto, "AREA": area, "VENDEDOR": vendedor,
+            "PRECIO UNITARIO EN DOLARES": round(float(precio), 4) if precio not in (None, "") else None,
+            "TIPO": tipo or None,
+        }
+        for m in range(1, 13):
+            fila[_MESES_NOMBRE_COMPLETO[m]] = round(cant_mensual[m - 1], 2) or None
+        fila["TOTAL"] = round(sum(cant_mensual), 2)
+        for m in range(1, 13):
+            fila[f"{_MESES_NOMBRE_COMPLETO[m]} "] = round(usd_mensual[m - 1], 2) or None
+        fila["TOTAL "] = round(sum(usd_mensual), 2)
+        filas.append(fila)
+
+        if area not in subtotales_area:
+            subtotales_area[area] = {"cant": [0.0] * 12, "usd": [0.0] * 12}
+            orden_area.append(area)
+        for i in range(12):
+            subtotales_area[area]["cant"][i] += cant_mensual[i]
+            subtotales_area[area]["usd"][i] += usd_mensual[i]
+
+    # vuelve a armar la lista de filas insertando el "TOTAL <área>" justo
+    # después del último renglón de cada área (ya calculado como suma real
+    # de las filas de esa área, no copiando una fórmula de rango fijo)
+    filas_con_subtotal: list[dict] = []
+    area_actual = None
+    for fila in filas:
+        if area_actual is not None and fila["AREA"] != area_actual:
+            filas_con_subtotal.append(_fila_subtotal_area(area_actual, subtotales_area[area_actual]))
+        filas_con_subtotal.append(fila)
+        area_actual = fila["AREA"]
+    if area_actual is not None:
+        filas_con_subtotal.append(_fila_subtotal_area(area_actual, subtotales_area[area_actual]))
+
+    total_general_cant = [sum(subtotales_area[a]["cant"][i] for a in orden_area) for i in range(12)]
+    total_general_usd = [sum(subtotales_area[a]["usd"][i] for a in orden_area) for i in range(12)]
+    vendedores_presentes = sorted({f["VENDEDOR"] for f in filas if f["VENDEDOR"]})
+    etiqueta_general = (
+        f"TOTAL {vendedores_presentes[0].upper()}" if len(vendedores_presentes) == 1 else "TOTAL GENERAL"
+    )
+    filas_con_subtotal.append(_fila_subtotal_area(etiqueta_general, {"cant": total_general_cant, "usd": total_general_usd}, es_total_general=True))
+
+    titulo_vendedor = vendedor_nombre or (vendedores_presentes[0] if len(vendedores_presentes) == 1 else "")
+    return _reporte_jefe_ventas_a_excel_bytes(filas_con_subtotal, columnas, anio_titulo, titulo_vendedor)
+
+
+def _fila_subtotal_area(area: str, totales: dict, es_total_general: bool = False) -> dict:
+    fila = {
+        "CLAVE": None, "CLIENTE": f"TOTAL {area}" if not es_total_general else area,
+        "CLAVE DEL PRODUCTO SKU": None, "PRODUCTO": None, "AREA": area, "VENDEDOR": None,
+        "PRECIO UNITARIO EN DOLARES": None, "TIPO": None, "_es_subtotal": True,
+    }
+    for m in range(1, 13):
+        fila[_MESES_NOMBRE_COMPLETO[m]] = round(totales["cant"][m - 1], 2)
+        fila[f"{_MESES_NOMBRE_COMPLETO[m]} "] = round(totales["usd"][m - 1], 2)
+    fila["TOTAL"] = round(sum(totales["cant"]), 2)
+    fila["TOTAL "] = round(sum(totales["usd"]), 2)
+    return fila
+
+
+def _reporte_jefe_ventas_a_excel_bytes(filas: list[dict], columnas: list, anio_titulo, vendedor_nombre: str = "") -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    titulo_hoja = f"{vendedor_nombre} {anio_titulo}".strip() if vendedor_nombre else f"Jefe Ventas {anio_titulo}"
+    ws.title = titulo_hoja[:31]
+
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    subtotal_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+    subtotal_font = Font(bold=True)
+
+    # fila de título con el nombre del vendedor — el jefe no entra a la app
+    # a ver quién lo generó, solo recibe este Excel suelto
+    if vendedor_nombre:
+        ws.append([f"PRESUPUESTO {vendedor_nombre.upper()} {anio_titulo}"])
+        ws["A1"].font = Font(bold=True, size=13)
+        ws.append([])
+
+    fila_encabezado = ws.max_row + 1
+    encabezados_visibles = [c.strip() if c else "" for c in columnas]
+    ws.append(encabezados_visibles)
+    for cell in ws[fila_encabezado]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_align
+    ws.freeze_panes = f"F{fila_encabezado + 1}"
+
+    for fila in filas:
+        es_subtotal = fila.get("_es_subtotal", False)
+        valores = [fila.get(c) if c else None for c in columnas]
+        ws.append(valores)
+        if es_subtotal:
+            for cell in ws[ws.max_row]:
+                cell.fill = subtotal_fill
+                cell.font = subtotal_font
+
+    for idx, col_name in enumerate(columnas, start=1):
+        ancho = 14 if col_name and col_name.strip() not in ("CLIENTE", "PRODUCTO") else 26
+        ws.column_dimensions[get_column_letter(idx)].width = ancho if col_name else 3
 
     output = BytesIO()
     wb.save(output)
@@ -4129,10 +4330,10 @@ def mostrar_modulo_presupuesto_ventas() -> None:
         sub_ventas, sub_compras = st.tabs(["Ventas", "Compras"])
         with sub_ventas:
             _panel_crear_manual()
-            col_sel, col_gen, col_desc = st.columns([3, 1, 1])
+            col_sel, col_gen, col_desc, col_desc_jefe = st.columns([2.6, 1, 1, 1.8])
             id_carga = _selector_carga(col_sel)
             if id_carga is not None:
-                _panel_pivot(id_carga, col_generar=col_gen, col_descargar=col_desc)
+                _panel_pivot(id_carga, col_generar=col_gen, col_descargar=col_desc, col_jefe=col_desc_jefe)
         with sub_compras:
             _panel_crear_manual_compras()
             col_sel_c, col_gen_c, col_desc_c = st.columns([3, 1, 1])
