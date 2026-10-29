@@ -1075,9 +1075,11 @@ def _panel_crear_manual() -> None:
 
 # ── panel: carga de Excel ─────────────────────────────────────────────────────
 
-def _generar_excel_productos_sae_bytes(df: pd.DataFrame) -> bytes:
-    """Excel con clave, nombre y existencia al día de los productos activos en
-    SAE — usado como referencia rápida al capturar el presupuesto de ventas."""
+def _generar_excel_productos_sae_bytes(df: pd.DataFrame, df_clientes: pd.DataFrame | None = None) -> bytes:
+    """Excel con clave, nombre y existencia al día de los productos activos
+    en SAE, más una segunda hoja con los clientes activos en SAE (clave,
+    nombre, estado) — ambos como referencia rápida al capturar el
+    presupuesto de ventas."""
     wb = Workbook()
     ws = wb.active
     ws.title = "productos_sae"
@@ -1107,6 +1109,27 @@ def _generar_excel_productos_sae_bytes(df: pd.DataFrame) -> bytes:
     ws.column_dimensions["B"].width = 50
     ws.column_dimensions["C"].width = 14
 
+    ws_clientes = wb.create_sheet("clientes_sae")
+    ws_clientes.append(["Clave", "Nombre", "RFC", "Municipio"])
+    for cell in ws_clientes[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+    ws_clientes.freeze_panes = "A2"
+
+    if df_clientes is not None and not df_clientes.empty:
+        for _, fila in df_clientes.iterrows():
+            ws_clientes.append([
+                fila.get("clave"),
+                fila.get("nombre"),
+                fila.get("rfc"),
+                fila.get("municipio"),
+            ])
+
+    ws_clientes.column_dimensions["A"].width = 14
+    ws_clientes.column_dimensions["B"].width = 50
+    ws_clientes.column_dimensions["C"].width = 18
+    ws_clientes.column_dimensions["D"].width = 20
+
     output = BytesIO()
     wb.save(output)
     return output.getvalue()
@@ -1126,14 +1149,18 @@ def _panel_carga() -> None:
         )
     with col_productos:
         df_productos_sae = obtener_existencias_productos_pv_ctrl()
+        df_clientes_sae = obtener_catalogo_clientes_pv_ctrl()
         st.download_button(
-            "⬇️ descargar productos SAE (clave, nombre, existencia)",
-            data=_generar_excel_productos_sae_bytes(df_productos_sae),
-            file_name="productos_sae_existencia.xlsx",
+            "⬇️ descargar productos y clientes SAE",
+            data=_generar_excel_productos_sae_bytes(df_productos_sae, df_clientes_sae),
+            file_name="productos_clientes_sae.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="pv_btn_productos_sae",
             use_container_width=True,
-            help="catálogo de productos activos en SAE con su existencia al día (clave, nombre, existencia)",
+            help=(
+                "catálogo de productos activos en SAE con su existencia al día (hoja "
+                "\"productos_sae\") y catálogo de clientes activos en SAE (hoja \"clientes_sae\")"
+            ),
         )
 
     archivo = st.file_uploader(
