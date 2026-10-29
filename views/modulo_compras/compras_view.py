@@ -7,6 +7,7 @@ from views.modulo_compras.tab_demanda_forecast_view import mostrar_tab_demanda_f
 from views.modulo_compras.tab_autorizaciones_compras_view import mostrar_tab_autorizaciones_compras
 from views.modulo_compras.tab_reglas_autorizacion_view import mostrar_tab_reglas_autorizacion
 from views.modulo_compras.tab_campos_dinamicos_view import mostrar_tab_campos_dinamicos
+from views.modulo_compras.tab_seguimiento_compras_view import mostrar_tab_seguimiento_compras
 from controllers.compras_solicitudes_controller import usuario_tiene_solicitudes_asignadas_ctrl
 
 
@@ -37,7 +38,7 @@ def mostrar_modulo_compras():
     secciones = []
     if es_admin_compras:
         secciones.append("Catálogos")
-    secciones += ["Solicitudes", "Pendientes"]
+    secciones += ["Solicitudes", "Pendientes", "🟢 Seguimiento"]
     if es_admin_compras:
         secciones.append("📦 Demanda (Forecast)")
     if es_autorizador_compras:
@@ -64,6 +65,8 @@ def mostrar_modulo_compras():
         mostrar_tab_solicitudes_compras()
     elif seccion == "Pendientes":
         mostrar_tab_solicitudes_pendientes()
+    elif seccion == "🟢 Seguimiento":
+        mostrar_tab_seguimiento_compras()
     elif seccion == "📦 Demanda (Forecast)":
         mostrar_tab_demanda_forecast()
     elif seccion == "✅ Autorizaciones":
