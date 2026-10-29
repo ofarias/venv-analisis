@@ -8,6 +8,7 @@ from views.modulo_compras.tab_autorizaciones_compras_view import mostrar_tab_aut
 from views.modulo_compras.tab_reglas_autorizacion_view import mostrar_tab_reglas_autorizacion
 from views.modulo_compras.tab_campos_dinamicos_view import mostrar_tab_campos_dinamicos
 from views.modulo_compras.tab_seguimiento_compras_view import mostrar_tab_seguimiento_compras
+from views.modulo_compras.tab_productos_obsoletos_view import mostrar_tab_productos_obsoletos
 from controllers.compras_solicitudes_controller import usuario_tiene_solicitudes_asignadas_ctrl
 
 
@@ -47,6 +48,8 @@ def mostrar_modulo_compras():
         secciones.append("⚙️ Reglas de Autorización")
     if es_admin_rol:
         secciones.append("🧩 Formularios Dinámicos")
+    if es_admin_compras:
+        secciones.append("📦 Productos Obsoletos")
 
     # st.pills (a diferencia de st.tabs) informa cuál sección está activa,
     # así que solo se ejecuta el código de esa sección — st.tabs corre todas
@@ -75,3 +78,5 @@ def mostrar_modulo_compras():
         mostrar_tab_reglas_autorizacion()
     elif seccion == "🧩 Formularios Dinámicos":
         mostrar_tab_campos_dinamicos()
+    elif seccion == "📦 Productos Obsoletos":
+        mostrar_tab_productos_obsoletos()
