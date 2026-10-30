@@ -25,6 +25,22 @@ _CELL_STYLE_ENTRADAS_JS = JsCode(f"function(p){{return {{backgroundColor:'#{_AZU
 _CELL_STYLE_SALIDAS_JS = JsCode(f"function(p){{return {{backgroundColor:'#{_VERDE_SALIDAS}'}};}}")
 _CELL_STYLE_FINAL_JS = JsCode(f"function(p){{return {{backgroundColor:'#{_MORADO_FINAL}'}};}}")
 
+# Kg: separador de miles, sin decimales. USD: separador de miles, 2 decimales.
+_VALUE_FORMATTER_KG_JS = JsCode("""
+function(params) {
+    if (params.value === null || params.value === undefined || params.value === '') return '';
+    return Number(params.value).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+}
+""")
+_VALUE_FORMATTER_USD_JS = JsCode("""
+function(params) {
+    if (params.value === null || params.value === undefined || params.value === '') return '';
+    return '$' + Number(params.value).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+""")
+
+_COLS_USD_FIJAS = {"Costo Promedio del Artículo", "Costo Promedio Total"}
+
 # mismo texto para el expander de la app y la hoja "Notas" del Excel — una
 # sola fuente, para que no se desalineen con el tiempo
 _NOTAS_CALCULO = [
@@ -122,6 +138,13 @@ def _reporte_a_excel_bytes(df: pd.DataFrame, anio: int) -> bytes:
             for fila_idx in range(2, fila_final + 1):
                 ws.cell(row=fila_idx, column=idx).fill = fill
 
+        es_kg = col_name.startswith(("Entradas ", "Salidas ", "Final "))
+        es_usd = col_name in _COLS_USD_FIJAS
+        if es_kg or es_usd:
+            formato = "#,##0" if es_kg else "$#,##0.00"
+            for fila_idx in range(2, fila_final + 1):
+                ws.cell(row=fila_idx, column=idx).number_format = formato
+
         largo = len(str(col_name))
         valores_txt = df[col_name].astype(str).tolist()[:200]
         if valores_txt:
@@ -157,11 +180,13 @@ def _mostrar_grid(df: pd.DataFrame):
 
     for col in df.columns:
         if col.startswith("Entradas "):
-            gb.configure_column(col, cellStyle=_CELL_STYLE_ENTRADAS_JS, width=130)
+            gb.configure_column(col, cellStyle=_CELL_STYLE_ENTRADAS_JS, valueFormatter=_VALUE_FORMATTER_KG_JS, width=130)
         elif col.startswith("Salidas "):
-            gb.configure_column(col, cellStyle=_CELL_STYLE_SALIDAS_JS, width=130)
+            gb.configure_column(col, cellStyle=_CELL_STYLE_SALIDAS_JS, valueFormatter=_VALUE_FORMATTER_KG_JS, width=130)
         elif col.startswith("Final "):
-            gb.configure_column(col, cellStyle=_CELL_STYLE_FINAL_JS, width=130)
+            gb.configure_column(col, cellStyle=_CELL_STYLE_FINAL_JS, valueFormatter=_VALUE_FORMATTER_KG_JS, width=130)
+        elif col in _COLS_USD_FIJAS:
+            gb.configure_column(col, valueFormatter=_VALUE_FORMATTER_USD_JS, width=140)
 
     AgGrid(
         df,
