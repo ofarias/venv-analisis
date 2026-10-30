@@ -1022,7 +1022,7 @@ def cargar_excel_directo_presupuesto_ventas_ctrl(
     cve_clie_col: list[Optional[str]] = []
     cliente_excel_col: list[Optional[str]] = []
     for _, row in df_norm.iterrows():
-        cve_clie, cliente_excel_final, _ = _resolver_cliente_sae(
+        cve_clie, cliente_excel_final, _, _ = _resolver_cliente_sae(
             row.get("codigo_origen"), row.get("cliente_excel"),
             clientes_por_clave, clientes_por_nombre,
         )

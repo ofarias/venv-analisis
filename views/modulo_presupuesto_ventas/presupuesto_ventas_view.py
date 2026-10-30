@@ -743,7 +743,7 @@ _LAYOUT_INSTRUCCIONES = [
     "PRODUCTO, PRECIO USD/KG, PRECIO VENTA y luego los 12 meses — no insertes ni borres columnas en medio.",
     "4. PRECIO VENTA es opcional (déjalo en 0 o vacío si no aplica) — es el precio de venta que "
     "captura el usuario, distinto de PRECIO USD/KG (que es el precio de referencia de SAE).",
-    "5. ESTATUS solo acepta: Budgeted, Budgeteed o Not in BGT (o dejarlo vacío).",
+    "5. ESTATUS solo acepta: Budgeted, Budgeteed, Not in BGT o Prospecto (o dejarlo vacío).",
     "6. CVE PROD es la clave del producto en SAE (código B-xxxx). Si coincide con el catálogo, "
     "en la app aparecerá marcado en verde 🟢; si no, en naranja 🟠 (puedes corregirlo después "
     "desde la app con el buscador de producto SAE).",

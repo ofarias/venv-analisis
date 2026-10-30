@@ -28,6 +28,7 @@ ESTATUS_VALIDOS = {
     "BUDGETED",
     "BUDGETEED",
     "NOT IN BGT",
+    "PROSPECTO",
 }
 
 
