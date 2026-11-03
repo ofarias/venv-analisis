@@ -44,7 +44,11 @@ _COLS_USD_FIJAS = {"Costo Promedio del Artículo", "Costo Promedio Total"}
 _VALUE_FORMATTER_FECHA_JS = JsCode("""
 function(params) {
     if (params.value === null || params.value === undefined || params.value === '') return '';
-    var partes = String(params.value).split('-');
+    // el valor llega como ISO, a veces con hora/zona pegada
+    // (ej. "2026-06-22T00:00:00.000Z") — se descarta todo lo que no sea
+    // la fecha antes de reacomodarla
+    var soloFecha = String(params.value).split('T')[0].split(' ')[0];
+    var partes = soloFecha.split('-');
     if (partes.length !== 3) return params.value;
     return partes[2] + '-' + partes[1] + '-' + partes[0];
 }
