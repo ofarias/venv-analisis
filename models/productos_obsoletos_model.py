@@ -141,9 +141,9 @@ def construir_reporte_productos_obsoletos_model(anio: int, almacenes: list[int] 
             "Lote": lote["LOTE"],
             "Línea": lote["LINEA"],
             "Control Almacén": lote["CONTROL_ALMACEN"],
-            "Fecha Última Compra": fecha_ultima_compra_por_lote.get(reg),
-            "Fecha Último Movimiento": lote["FCHULTMOV"],
-            "Fecha de Caducidad": lote["FCHCADUC"],
+            "Fecha Última Compra": _a_fecha(fecha_ultima_compra_por_lote.get(reg)),
+            "Fecha Último Movimiento": _a_fecha(lote["FCHULTMOV"]),
+            "Fecha de Caducidad": _a_fecha(lote["FCHCADUC"]),
             "Año de compra": (
                 fecha_ultima_compra_por_lote[reg].year if reg in fecha_ultima_compra_por_lote else None
             ),

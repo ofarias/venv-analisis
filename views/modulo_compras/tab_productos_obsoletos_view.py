@@ -41,6 +41,15 @@ function(params) {
 
 _COLS_USD_FIJAS = {"Costo Promedio del Artículo", "Costo Promedio Total"}
 
+_VALUE_FORMATTER_FECHA_JS = JsCode("""
+function(params) {
+    if (params.value === null || params.value === undefined || params.value === '') return '';
+    var partes = String(params.value).split('-');
+    if (partes.length !== 3) return params.value;
+    return partes[2] + '-' + partes[1] + '-' + partes[0];
+}
+""")
+
 # mismo texto para el expander de la app y la hoja "Notas" del Excel — una
 # sola fuente, para que no se desalineen con el tiempo
 _NOTAS_CALCULO = [
@@ -140,8 +149,9 @@ def _reporte_a_excel_bytes(df: pd.DataFrame, anio: int) -> bytes:
 
         es_kg = col_name.startswith(("Entradas ", "Salidas ", "Final "))
         es_usd = col_name in _COLS_USD_FIJAS
-        if es_kg or es_usd:
-            formato = "#,##0" if es_kg else "$#,##0.00"
+        es_fecha = col_name in _COLS_FECHA
+        if es_kg or es_usd or es_fecha:
+            formato = "#,##0" if es_kg else ("$#,##0.00" if es_usd else "DD-MM-YYYY")
             for fila_idx in range(2, fila_final + 1):
                 ws.cell(row=fila_idx, column=idx).number_format = formato
 
@@ -187,6 +197,8 @@ def _mostrar_grid(df: pd.DataFrame):
             gb.configure_column(col, cellStyle=_CELL_STYLE_FINAL_JS, valueFormatter=_VALUE_FORMATTER_KG_JS, width=130)
         elif col in _COLS_USD_FIJAS:
             gb.configure_column(col, valueFormatter=_VALUE_FORMATTER_USD_JS, width=140)
+        elif col in _COLS_FECHA:
+            gb.configure_column(col, valueFormatter=_VALUE_FORMATTER_FECHA_JS, width=120)
 
     AgGrid(
         df,
