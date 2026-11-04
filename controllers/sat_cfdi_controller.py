@@ -174,8 +174,13 @@ def verificar_y_completar_pendientes(secrets) -> list[dict]:
                     # DATOSCFD + CONCEPTOS (mismas tablas que usa la carga manual
                     # de XML/PDF) para que quede unificado con el resto del sistema.
                     for c in cfdis:
+                        # importar_cfdi_xml_a_mysql no lanza: devuelve ok=False
+                        # (p. ej. un campo que no cabe en la columna), así que
+                        # hay que contar ese caso también o se pierde en silencio.
                         try:
-                            importar_cfdi_xml_a_mysql(c["xml"].encode("utf-8"))
+                            r = importar_cfdi_xml_a_mysql(c["xml"].encode("utf-8"))
+                            if not r.get("ok"):
+                                errores_datoscfd += 1
                         except Exception:
                             errores_datoscfd += 1
                 actualizar_sync_run(

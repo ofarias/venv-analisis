@@ -23,7 +23,7 @@ from models.sae_model import (
 from controllers.ada_controller import (
     cargar_tipos,
     cargar_documentos,
-    contar_documentos_cached,
+    contar_documentos_combinado,
     exportar_excel,
     cargar_proveedores_activos,
     cargar_paga_por_fecha,     # snapshots SAE por rango de fechas
@@ -284,7 +284,7 @@ def insertarSAE():
 
     # contar
     try:
-        total = contar_documentos_cached(st.secrets, filtros)
+        total = contar_documentos_combinado(st.secrets, filtros)
     except Exception as e:
         st.error(f"error al contar documentos: {e}")
         return
