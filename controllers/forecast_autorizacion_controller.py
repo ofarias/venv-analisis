@@ -389,6 +389,49 @@ _MES_UNICO_ANUAL = [1]  # bucket único: el helper compartido solo necesita UN "
 # que nunca se repone a la mitad del año en este modelo).
 
 
+def _acumular_presupuesto_capturado(
+    anio: int, meses: list[int] | None,
+) -> tuple[dict[tuple[str, int], float], dict[tuple[str, int], float], dict[str, set[str]]]:
+    """Trae y acumula el Presupuesto de Ventas/Compras capturado (todos los
+    usuarios, sin filtrar por autorización) por (cve_prod, mes) — o, si
+    `meses` es None, por (cve_prod, _MES_UNICO_ANUAL) como un solo bucket
+    anual. Reutilizado por las variantes anual y mensual de la congruencia
+    de presupuesto."""
+    df = obtener_presupuesto_ventas_compras_ctrl(anio=anio, tipo=["venta", "compra"])
+    venta_acc: dict[tuple[str, int], float] = {}
+    compra_acc: dict[tuple[str, int], float] = {}
+    vendedores_por_producto: dict[str, set[str]] = {}
+    if df is None or df.empty:
+        return venta_acc, compra_acc, vendedores_por_producto
+
+    df["cantidad_kg"] = pd.to_numeric(df["cantidad_kg"], errors="coerce").fillna(0.0)
+    df["anio"] = pd.to_numeric(df["anio"], errors="coerce")
+    df["cve_prod"] = df["cve_prod"].astype(str).str.strip()
+    # el filtro anio=anio ya va en el SQL (obtener_presupuesto_ventas_compras_model);
+    # se repite aquí como segunda barrera para que nunca se mezclen años aunque
+    # llegara alguna fila con anio distinto o NaN.
+    mask = (df["cve_prod"] != "") & (df["anio"] == anio) & (df["cantidad_kg"] != 0)
+    if meses is not None:
+        df["mes"] = pd.to_numeric(df["mes"], errors="coerce")
+        mask &= df["mes"].isin(meses)
+    df = df[mask]
+    if df.empty:
+        return venta_acc, compra_acc, vendedores_por_producto
+
+    for r in df.to_dict("records"):
+        mes_key = int(r["mes"]) if meses is not None else _MES_UNICO_ANUAL[0]
+        key = (r["cve_prod"], mes_key)
+        if r["tipo"] == "venta":
+            venta_acc[key] = venta_acc.get(key, 0.0) + float(r["cantidad_kg"])
+            nombre = str(r.get("usuario_nombre") or "").strip()
+            if nombre:
+                vendedores_por_producto.setdefault(r["cve_prod"], set()).add(nombre)
+        else:
+            compra_acc[key] = compra_acc.get(key, 0.0) + float(r["cantidad_kg"])
+
+    return venta_acc, compra_acc, vendedores_por_producto
+
+
 @st.cache_data(ttl=300, show_spinner="calculando congruencia de presupuesto (venta vs. compra vs. existencia)…")
 def calcular_congruencia_presupuesto_anual_ctrl(anio: int) -> pd.DataFrame:
     """
@@ -407,34 +450,9 @@ def calcular_congruencia_presupuesto_anual_ctrl(anio: int) -> pd.DataFrame:
     está cubierto), resultado (existencia + compra - venta; negativo =
     faltante, positivo = superávit), vendedores.
     """
-    df = obtener_presupuesto_ventas_compras_ctrl(anio=anio, tipo=["venta", "compra"])
-    if df is None or df.empty:
+    venta_acc, compra_acc, vendedores_por_producto = _acumular_presupuesto_capturado(anio, meses=None)
+    if not venta_acc and not compra_acc:
         return pd.DataFrame()
-
-    df["cantidad_kg"] = pd.to_numeric(df["cantidad_kg"], errors="coerce").fillna(0.0)
-    df["anio"] = pd.to_numeric(df["anio"], errors="coerce")
-    df["cve_prod"] = df["cve_prod"].astype(str).str.strip()
-    # el filtro anio=anio ya va en el SQL (obtener_presupuesto_ventas_compras_model);
-    # se repite aquí como segunda barrera para que nunca se mezclen años aunque
-    # llegara alguna fila con anio distinto o NaN. Sin filtro de mes — se
-    # quiere el total del año completo, no un rango.
-    df = df[(df["cve_prod"] != "") & (df["anio"] == anio) & (df["cantidad_kg"] != 0)]
-    if df.empty:
-        return pd.DataFrame()
-
-    venta_acc: dict[tuple[str, int], float] = {}
-    compra_acc: dict[tuple[str, int], float] = {}
-    vendedores_por_producto: dict[str, set[str]] = {}
-
-    for r in df.to_dict("records"):
-        key = (r["cve_prod"], _MES_UNICO_ANUAL[0])
-        if r["tipo"] == "venta":
-            venta_acc[key] = venta_acc.get(key, 0.0) + float(r["cantidad_kg"])
-            nombre = str(r.get("usuario_nombre") or "").strip()
-            if nombre:
-                vendedores_por_producto.setdefault(r["cve_prod"], set()).add(nombre)
-        else:
-            compra_acc[key] = compra_acc.get(key, 0.0) + float(r["cantidad_kg"])
 
     df_resultado = _necesidad_compra_desde_acumulados(
         venta_acc, compra_acc, vendedores_por_producto, _MES_UNICO_ANUAL,
@@ -444,6 +462,31 @@ def calcular_congruencia_presupuesto_anual_ctrl(anio: int) -> pd.DataFrame:
     if df_resultado.empty:
         return df_resultado
     return df_resultado.drop(columns=["mes", "mes_nombre", "origen_forecast"])
+
+
+@st.cache_data(ttl=300, show_spinner="calculando congruencia de presupuesto por mes…")
+def calcular_congruencia_presupuesto_mensual_ctrl(anio: int, meses: list[int]) -> pd.DataFrame:
+    """
+    Misma congruencia que `calcular_congruencia_presupuesto_anual_ctrl`, pero
+    con el desglose mes a mes (una fila por cve_prod × mes) — para ver EN QUÉ
+    MES ocurre el faltante, no solo si existe en el año. Columnas: cve_prod,
+    producto, mes, mes_nombre, existencia_inicio, venta_forecast,
+    compra_cubierta, necesidad, resultado, vendedores.
+    """
+    if not meses:
+        return pd.DataFrame()
+    venta_acc, compra_acc, vendedores_por_producto = _acumular_presupuesto_capturado(anio, meses=meses)
+    if not venta_acc and not compra_acc:
+        return pd.DataFrame()
+
+    df_resultado = _necesidad_compra_desde_acumulados(
+        venta_acc, compra_acc, vendedores_por_producto, meses,
+        fallback_venta_keys=set(), fallback_compra_keys=set(),
+        etiqueta_normal="presupuesto capturado", etiqueta_fallback="presupuesto capturado",
+    )
+    if df_resultado.empty:
+        return df_resultado
+    return df_resultado.drop(columns=["origen_forecast"])
 
 
 def _lineas_presupuesto_fallback(usuario_id: int, anio: int, mes: int, cve_prod: str) -> list[dict]:
@@ -725,3 +768,113 @@ def desglosar_necesidad_mp_presupuesto_ctrl(cve_mp: str, anio: int) -> dict:
             })
 
     return {"directo": directo, "formula": formula_detalle}
+
+
+@st.cache_data(ttl=300, show_spinner="calculando desglose…")
+def desglosar_necesidad_mp_presupuesto_mensual_ctrl(cve_mp: str, anio: int, meses: list[int]) -> dict:
+    """Igual que `desglosar_necesidad_mp_presupuesto_ctrl`, pero con el
+    desglose mes a mes en vez de un solo total anual — para
+    `calcular_congruencia_presupuesto_mensual_ctrl`.
+
+    Retorna {"meses": [...], "directo": {mes: [fuente,...]}, "formula":
+    {mes: [{"cve_pt","producto_pt","rol","pct","venta_consolidada",
+    "existencia_pt_inicio","a_producir","aporte","fuentes":[...]}]}}."""
+    cve_mp = str(cve_mp).strip().upper()
+    meses_ordenados = sorted(meses)
+
+    try:
+        formulas = listar_formulas_readonly_model()
+    except Exception:
+        formulas = []
+    pts_relevantes: dict[str, tuple[str, float]] = {}
+    for f in formulas:
+        cve_sae = str(f.get("cve_sae") or "").strip()
+        if not cve_sae:
+            continue
+        componentes = []
+        carrier = f.get("carrier")
+        if isinstance(carrier, dict) and carrier.get("mp"):
+            componentes.append(("carrier", carrier))
+        for grupo in ("enzimas", "auxiliares"):
+            for c in (f.get(grupo) or []):
+                if isinstance(c, dict) and c.get("mp"):
+                    componentes.append((grupo, c))
+        for rol, c in componentes:
+            if str(c.get("mp") or "").strip().upper() == cve_mp:
+                pts_relevantes[cve_sae] = (rol, float(c.get("pct") or 0))
+
+    cve_prods_fuente = {cve_mp} | set(pts_relevantes.keys())
+
+    df = obtener_presupuesto_ventas_compras_ctrl(anio=anio, tipo=["venta"])
+    venta_acc: dict[tuple[str, int], float] = {}
+    fuentes: dict[tuple[str, int], list[dict]] = {}
+    if df is not None and not df.empty:
+        df["cantidad_kg"] = pd.to_numeric(df["cantidad_kg"], errors="coerce").fillna(0.0)
+        df["mes"] = pd.to_numeric(df["mes"], errors="coerce")
+        df["anio"] = pd.to_numeric(df["anio"], errors="coerce")
+        df["cve_prod"] = df["cve_prod"].astype(str).str.strip()
+        df = df[
+            (df["anio"] == anio) & df["mes"].isin(meses_ordenados)
+            & df["cve_prod"].isin(cve_prods_fuente) & (df["cantidad_kg"] != 0)
+        ]
+        for (cve, mes, vendedor), grupo in df.groupby(["cve_prod", "mes", "usuario_nombre"], dropna=False):
+            mes = int(mes)
+            key = (cve, mes)
+            total_vendedor = float(grupo["cantidad_kg"].sum())
+            venta_acc[key] = venta_acc.get(key, 0.0) + total_vendedor
+            fuentes.setdefault(key, []).append({
+                "vendedor": str(vendedor or "").strip() or "(sin vendedor)",
+                "origen": "presupuesto capturado",
+                "valor": round(total_vendedor, 2),
+                "lineas": [
+                    {
+                        "cliente": str(r.get("cliente_excel") or "").strip(),
+                        "cve_clie": str(r.get("cve_clie") or "").strip(),
+                        "cantidad_kg": float(r.get("cantidad_kg") or 0.0),
+                    }
+                    for r in grupo.to_dict("records")
+                    if float(r.get("cantidad_kg") or 0.0)
+                ],
+            })
+
+    directo = {mes: fuentes.get((cve_mp, mes), []) for mes in meses_ordenados}
+
+    try:
+        rows_pt = listar_pt_sae_model()
+        df_pt_exist = pd.DataFrame(rows_pt) if rows_pt else pd.DataFrame()
+    except Exception:
+        df_pt_exist = pd.DataFrame()
+    if not df_pt_exist.empty:
+        df_pt_exist.columns = [c.lower() for c in df_pt_exist.columns]
+    pt_exist_map: dict = {}
+    pt_nombre_map: dict = {}
+    if not df_pt_exist.empty and "cve_art" in df_pt_exist.columns:
+        for r in df_pt_exist.to_dict("records"):
+            cve = str(r.get("cve_art") or "").strip().upper()
+            if cve:
+                pt_exist_map[cve] = float(r.get("exist") or 0)
+                pt_nombre_map[cve] = str(r.get("descr") or cve).strip()
+
+    formula_detalle: dict[int, list[dict]] = {mes: [] for mes in meses_ordenados}
+    for cve_pt, (rol, pct) in pts_relevantes.items():
+        stock_pt = pt_exist_map.get(cve_pt.strip().upper(), 0.0)
+        for mes in meses_ordenados:
+            fc_kg = venta_acc.get((cve_pt, mes), 0.0)
+            existencia_pt_mes = stock_pt
+            a_producir_kg = max(0.0, fc_kg - existencia_pt_mes)
+            stock_pt = max(0.0, existencia_pt_mes - fc_kg)
+            aporte = a_producir_kg * (pct / 100) if a_producir_kg > 0 else 0.0
+            if fc_kg or aporte:
+                formula_detalle[mes].append({
+                    "cve_pt": cve_pt,
+                    "producto_pt": pt_nombre_map.get(cve_pt.strip().upper(), cve_pt),
+                    "rol": rol,
+                    "pct": pct,
+                    "venta_consolidada": round(fc_kg, 2),
+                    "existencia_pt_inicio": round(existencia_pt_mes, 2),
+                    "a_producir": round(a_producir_kg, 2),
+                    "aporte": round(aporte, 3),
+                    "fuentes": fuentes.get((cve_pt, mes), []),
+                })
+
+    return {"meses": meses_ordenados, "directo": directo, "formula": formula_detalle}
