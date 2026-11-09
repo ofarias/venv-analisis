@@ -8,6 +8,7 @@ from datetime import date
 
 from models.compras_solicitudes_model import (
     obtener_lineas_autorizadas_sin_generar_model,
+    obtener_lineas_solicitud_sin_generar_model,
     marcar_lineas_generadas_sae_model,
 )
 from models.compras_solicitudes_sae_model import (
@@ -20,10 +21,9 @@ _NUM_ALMACEN_MP = 17  # mismo almacén que usa el resto de la app para materia p
 _NUM_MONEDA_USD = 2   # MONED01.NUM_MONED para USD (verificado en vivo)
 
 
-def obtener_vista_previa_requisiciones_sae_ctrl(id_solicitud_compra: int) -> list[dict]:
+def _construir_previews_desde_df(df) -> list[dict]:
     """Una entrada por proveedor con sus líneas, el folio candidato (de
     solo lectura — el real se vuelve a calcular al generar) y el total."""
-    df = obtener_lineas_autorizadas_sin_generar_model(id_solicitud_compra)
     if df.empty:
         return []
 
@@ -63,15 +63,23 @@ def obtener_vista_previa_requisiciones_sae_ctrl(id_solicitud_compra: int) -> lis
     return previews
 
 
-def generar_requisicion_sae_ctrl(id_solicitud_compra: int, proveedor_nombre: str) -> tuple[bool, str]:
-    previews = obtener_vista_previa_requisiciones_sae_ctrl(id_solicitud_compra)
-    preview = next((p for p in previews if p["proveedor_nombre"] == proveedor_nombre), None)
-    if not preview:
-        return False, "no hay líneas pendientes de generar para ese proveedor."
+def obtener_vista_previa_requisiciones_sae_ctrl(id_solicitud_compra: int) -> list[dict]:
+    return _construir_previews_desde_df(obtener_lineas_autorizadas_sin_generar_model(id_solicitud_compra))
+
+
+def obtener_vista_previa_requisiciones_solicitud_ctrl(id_solicitud_compra: int) -> list[dict]:
+    """Igual que obtener_vista_previa_requisiciones_sae_ctrl, pero para el
+    motor de flujos nuevo: considera TODAS las líneas de la solicitud (ya
+    no hace falta que cada línea esté marcada 'autorizada' por separado,
+    basta con que la solicitud completa haya llegado a su último nivel)."""
+    return _construir_previews_desde_df(obtener_lineas_solicitud_sin_generar_model(id_solicitud_compra))
+
+
+def _generar_desde_preview(preview: dict) -> tuple[bool, str]:
     if preview["sin_proveedor"]:
-        return False, "falta asignar un proveedor SAE a estas líneas (hazlo en Pendientes antes de generar)."
+        return False, f"[{preview['proveedor_nombre']}] falta asignar un proveedor SAE a estas líneas."
     if preview["sin_precio"]:
-        return False, "falta el precio USD en alguna línea — complétalo en Pendientes antes de generar."
+        return False, f"[{preview['proveedor_nombre']}] falta el precio USD en alguna línea."
 
     try:
         resultado = generar_requisicion_sae_model(
@@ -96,3 +104,31 @@ def generar_requisicion_sae_ctrl(id_solicitud_compra: int, proveedor_nombre: str
         ids_detalle, resultado["cve_doc"], str(resultado["folio"]), date.today(),
     )
     return True, f"requisición generada en SAE — folio OneCore #{resultado['folio']} ({resultado['cve_doc'].strip()})"
+
+
+def generar_requisicion_sae_ctrl(id_solicitud_compra: int, proveedor_nombre: str) -> tuple[bool, str]:
+    """Genera UNA requisición para el proveedor indicado — se mantiene para
+    el flujo manual existente en Pendientes (autorización por línea)."""
+    previews = obtener_vista_previa_requisiciones_sae_ctrl(id_solicitud_compra)
+    preview = next((p for p in previews if p["proveedor_nombre"] == proveedor_nombre), None)
+    if not preview:
+        return False, "no hay líneas pendientes de generar para ese proveedor."
+    return _generar_desde_preview(preview)
+
+
+def generar_requisiciones_solicitud_ctrl(id_solicitud_compra: int) -> tuple[bool, str]:
+    """Genera TODAS las requisiciones que hagan falta (una por proveedor)
+    para una solicitud ya finalizada por el motor de flujos nuevo — sin
+    necesidad de que alguien elija el proveedor a mano, ya viene capturado
+    en cada línea desde que se armó la solicitud."""
+    previews = obtener_vista_previa_requisiciones_solicitud_ctrl(id_solicitud_compra)
+    if not previews:
+        return False, "no hay líneas pendientes de generar en SAE para esta solicitud."
+
+    mensajes = []
+    hubo_error = False
+    for preview in previews:
+        ok, msg = _generar_desde_preview(preview)
+        mensajes.append(msg)
+        hubo_error = hubo_error or not ok
+    return (not hubo_error), " | ".join(mensajes)

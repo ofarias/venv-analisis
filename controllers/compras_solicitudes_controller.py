@@ -24,7 +24,6 @@ from models.compras_solicitudes_model import (
     actualizar_renglon_mp_inventario_detalle_model,
     eliminar_detalle_mp_inventario_model,
     listar_proveedores_mp_sae_model,
-    guardar_ruteo_solicitud_model,
     obtener_receptores_asignados_model,
     obtener_lineas_mp_inventario_model,
     usuario_tiene_solicitudes_asignadas_model,
@@ -47,6 +46,11 @@ from controllers.compras_reglas_autorizacion_controller import (
     resolver_usuario_id_por_nombre_ctrl,
     obtener_tipo_cambio_usd_ctrl,
 )
+from controllers.compras_flujos_controller import iniciar_flujo_solicitud_ctrl
+# Motor viejo (compras_reglas_autorizacion) — ya NO lo usa enviar_solicitud_compra_ctrl
+# (ver _calcular_monto_solicitud_mxn + iniciar_flujo_solicitud_ctrl), pero
+# enviar_lineas_mp_inventario_ctrl (envío incremental por línea, independiente
+# del envío de la solicitud completa) sigue con el motor viejo sin cambios.
 from controllers.compras_autorizacion_engine_controller import evaluar_autorizacion_ctrl
 
 def obtener_tipos_compra_activos_ctrl():
@@ -146,56 +150,29 @@ def _monto_mp_inventario_mxn(df_det, linea: str | None, tipo_cambio: float) -> f
     return round(monto_usd * tipo_cambio, 2)
 
 
-def _evaluar_y_rutear_solicitud(cab: dict) -> dict:
-    """Resuelve qué regla de compras_reglas_autorizacion aplica (si alguna)
-    y si la solicitud requiere autorización o se autoriza sola — ver
-    controllers/compras_autorizacion_engine_controller.py. Materia Prima
-    (Inventario) ya trae un precio USD por renglón (ver precio_usd) — se
-    evalúa por línea, convirtiendo a MXN con el tipo de cambio vigente de
-    SAE; si a alguna línea le falta el precio en algún renglón, esa línea
-    siempre requiere autorización (no se puede confiar en un total
-    incompleto). Estándar trae costo_total_sin_iva (asumido en MXN, el
-    formulario no captura moneda explícita)."""
+def _calcular_monto_solicitud_mxn(cab: dict) -> float | None:
+    """Monto total de la solicitud en MXN para evaluar contra el flujo de
+    autorización — Materia Prima (Inventario) suma TODAS sus líneas (ya no
+    se evalúa línea por línea, el motor de flujos autoriza la solicitud
+    completa), convertido con el tipo de cambio vigente de SAE. Estándar
+    trae costo_total_sin_iva (asumido en MXN). Si no hay forma de calcular
+    un monto (ej. tipo 'MP', o falta el precio en MP_INV), regresa None —
+    el motor de flujos trata "sin monto" como "siempre requiere la cadena
+    completa"."""
     tipo_formulario = str(cab.get("tipo_formulario") or "").strip().upper()
     id_solicitud_compra = int(cab["id_solicitud_compra"])
-    usuario_solicita_id = resolver_usuario_id_por_nombre_ctrl(cab.get("solicitante"))
-    id_tipo_compra = cab.get("id_tipo_compra")
-    nombre_solicitante = cab.get("solicitante", "")
 
     if tipo_formulario == "MP_INV":
         df_det = get_detalle_solicitud_mp_inventario_model(id_solicitud_compra)
         tipo_cambio = obtener_tipo_cambio_usd_ctrl().get("tipo_cambio") or 1.0
-        lineas = obtener_lineas_mp_inventario_model(id_solicitud_compra) or [None]
-        resultados = [
-            evaluar_autorizacion_ctrl(
-                usuario_solicita_id=usuario_solicita_id, id_tipo_compra=id_tipo_compra,
-                linea=linea, monto_mxn=_monto_mp_inventario_mxn(df_det, linea, tipo_cambio),
-                nombre_solicitante=nombre_solicitante,
-            )
-            for linea in lineas
-        ]
-        receptor_ids = sorted({uid for r in resultados for uid in r["receptor_ids"]})
-        id_regla = next((r["id_regla"] for r in resultados if r["id_regla"]), None)
-        motivo = "; ".join(sorted({r["motivo"] for r in resultados}))
-        requiere_autorizacion = any(r["requiere_autorizacion"] for r in resultados)
-        return {
-            "requiere_autorizacion": requiere_autorizacion, "receptor_ids": receptor_ids,
-            "id_regla": id_regla, "motivo": motivo,
-        }
+        return _monto_mp_inventario_mxn(df_det, None, tipo_cambio)
 
     if tipo_formulario == "STD":
         df_det = get_detalle_solicitud_estandar_model(id_solicitud_compra)
-        monto_mxn = float(df_det["costo_total_sin_iva"].fillna(0).sum()) if not df_det.empty else 0.0
-        return evaluar_autorizacion_ctrl(
-            usuario_solicita_id=usuario_solicita_id, id_tipo_compra=id_tipo_compra,
-            linea=None, monto_mxn=monto_mxn, nombre_solicitante=nombre_solicitante,
-        )
+        return float(df_det["costo_total_sin_iva"].fillna(0).sum()) if not df_det.empty else 0.0
 
     # tipo "MP" (pedido de cliente): tampoco captura un monto
-    return evaluar_autorizacion_ctrl(
-        usuario_solicita_id=usuario_solicita_id, id_tipo_compra=id_tipo_compra,
-        linea=None, monto_mxn=None, nombre_solicitante=nombre_solicitante,
-    )
+    return None
 
 
 def enviar_solicitud_compra_ctrl(id_solicitud_compra: int, token=None):
@@ -208,35 +185,29 @@ def enviar_solicitud_compra_ctrl(id_solicitud_compra: int, token=None):
     if estatus_actual != "captura":
         return False, "solo se pueden enviar solicitudes en captura"
 
-    ruteo = _evaluar_y_rutear_solicitud(cab)
-    nuevo_estatus = "enviada" if ruteo["requiere_autorizacion"] else "autorizada"
+    monto_mxn = _calcular_monto_solicitud_mxn(cab)
 
-    ok = cambiar_estatus_solicitud_compra_model(id_solicitud_compra, nuevo_estatus)
+    ok = cambiar_estatus_solicitud_compra_model(id_solicitud_compra, "enviada")
     if not ok:
         return False, "no se pudo actualizar el estatus"
 
-    guardar_ruteo_solicitud_model(
-        id_solicitud_compra=id_solicitud_compra,
-        id_regla_aplicada=ruteo.get("id_regla"),
-        requiere_autorizacion=ruteo["requiere_autorizacion"],
-        motivo=ruteo.get("motivo", ""),
-        receptor_ids=ruteo.get("receptor_ids") or [],
+    resultado = iniciar_flujo_solicitud_ctrl(
+        id_solicitud_compra, cab.get("id_tipo_compra"), monto_mxn, token=token,
     )
 
-    if not ruteo["requiere_autorizacion"]:
-        return True, f"solicitud autorizada automáticamente — {ruteo.get('motivo', '')}"
+    if not resultado["requiere_autorizacion"]:
+        return True, f"solicitud autorizada automáticamente — {resultado.get('motivo', '')}"
 
-    # Materia Prima (Inventario) tiene su propio circuito de autorización
-    # (ver autorizar_solicitud_compra_ctrl). Si una regla resolvió
-    # receptor(es) se notifica a ellos; si no hay regla que aplique, se
-    # conserva el destino de siempre (SuperAdmin/forecastAdmin para MP_INV,
-    # Compras MP/Compras Admin para los demás tipos) para no dejar una
-    # solicitud sin avisar a nadie.
+    if resultado["tiene_flujo"]:
+        return True, f"solicitud enviada — {resultado.get('motivo', '')} (se notificó por correo al primer nivel)"
+
+    # No hay ningún flujo configurado para este tipo de compra todavía —
+    # mismo respaldo que antes del motor de flujos: SuperAdmin/forecastAdmin
+    # (para MP_INV) o Compras MP/Compras Admin (para el resto) pueden
+    # resolverla manualmente desde Autorizaciones, para no dejarla sin
+    # avisar a nadie.
     tipo_formulario = str(cab.get("tipo_formulario") or "").strip().upper()
-    correos = _correos_por_usuario_ids(ruteo.get("receptor_ids") or [])
-    if correos:
-        rol_destino = "los usuarios asignados por la regla de autorización"
-    elif tipo_formulario == "MP_INV":
+    if tipo_formulario == "MP_INV":
         correos = list({
             *get_correos_usuarios_por_rol_ctrl("SuperAdmin"),
             *get_correos_usuarios_por_rol_ctrl("forecastAdmin"),
@@ -247,13 +218,13 @@ def enviar_solicitud_compra_ctrl(id_solicitud_compra: int, token=None):
         rol_destino = "Compras MP o Compras Admin"
 
     if not correos:
-        return True, f"solicitud enviada, pero no se encontraron correos de {rol_destino}"
+        return True, f"solicitud enviada, pero no hay flujo configurado ni se encontraron correos de {rol_destino}"
 
     asunto = f"nueva solicitud de compra enviada #{id_solicitud_compra}"
 
     cuerpo_html = f"""
     <div style="font-family:arial,sans-serif;font-size:14px;line-height:1.4">
-      <p>se envió una nueva solicitud de compra.</p>
+      <p>se envió una nueva solicitud de compra (sin flujo de autorización configurado para su tipo).</p>
       <p>
         <b>id solicitud:</b> {cab.get('id_solicitud_compra', '')}<br>
         <b>tipo:</b> {cab.get('tipo_compra', '')}<br>

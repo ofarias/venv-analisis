@@ -15,10 +15,10 @@ def get_tipos_compra_model() -> pd.DataFrame:
                 t.created_at,
                 t.updated_at,
                 t.tipo_formulario,
-                GROUP_CONCAT(u.nombre ORDER BY u.nombre SEPARATOR ', ') AS usuarios_permitidos_nombres
+                GROUP_CONCAT(pu.nombre ORDER BY pu.nombre SEPARATOR ', ') AS puestos_permitidos_nombres
             from compras_tipos t
-            left join compras_tipos_usuarios_permitidos p on p.id_tipo_compra = t.id_tipo_compra
-            left join usuarios u on u.id = p.usuario_id
+            left join compras_tipos_puestos_permitidos p on p.id_tipo_compra = t.id_tipo_compra
+            left join compras_puestos pu on pu.id_puesto = p.id_puesto
             group by t.id_tipo_compra
             order by t.nombre
         """
@@ -33,7 +33,7 @@ def get_tipos_compra_model() -> pd.DataFrame:
                 "activo",
                 "created_at",
                 "updated_at",
-                "usuarios_permitidos_nombres",
+                "puestos_permitidos_nombres",
             ])
 
         return pd.DataFrame(rows)
@@ -45,12 +45,12 @@ def get_tipos_compra_model() -> pd.DataFrame:
             pass
 
 
-def obtener_usuarios_permitidos_tipo_model(id_tipo_compra: int) -> list[int]:
+def obtener_puestos_permitidos_tipo_model(id_tipo_compra: int) -> list[int]:
     conn = obtener_conexion()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT usuario_id FROM compras_tipos_usuarios_permitidos WHERE id_tipo_compra = %s",
+            "SELECT id_puesto FROM compras_tipos_puestos_permitidos WHERE id_tipo_compra = %s",
             (int(id_tipo_compra),),
         )
         return [row[0] for row in cur.fetchall()]
@@ -59,21 +59,21 @@ def obtener_usuarios_permitidos_tipo_model(id_tipo_compra: int) -> list[int]:
         conn.close()
 
 
-def guardar_usuarios_permitidos_tipo_model(id_tipo_compra: int, usuario_ids: list[int]) -> bool:
-    """Reemplaza la lista completa de usuarios permitidos para un tipo de
+def guardar_puestos_permitidos_tipo_model(id_tipo_compra: int, puesto_ids: list[int]) -> bool:
+    """Reemplaza la lista completa de puestos permitidos para un tipo de
     compra — vacío significa "cualquiera puede crear este tipo" (sin
     restricción), mismo criterio que el resto de la app."""
     conn = obtener_conexion()
     try:
         cur = conn.cursor()
         cur.execute(
-            "DELETE FROM compras_tipos_usuarios_permitidos WHERE id_tipo_compra = %s",
+            "DELETE FROM compras_tipos_puestos_permitidos WHERE id_tipo_compra = %s",
             (int(id_tipo_compra),),
         )
-        if usuario_ids:
+        if puesto_ids:
             cur.executemany(
-                "INSERT INTO compras_tipos_usuarios_permitidos (id_tipo_compra, usuario_id) VALUES (%s, %s)",
-                [(int(id_tipo_compra), int(uid)) for uid in usuario_ids],
+                "INSERT INTO compras_tipos_puestos_permitidos (id_tipo_compra, id_puesto) VALUES (%s, %s)",
+                [(int(id_tipo_compra), int(pid)) for pid in puesto_ids],
             )
         conn.commit()
         return True

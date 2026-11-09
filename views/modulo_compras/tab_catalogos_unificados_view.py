@@ -7,7 +7,7 @@ from controllers.compras_catalogos_controller import (
     crear_tipo_compra_ctrl,
     actualizar_tipo_compra_ctrl,
     cambiar_estatus_tipo_compra_ctrl,
-    obtener_usuarios_permitidos_tipo_ctrl,
+    obtener_puestos_permitidos_tipo_ctrl,
     obtener_departamentos_ctrl,
     crear_departamento_ctrl,
     actualizar_departamento_ctrl,
@@ -17,7 +17,7 @@ from controllers.compras_catalogos_controller import (
     actualizar_forma_pago_ctrl,
     cambiar_estatus_forma_pago_ctrl,
 )
-from controllers.solicitudes_controller import get_usuarios_activos_ctrl
+from controllers.compras_puestos_controller import obtener_puestos_ctrl
 
 
 def _init_state():
@@ -32,8 +32,8 @@ def _init_state():
         st.session_state.cc_tipo_formulario = "MP"
     if "cc_tipo_activo" not in st.session_state:
         st.session_state.cc_tipo_activo = True
-    if "cc_tipo_usuarios" not in st.session_state:
-        st.session_state.cc_tipo_usuarios = []
+    if "cc_tipo_puestos" not in st.session_state:
+        st.session_state.cc_tipo_puestos = []
     if "cc_tipo_cargar" not in st.session_state:
         st.session_state.cc_tipo_cargar = None
     if "cc_tipo_limpiar" not in st.session_state:
@@ -75,7 +75,7 @@ def _aplicar_pendientes():
         st.session_state.cc_tipo_descripcion = ""
         st.session_state.cc_tipo_formulario = "MP"
         st.session_state.cc_tipo_activo = True
-        st.session_state.cc_tipo_usuarios = []
+        st.session_state.cc_tipo_puestos = []
         st.session_state.cc_tipo_cargar = None
         st.session_state.cc_tipo_limpiar = False
 
@@ -86,7 +86,7 @@ def _aplicar_pendientes():
         st.session_state.cc_tipo_descripcion = data_tipo["descripcion"]
         st.session_state.cc_tipo_formulario = data_tipo["tipo_formulario"]
         st.session_state.cc_tipo_activo = data_tipo["activo"]
-        st.session_state.cc_tipo_usuarios = data_tipo["usuarios"]
+        st.session_state.cc_tipo_puestos = data_tipo["puestos"]
         st.session_state.cc_tipo_cargar = None
 
     if st.session_state.get("cc_dep_limpiar", False):
@@ -122,15 +122,15 @@ def _aplicar_pendientes():
         st.session_state.cc_fp_cargar = None
 
 
-def _preparar_tipo(row, nombre_por_usuario_id: dict):
-    usuarios_ids = obtener_usuarios_permitidos_tipo_ctrl(int(row["id_tipo_compra"]))
+def _preparar_tipo(row, nombre_por_puesto_id: dict):
+    puestos_ids = obtener_puestos_permitidos_tipo_ctrl(int(row["id_tipo_compra"]))
     st.session_state.cc_tipo_cargar = {
         "id": int(row["id_tipo_compra"]),
         "nombre": row["nombre"] if pd.notna(row["nombre"]) else "",
         "descripcion": row["descripcion"] if pd.notna(row["descripcion"]) else "",
         "tipo_formulario": str(row.get("tipo_formulario") or "MP").strip().upper(),
         "activo": bool(row["activo"]),
-        "usuarios": [nombre_por_usuario_id[uid] for uid in usuarios_ids if uid in nombre_por_usuario_id],
+        "puestos": [nombre_por_puesto_id[pid] for pid in puestos_ids if pid in nombre_por_puesto_id],
     }
 
 
@@ -157,12 +157,12 @@ def _bloque_tipos():
 
     df = obtener_tipos_compra_ctrl()
 
-    df_usuarios = pd.DataFrame(get_usuarios_activos_ctrl() or [])
-    nombres_usuarios = sorted(df_usuarios["nombre"].dropna().tolist()) if not df_usuarios.empty else []
-    id_por_usuario = (
-        dict(zip(df_usuarios["nombre"], df_usuarios["id"].astype(int))) if not df_usuarios.empty else {}
+    df_puestos = obtener_puestos_ctrl()
+    nombres_puestos = sorted(df_puestos["nombre"].dropna().tolist()) if not df_puestos.empty else []
+    id_por_puesto = (
+        dict(zip(df_puestos["nombre"], df_puestos["id_puesto"].astype(int))) if not df_puestos.empty else {}
     )
-    nombre_por_usuario_id = {v: k for k, v in id_por_usuario.items()}
+    nombre_por_puesto_id = {v: k for k, v in id_por_puesto.items()}
 
     c1, c2 = st.columns([1, 2])
 
@@ -182,10 +182,11 @@ def _bloque_tipos():
         )
         st.checkbox("activo", key="cc_tipo_activo")
         st.multiselect(
-            "usuarios que pueden crear este tipo de solicitud",
-            options=nombres_usuarios,
-            key="cc_tipo_usuarios",
-            help="déjalo vacío para que cualquier usuario pueda crear este tipo de solicitud.",
+            "puestos que pueden crear este tipo de solicitud",
+            options=nombres_puestos,
+            key="cc_tipo_puestos",
+            help="déjalo vacío para que cualquier usuario pueda crear este tipo de solicitud — "
+                 "si eliges puesto(s), solo los usuarios asignados a ellos (ver 🧑‍💼 Puestos) lo verán.",
         )
 
         b1, b2 = st.columns(2)
@@ -198,9 +199,9 @@ def _bloque_tipos():
                         descripcion=st.session_state.cc_tipo_descripcion,
                         tipo_formulario=st.session_state.cc_tipo_formulario,
                         activo=1 if st.session_state.cc_tipo_activo else 0,
-                        usuario_ids=[
-                            id_por_usuario[n] for n in st.session_state.cc_tipo_usuarios
-                            if n in id_por_usuario
+                        puesto_ids=[
+                            id_por_puesto[n] for n in st.session_state.cc_tipo_puestos
+                            if n in id_por_puesto
                         ],
                     )
                     if ok:
@@ -217,9 +218,9 @@ def _bloque_tipos():
                         descripcion=st.session_state.cc_tipo_descripcion,
                         tipo_formulario=st.session_state.cc_tipo_formulario,
                         activo=1 if st.session_state.cc_tipo_activo else 0,
-                        usuario_ids=[
-                            id_por_usuario[n] for n in st.session_state.cc_tipo_usuarios
-                            if n in id_por_usuario
+                        puesto_ids=[
+                            id_por_puesto[n] for n in st.session_state.cc_tipo_puestos
+                            if n in id_por_puesto
                         ],
                     )
                     if ok:
@@ -243,15 +244,15 @@ def _bloque_tipos():
             return
 
         df_show = df.copy()
-        df_show["usuarios_permitidos_nombres"] = df_show["usuarios_permitidos_nombres"].fillna("cualquiera")
+        df_show["puestos_permitidos_nombres"] = df_show["puestos_permitidos_nombres"].fillna("cualquiera")
         cols = [
             "id_tipo_compra", "nombre", "tipo_formulario", "descripcion", "estatus",
-            "usuarios_permitidos_nombres",
+            "puestos_permitidos_nombres",
         ]
         cols = [c for c in cols if c in df_show.columns]
 
         st.dataframe(
-            df_show[cols].rename(columns={"usuarios_permitidos_nombres": "usuarios permitidos"}),
+            df_show[cols].rename(columns={"puestos_permitidos_nombres": "puestos permitidos"}),
             use_container_width=True, hide_index=True,
         )
 
@@ -273,7 +274,7 @@ def _bloque_tipos():
 
         with x1:
             if st.button("editar tipo", use_container_width=True):
-                _preparar_tipo(row_sel, nombre_por_usuario_id)
+                _preparar_tipo(row_sel, nombre_por_puesto_id)
                 st.rerun()
 
         with x2:

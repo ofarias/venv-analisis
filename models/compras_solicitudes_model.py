@@ -191,9 +191,10 @@ def get_tipos_compra_activos_model():
 
 def get_tipos_compra_activos_para_usuario_model(usuario_id: int | None) -> list[dict]:
     """Tipos de compra activos que este usuario puede usar en Compras ->
-    Solicitudes — un tipo sin ningún usuario asignado en
-    compras_tipos_usuarios_permitidos sigue visible para cualquiera (sin
-    restricción); si tiene usuarios asignados, solo ellos lo ven."""
+    Solicitudes — un tipo sin ningún puesto asignado en
+    compras_tipos_puestos_permitidos sigue visible para cualquiera (sin
+    restricción); si tiene puesto(s) asignado(s), solo quien pertenezca a
+    alguno de ellos (vía compras_puestos_usuarios) lo ve."""
     conn = obtener_conexion()
     try:
         cur = conn.cursor(dictionary=True)
@@ -204,12 +205,13 @@ def get_tipos_compra_activos_para_usuario_model(usuario_id: int | None) -> list[
             WHERE t.activo = 1
               AND (
                 NOT EXISTS (
-                    SELECT 1 FROM compras_tipos_usuarios_permitidos p
+                    SELECT 1 FROM compras_tipos_puestos_permitidos p
                     WHERE p.id_tipo_compra = t.id_tipo_compra
                 )
                 OR EXISTS (
-                    SELECT 1 FROM compras_tipos_usuarios_permitidos p
-                    WHERE p.id_tipo_compra = t.id_tipo_compra AND p.usuario_id = %s
+                    SELECT 1 FROM compras_tipos_puestos_permitidos p
+                    JOIN compras_puestos_usuarios pu ON pu.id_puesto = p.id_puesto
+                    WHERE p.id_tipo_compra = t.id_tipo_compra AND pu.usuario_id = %s
                 )
               )
             ORDER BY t.nombre
@@ -237,6 +239,7 @@ def get_solicitudes_pendientes_usuario_model(solicitante: str, ver_todas: bool =
                 s.solicitante,
                 s.estatus,
                 s.observaciones_generales,
+                s.id_flujo_aplicado,
                 COUNT(p.id_detalle_producto) AS total_renglones,
                 s.created_at,
                 s.updated_at
@@ -255,6 +258,7 @@ def get_solicitudes_pendientes_usuario_model(solicitante: str, ver_todas: bool =
                 s.solicitante,
                 s.estatus,
                 s.observaciones_generales,
+                s.id_flujo_aplicado,
                 s.created_at,
                 s.updated_at
             ORDER BY s.id_solicitud_compra DESC
@@ -1121,6 +1125,36 @@ def obtener_lineas_autorizadas_sin_generar_model(id_solicitud_compra: int) -> pd
             FROM compras_solicitudes_mp_inventario_detalle
             WHERE id_solicitud_compra = %s
               AND TRIM(LOWER(estatus_linea)) = 'autorizada'
+              AND cve_doc_sae IS NULL
+            ORDER BY id_detalle_mp_inv
+            """,
+            (int(id_solicitud_compra),),
+        )
+        rows = cur.fetchall() or []
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
+            "id_detalle_mp_inv", "cve_mp", "mp_nombre", "linea", "cve_proveedor",
+            "proveedor_nombre", "cantidad_kg", "precio_usd",
+        ])
+
+    finally:
+        conn.close()
+
+
+def obtener_lineas_solicitud_sin_generar_model(id_solicitud_compra: int) -> pd.DataFrame:
+    """Igual que obtener_lineas_autorizadas_sin_generar_model, pero SIN
+    filtrar por estatus_linea — el motor de flujos nuevo autoriza la
+    solicitud completa (no línea por línea), así que basta con que la
+    solicitud en sí haya llegado a finalizada para considerar TODAS sus
+    líneas listas para generar en SAE."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id_detalle_mp_inv, cve_mp, mp_nombre, linea, cve_proveedor,
+                   proveedor_nombre, cantidad_kg, precio_usd
+            FROM compras_solicitudes_mp_inventario_detalle
+            WHERE id_solicitud_compra = %s
               AND cve_doc_sae IS NULL
             ORDER BY id_detalle_mp_inv
             """,

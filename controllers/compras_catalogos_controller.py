@@ -5,8 +5,8 @@ from models.compras_catalogos_model import (
     crear_tipo_compra_model,
     actualizar_tipo_compra_model,
     cambiar_estatus_tipo_compra_model,
-    obtener_usuarios_permitidos_tipo_model,
-    guardar_usuarios_permitidos_tipo_model,
+    obtener_puestos_permitidos_tipo_model,
+    guardar_puestos_permitidos_tipo_model,
 )
 
 from models.compras_catalogos_adicionales_model import (
@@ -35,7 +35,7 @@ def obtener_tipos_compra_ctrl():
     return df
 
 
-def crear_tipo_compra_ctrl(nombre, descripcion, tipo_formulario, activo=1, usuario_ids=None):
+def crear_tipo_compra_ctrl(nombre, descripcion, tipo_formulario, activo=1, puesto_ids=None):
     nombre = (nombre or "").strip()
     descripcion = (descripcion or "").strip()
     tipo_formulario = (tipo_formulario or "").strip()
@@ -53,11 +53,11 @@ def crear_tipo_compra_ctrl(nombre, descripcion, tipo_formulario, activo=1, usuar
     if not id_tipo_compra:
         return False, "no se pudo crear el tipo de compra."
 
-    guardar_usuarios_permitidos_tipo_model(id_tipo_compra, [int(u) for u in (usuario_ids or [])])
+    guardar_puestos_permitidos_tipo_model(id_tipo_compra, [int(p) for p in (puesto_ids or [])])
     return True, "tipo de compra creado correctamente."
 
 
-def actualizar_tipo_compra_ctrl(id_tipo_compra, nombre, descripcion, tipo_formulario, activo, usuario_ids=None):
+def actualizar_tipo_compra_ctrl(id_tipo_compra, nombre, descripcion, tipo_formulario, activo, puesto_ids=None):
     nombre = (nombre or "").strip()
     descripcion = (descripcion or "").strip()
     tipo_formulario = (tipo_formulario or "").strip()
@@ -75,12 +75,12 @@ def actualizar_tipo_compra_ctrl(id_tipo_compra, nombre, descripcion, tipo_formul
         return False, "ya existe otro tipo de compra con ese nombre."
 
     actualizar_tipo_compra_model(id_tipo_compra, nombre, descripcion, tipo_formulario, activo)
-    guardar_usuarios_permitidos_tipo_model(id_tipo_compra, [int(u) for u in (usuario_ids or [])])
+    guardar_puestos_permitidos_tipo_model(id_tipo_compra, [int(p) for p in (puesto_ids or [])])
     return True, "tipo de compra actualizado correctamente."
 
 
-def obtener_usuarios_permitidos_tipo_ctrl(id_tipo_compra) -> list[int]:
-    return obtener_usuarios_permitidos_tipo_model(int(id_tipo_compra))
+def obtener_puestos_permitidos_tipo_ctrl(id_tipo_compra) -> list[int]:
+    return obtener_puestos_permitidos_tipo_model(int(id_tipo_compra))
 
 
 def cambiar_estatus_tipo_compra_ctrl(id_tipo_compra, activo):
