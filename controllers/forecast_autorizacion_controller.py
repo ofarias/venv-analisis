@@ -127,11 +127,16 @@ _MESES_CTRL = {1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
                7: "jul", 8: "ago", 9: "sep", 10: "oct", 11: "nov", 12: "dic"}
 
 
-@st.cache_data(ttl=300, show_spinner="consolidando necesidad de compra de todos los vendedores…")
-def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> pd.DataFrame:
+@st.cache_data(ttl=300, show_spinner="consolidando necesidad de compra…")
+def calcular_necesidad_compra_consolidada_ctrl(
+    anio: int, meses: list[int], usuario_id: int | None = None,
+) -> pd.DataFrame:
     """
-    Necesidad de **materia prima** (cve_prod que inicia con "B") por mes,
-    consolidada entre TODOS los vendedores: para cada vendedor y mes, usa su
+    Necesidad de **materia prima** (cve_prod que inicia con "B") por mes.
+    Con `usuario_id=None` (default) consolida entre TODOS los vendedores
+    (pantalla de Compras); con un `usuario_id` puntual, se restringe a las
+    versiones de forecast de ESE vendedor únicamente (pantalla propia del
+    módulo Forecast) — en ambos casos, para cada vendedor/mes usa su
     forecast de venta/compra si ese mes está 'autorizada'; si no, cae al
     presupuesto de ventas/compras YA AUTORIZADO de ESE MISMO vendedor.
 
@@ -155,7 +160,9 @@ def calcular_necesidad_compra_consolidada_ctrl(anio: int, meses: list[int]) -> p
     if not meses:
         return pd.DataFrame()
 
-    df_versiones = obtener_forecast_versiones_ctrl(usuario_id=0, anio=anio, ver_todas=True)
+    df_versiones = obtener_forecast_versiones_ctrl(
+        usuario_id=(usuario_id or 0), anio=anio, ver_todas=(usuario_id is None),
+    )
     if df_versiones is None or df_versiones.empty:
         return pd.DataFrame()
 
@@ -517,7 +524,9 @@ def _lineas_presupuesto_fallback(usuario_id: int, anio: int, mes: int, cve_prod:
 
 
 @st.cache_data(ttl=300, show_spinner="calculando desglose…")
-def desglosar_necesidad_mp_ctrl(cve_mp: str, anio: int, meses: list[int]) -> dict:
+def desglosar_necesidad_mp_ctrl(
+    cve_mp: str, anio: int, meses: list[int], usuario_id: int | None = None,
+) -> dict:
     """Desglose, mes a mes, de cómo se arma el "Forecast" (demanda) de UNA
     materia prima en el consolidado de Compras -> Demanda — mismo cálculo
     que `calcular_necesidad_compra_consolidada_ctrl`, pero conservando la
@@ -540,7 +549,9 @@ def desglosar_necesidad_mp_ctrl(cve_mp: str, anio: int, meses: list[int]) -> dic
     cve_mp = str(cve_mp).strip().upper()
     meses_ordenados = sorted(meses)
 
-    df_versiones = obtener_forecast_versiones_ctrl(usuario_id=0, anio=anio, ver_todas=True)
+    df_versiones = obtener_forecast_versiones_ctrl(
+        usuario_id=(usuario_id or 0), anio=anio, ver_todas=(usuario_id is None),
+    )
     if df_versiones is None or df_versiones.empty:
         return {"meses": meses_ordenados, "directo": {m: [] for m in meses_ordenados}, "formula": {m: [] for m in meses_ordenados}}
 

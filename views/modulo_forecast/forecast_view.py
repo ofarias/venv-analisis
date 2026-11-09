@@ -12,6 +12,7 @@ from views.modulo_forecast.tab_real_vs_forecast_view import mostrar_tab_real_vs_
 from views.modulo_forecast.tab_mdi_view import mostrar_tab_mdi
 from views.modulo_forecast.tab_compras_view import mostrar_tab_compras
 from views.modulo_forecast.tab_dashboard_view import mostrar_tab_dashboard
+from views.modulo_forecast.tab_demanda_propia_view import mostrar_tab_demanda_propia
 
 
 def _usuario_real_id() -> int:
@@ -166,6 +167,7 @@ _SECCIONES_FORECAST = [
     "📉 Real vs Forecast",
     "🗺️ MDI — Mapa de Inventario",
     "📦 Necesidades de Compra",
+    "📦 Demanda (Forecast) — propia",
     "⚙️ Versiones",
 ]
 
@@ -191,6 +193,10 @@ def mostrar_modulo_forecast() -> None:
 
     if seccion == "✅ Autorizaciones":
         mostrar_tab_autorizaciones_forecast()
+        return
+
+    if seccion == "📦 Demanda (Forecast) — propia":
+        mostrar_tab_demanda_propia(usuario_id=_get_usuario_id())
         return
 
     # para las demás secciones necesitamos una versión seleccionada
