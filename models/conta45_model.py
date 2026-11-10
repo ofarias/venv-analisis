@@ -252,10 +252,9 @@ def _afectar_saldos(cur, ejercicio: int, periodo: int, partida: Dict[str, Any]) 
         #    cur.execute(sql_ins_saldosdp, (num_cta, int(ejercicio), depto_partida, monto))
 
     except Exception as e:
-        try:
-            st.write(f"[warn] error al afectar saldos: {e}")
-        except Exception:
-            pass
+        # se propaga para que el llamador haga rollback de toda la póliza;
+        # antes solo se avisaba y la póliza podía quedar grabada sin saldos
+        raise RuntimeError(f"error al afectar saldos de la cuenta {partida.get('NUM_CTA')}: {e}") from e
 
 def _mk_partidas_venta(row: pd.Series) -> list[Dict[str, Any]]:
     """
