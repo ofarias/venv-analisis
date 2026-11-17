@@ -38,22 +38,44 @@ def mostrar_modulo_compras():
         or usuario_tiene_solicitudes_asignadas_ctrl(usuario.get("id"))
     )
 
-    secciones = []
-    if es_admin_compras:
-        secciones.append("Catálogos")
-    secciones += ["Solicitudes", "Pendientes", "🟢 Seguimiento"]
-    if es_admin_compras:
-        secciones.append("📦 Demanda (Forecast)")
-        secciones.append("📦 Demanda (Presupuesto)")
+    # Navegación en dos niveles: un grupo grande por etapa del flujo
+    # (Solicitar → Autorizar → Analizar/Planear → Configurar, mismo orden
+    # que el proceso real) y, dentro de cada grupo, las pantallas puntuales.
+    # Un grupo con una sola pantalla se muestra directo, sin una segunda
+    # fila de pills innecesaria para una sola opción.
+    grupos: dict[str, list[tuple[str, callable]]] = {
+        "📝 Mis Solicitudes": [
+            ("📝 Nueva Solicitud", mostrar_tab_solicitudes_compras),
+            ("📋 Pendientes", mostrar_tab_solicitudes_pendientes),
+            ("🟢 Seguimiento", mostrar_tab_seguimiento_compras),
+        ],
+    }
+
     if es_autorizador_compras:
-        secciones.append("✅ Autorizaciones")
+        grupos["✅ Autorizar"] = [
+            ("✅ Autorizaciones", mostrar_tab_autorizaciones_compras),
+        ]
+
     if es_admin_compras:
-        secciones.append("🧑‍💼 Puestos")
-        secciones.append("⚙️ Flujo de Autorización de Gastos")
+        grupos["📊 Demanda y Análisis"] = [
+            ("📦 Demanda (Forecast)", mostrar_tab_demanda_forecast),
+            ("📦 Demanda (Presupuesto)", mostrar_tab_demanda_presupuesto),
+            ("📦 Productos Obsoletos", mostrar_tab_productos_obsoletos),
+        ]
+
+    items_config: list[tuple[str, callable]] = []
+    if es_admin_compras:
+        items_config += [
+            ("🗂️ Catálogos", mostrar_tab_catalogos_unificados),
+            ("🧑‍💼 Puestos", mostrar_tab_puestos),
+            ("⚙️ Flujo de Autorización de Gastos", mostrar_tab_flujos_compras),
+        ]
     if es_admin_rol:
-        secciones.append("🧩 Formularios Dinámicos")
-    if es_admin_compras:
-        secciones.append("📦 Productos Obsoletos")
+        items_config.append(("🧩 Formularios Dinámicos", mostrar_tab_campos_dinamicos))
+    if items_config:
+        grupos["⚙️ Configuración"] = items_config
+
+    grupos_labels = list(grupos.keys())
 
     # st.pills (a diferencia de st.tabs) informa cuál sección está activa,
     # así que solo se ejecuta el código de esa sección — st.tabs corre todas
@@ -61,30 +83,28 @@ def mostrar_modulo_compras():
     # IDs duplicados entre Pendientes y Autorizaciones (mismo text_input
     # renderizado dos veces con el mismo valor en el mismo run). Mismo
     # criterio que ya usa el módulo Forecast (views/modulo_forecast/forecast_view.py).
-    seccion = st.pills(
-        "navegación", secciones, default=secciones[0],
-        key="compras_nav_sel", label_visibility="collapsed",
-    ) or st.session_state.get("compras_nav_sel", secciones[0])
+    grupo_sel = st.pills(
+        "grupo", grupos_labels, default=grupos_labels[0],
+        key="compras_nav_grupo", label_visibility="collapsed",
+    ) or st.session_state.get("compras_nav_grupo", grupos_labels[0])
 
-    if seccion == "Catálogos":
-        mostrar_tab_catalogos_unificados()
-    elif seccion == "Solicitudes":
-        mostrar_tab_solicitudes_compras()
-    elif seccion == "Pendientes":
-        mostrar_tab_solicitudes_pendientes()
-    elif seccion == "🟢 Seguimiento":
-        mostrar_tab_seguimiento_compras()
-    elif seccion == "📦 Demanda (Forecast)":
-        mostrar_tab_demanda_forecast()
-    elif seccion == "📦 Demanda (Presupuesto)":
-        mostrar_tab_demanda_presupuesto()
-    elif seccion == "✅ Autorizaciones":
-        mostrar_tab_autorizaciones_compras()
-    elif seccion == "🧑‍💼 Puestos":
-        mostrar_tab_puestos()
-    elif seccion == "⚙️ Flujo de Autorización de Gastos":
-        mostrar_tab_flujos_compras()
-    elif seccion == "🧩 Formularios Dinámicos":
-        mostrar_tab_campos_dinamicos()
-    elif seccion == "📦 Productos Obsoletos":
-        mostrar_tab_productos_obsoletos()
+    # si el grupo cambió, la sub-selección guardada ya no corresponde a
+    # este grupo (puede ni existir entre sus opciones) — se limpia para
+    # que la segunda fila de pills arranque en la primera opción del
+    # grupo nuevo en vez de quedar "sin nada marcado".
+    if st.session_state.get("_compras_nav_grupo_anterior") != grupo_sel:
+        st.session_state.pop("compras_nav_item", None)
+        st.session_state["_compras_nav_grupo_anterior"] = grupo_sel
+
+    items = grupos[grupo_sel]
+    if len(items) == 1:
+        items[0][1]()
+        return
+
+    item_labels = [lbl for lbl, _ in items]
+    item_sel = st.pills(
+        "pantalla", item_labels, default=item_labels[0],
+        key="compras_nav_item", label_visibility="collapsed",
+    ) or st.session_state.get("compras_nav_item", item_labels[0])
+
+    dict(items)[item_sel]()
