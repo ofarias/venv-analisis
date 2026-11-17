@@ -48,5 +48,8 @@ def mostrar_tab_poliza_ventas():
         res = contabilizar_poliza_ventas_df(df_cont)
         if res.get("ok"):
             st.success(res.get("msg", "póliza creada."))
+        elif res.get("poliza"):
+            # ya existía la póliza del día
+            st.warning(res.get("msg"))
         else:
             st.error(res.get("msg", "no se pudo crear la póliza."))

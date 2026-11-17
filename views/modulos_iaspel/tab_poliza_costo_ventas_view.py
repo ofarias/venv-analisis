@@ -43,5 +43,8 @@ def mostrar_tab_poliza_costo_venta():
         res = contabilizar_poliza_ventas_costo_df(df_unido)
         if res.get("ok"):
             st.success(res["msg"])
+        elif res.get("poliza"):
+            # ya existía la póliza del día
+            st.warning(res["msg"])
         else:
             st.error(res["msg"])

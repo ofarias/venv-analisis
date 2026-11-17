@@ -1798,6 +1798,97 @@ def insertar_poliza_y_auxiliares(row: pd.Series, secrets, prorrateo_id: Optional
     except Exception as e:
         return {"ok": False, "msg": f"Error preparando póliza: {e}"}
     
+def _poliza_existente_por_concepto(cur, tipo: str, ejercicio: int, concepto: str) -> Optional[Dict[str, Any]]:
+    """
+    busca en COI una póliza con el mismo concepto (p. ej. 'VENTAS DEL 13-11-2026')
+    para no duplicar la póliza diaria. si la encuentra, agrega quién y cuándo
+    la creó según la bitácora (si existe el registro).
+    """
+    tabla = f"POLIZAS{str(ejercicio)[-2:]}"
+    cur.execute(f"""
+        SELECT FIRST 1 TIPO_POLI, NUM_POLIZ, PERIODO, EJERCICIO
+          FROM {tabla}
+         WHERE TIPO_POLI = ? AND TRIM(CONCEP_PO) = ?
+         ORDER BY NUM_POLIZ
+    """, (tipo, concepto))
+    r = cur.fetchone()
+    if not r:
+        return None
+
+    existente = {
+        "tipo": r[0],
+        "num": str(r[1]).strip(),
+        "periodo": int(r[2]),
+        "ejercicio": int(r[3]),
+        "usuario": None,
+        "fecha_creacion": None,
+    }
+    try:
+        row = run_query("BIO", """
+            SELECT usuario, fecha_creacion
+              FROM iaspel.bitacora_polizas_coi
+             WHERE tipo_poli = :tipo AND TRIM(num_poliz) = :num
+               AND periodo = :periodo AND ejercicio = :ejercicio
+             ORDER BY id DESC
+             LIMIT 1
+        """, {
+            "tipo": existente["tipo"], "num": existente["num"],
+            "periodo": existente["periodo"], "ejercicio": existente["ejercicio"],
+        }).mappings().first()
+        if row:
+            existente["usuario"] = row["usuario"]
+            existente["fecha_creacion"] = row["fecha_creacion"]
+    except Exception:
+        # sin bitácora (tabla aún no creada o MySQL caído) solo se pierde el detalle
+        pass
+    return existente
+
+def _msg_poliza_existente(etiqueta: str, fecha_str: str, ex: Dict[str, Any]) -> str:
+    msg = (f"Ya existe la póliza de {etiqueta} del {fecha_str}: "
+           f"{ex['tipo']}-{ex['num']}/{ex['periodo']}-{ex['ejercicio']}")
+    if ex.get("usuario") or ex.get("fecha_creacion"):
+        cuando = ex["fecha_creacion"].strftime("%d-%m-%Y %H:%M") if ex.get("fecha_creacion") else "?"
+        msg += f", creada por {ex.get('usuario') or '?'} el {cuando}"
+    return msg + ". No se creó otra."
+
+def _registrar_bitacora_poliza(origen: str, tipo: str, num_poliz: str, periodo: int, ejercicio: int,
+                               fecha: date, concepto: str, num_docs: int,
+                               partidas: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    guarda en iaspel.bitacora_polizas_coi quién y cuándo creó la póliza.
+    se llama después del commit en COI: si falla no se deshace la póliza,
+    solo se regresa el error para avisarlo.
+    """
+    try:
+        total_cargos = sum(
+            _montomov(p.get("MONTOMOV") or 0.0)
+            for p in partidas
+            if (p.get("DEBE_HABER") or "").strip().upper() == "D"
+        )
+        run_query("BIO", """
+            INSERT INTO iaspel.bitacora_polizas_coi
+                (origen, tipo_poli, num_poliz, periodo, ejercicio, fecha_pol,
+                 concepto, num_docs, num_partidas, total_cargos, usuario, fecha_creacion)
+            VALUES
+                (:origen, :tipo, :num, :periodo, :ejercicio, :fecha_pol,
+                 :concepto, :num_docs, :num_partidas, :total_cargos, :usuario, NOW())
+        """, {
+            "origen": origen,
+            "tipo": tipo,
+            "num": str(num_poliz).strip(),
+            "periodo": int(periodo),
+            "ejercicio": int(ejercicio),
+            "fecha_pol": fecha,
+            "concepto": concepto,
+            "num_docs": int(num_docs),
+            "num_partidas": len(partidas),
+            "total_cargos": round(float(total_cargos), 2),
+            "usuario": st.session_state.get("username"),
+        })
+        return None
+    except Exception as e:
+        return str(e)
+
 def inserta_poliza_ventas(data: Union[pd.DataFrame, pd.Series], secrets, debug: bool = False) -> Dict[str, Any]:
     try:
         # normalizar: si viene una sola fila (Series), lo convertimos a DataFrame
@@ -1852,6 +1943,12 @@ def inserta_poliza_ventas(data: Union[pd.DataFrame, pd.Series], secrets, debug: 
         cur = con.cursor()
         try:
             dbname = _db_name(cur)
+
+            existente = _poliza_existente_por_concepto(cur, tipo, ejercicio, concepto)
+            if existente:
+                return {"ok": False, "msg": _msg_poliza_existente("ventas", fecha_str, existente),
+                        "poliza": existente}
+
             num_poliz = _siguiente_num_poliza(cur, tipo, periodo, ejercicio)
             num_partidas = len(partidas)
 
@@ -1862,10 +1959,13 @@ def inserta_poliza_ventas(data: Union[pd.DataFrame, pd.Series], secrets, debug: 
             _insert_partidas(cur, tipo, num_poliz, periodo, ejercicio, fecha, partidas)
 
             con.commit()
+            err_bit = _registrar_bitacora_poliza("ventas", tipo, num_poliz, periodo, ejercicio,
+                                                 fecha, concepto, len(df), partidas)
             return {
                 "ok": True,
                 "msg": f"Póliza de ventas {tipo}-{num_poliz}/{periodo}-{ejercicio} creada "
-                       f"({len(df)} documentos, {len(partidas)} partidas).",
+                       f"({len(df)} documentos, {len(partidas)} partidas)."
+                       + (f" (aviso: no se guardó en la bitácora: {err_bit})" if err_bit else ""),
                 "poliza": {
                     "tipo": tipo,
                     "num": num_poliz,
@@ -1945,6 +2045,12 @@ def inserta_poliza_costo_venta(
         cur = con.cursor()
         try:
             dbname = _db_name(cur)
+
+            existente = _poliza_existente_por_concepto(cur, tipo, ejercicio, concepto)
+            if existente:
+                return {"ok": False, "msg": _msg_poliza_existente("costo de venta", fecha_str, existente),
+                        "poliza": existente}
+
             num_poliz = _siguiente_num_poliza(cur, tipo, periodo, ejercicio)
             num_partidas = len(partidas)
 
@@ -1955,12 +2061,15 @@ def inserta_poliza_costo_venta(
             _insert_partidas(cur, tipo, num_poliz, periodo, ejercicio, fecha, partidas)
 
             con.commit()
+            err_bit = _registrar_bitacora_poliza("costo_venta", tipo, num_poliz, periodo, ejercicio,
+                                                 fecha, concepto, len(df), partidas)
             return {
                 "ok": True,
                 "msg": (
                     f"Póliza de costo de venta {tipo}-{num_poliz}/"
                     f"{periodo}-{ejercicio} creada "
                     f"({len(df)} renglones de costo, {len(partidas)} partidas)."
+                    + (f" (aviso: no se guardó en la bitácora: {err_bit})" if err_bit else "")
                 ),
                 "poliza": {
                     "tipo": tipo,
