@@ -5,6 +5,7 @@ from models.compras_catalogos_model import (
     crear_tipo_compra_model,
     actualizar_tipo_compra_model,
     cambiar_estatus_tipo_compra_model,
+    eliminar_tipo_compra_model,
     obtener_puestos_permitidos_tipo_model,
     guardar_puestos_permitidos_tipo_model,
 )
@@ -15,11 +16,13 @@ from models.compras_catalogos_adicionales_model import (
     crear_departamento_model,
     actualizar_departamento_model,
     cambiar_estatus_departamento_model,
+    eliminar_departamento_model,
     get_formas_pago_model,
     existe_forma_pago_model,
     crear_forma_pago_model,
     actualizar_forma_pago_model,
     cambiar_estatus_forma_pago_model,
+    eliminar_forma_pago_model,
 )
 
 
@@ -91,6 +94,13 @@ def cambiar_estatus_tipo_compra_ctrl(id_tipo_compra, activo):
     return True, "estatus actualizado correctamente."
 
 
+def eliminar_tipo_compra_ctrl(id_tipo_compra):
+    if not id_tipo_compra:
+        return False, "no se recibió el id del tipo de compra."
+
+    return eliminar_tipo_compra_model(id_tipo_compra)
+
+
 # -------------------------
 # departamentos
 # -------------------------
@@ -142,6 +152,13 @@ def cambiar_estatus_departamento_ctrl(id_departamento, activo):
     return True, "estatus actualizado correctamente."
 
 
+def eliminar_departamento_ctrl(id_departamento):
+    if not id_departamento:
+        return False, "no se recibió el id del departamento."
+
+    return eliminar_departamento_model(id_departamento)
+
+
 # -------------------------
 # formas de pago
 # -------------------------
@@ -191,3 +208,10 @@ def cambiar_estatus_forma_pago_ctrl(id_forma_pago, activo):
 
     cambiar_estatus_forma_pago_model(id_forma_pago, activo)
     return True, "estatus actualizado correctamente."
+
+
+def eliminar_forma_pago_ctrl(id_forma_pago):
+    if not id_forma_pago:
+        return False, "no se recibió el id de la forma de pago."
+
+    return eliminar_forma_pago_model(id_forma_pago)

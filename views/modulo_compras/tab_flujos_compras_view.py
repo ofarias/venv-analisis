@@ -14,13 +14,15 @@ _SIN_TOPE = float("inf")
 
 
 def mostrar_tab_flujos_compras() -> None:
-    st.subheader("⚙️ flujos de autorización")
+    st.subheader("⚙️ flujo de autorización de gastos")
     st.caption(
-        "Por cada tipo de compra se define UN flujo con niveles secuenciales (N1 → N2 → N3...) "
-        "ligados a un puesto (ver pestaña Puestos) — el monto de la solicitud decide cuántos "
-        "niveles de la cadena aplican. Cada nivel cubre desde su 'monto desde' hasta el "
-        "'monto desde' del siguiente nivel; el último nivel siempre queda sin tope. Si el monto "
-        "de la solicitud queda por debajo del nivel 1, se autoriza sola."
+        "Por cada categoría de gasto (tipo de compra) se define UN flujo con niveles "
+        "secuenciales (N1 → N2 → N3...) ligados a un puesto (ver pestaña Puestos) — el monto "
+        "de la solicitud decide cuántos niveles de la cadena aplican. Cada nivel cubre desde su "
+        "'monto desde' hasta el 'monto desde' del siguiente nivel; el último nivel siempre "
+        "queda sin tope. Si el monto de la solicitud queda por debajo del nivel 1, se autoriza "
+        "sola — y un flujo SIN ningún nivel significa 'autorizado por default' (ej. categoría "
+        "Diversos)."
     )
 
     df_tipos = obtener_tipos_compra_ctrl()
@@ -54,8 +56,12 @@ def mostrar_tab_flujos_compras() -> None:
         niveles_iniciales = [{"orden": 1, "puesto": list(opciones_puesto.keys())[0], "monto_desde_mxn": 0.0}]
 
     st.markdown(f"#### niveles del flujo — {tipo_sel_nombre}")
+    st.caption(
+        "Deja la tabla completamente vacía (borra todas las filas) para un flujo "
+        "\"autorizado por default\" — sin ningún nivel de autorización."
+    )
     df_niveles = st.data_editor(
-        pd.DataFrame(niveles_iniciales),
+        pd.DataFrame(niveles_iniciales, columns=["orden", "puesto", "monto_desde_mxn"]),
         num_rows="dynamic",
         use_container_width=True,
         column_config={

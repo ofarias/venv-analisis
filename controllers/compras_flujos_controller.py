@@ -54,9 +54,11 @@ def validar_niveles_ctrl(niveles: list[dict]) -> tuple[bool, str]:
     """Valida que los rangos de monto sean contiguos y crecientes: el nivel
     1 empieza en 0 (o en el monto desde donde deja de auto-aprobarse), cada
     siguiente monto_desde = monto_hasta del anterior, y solo el último nivel
-    puede tener monto_hasta vacío (sin tope)."""
+    puede tener monto_hasta vacío (sin tope). Una lista vacía es válida — es
+    un flujo "autorizado por default" (ej. categoría "Diversos" del PPTX de
+    gastos): nunca se crea ningún nivel y la solicitud se finaliza sola."""
     if not niveles:
-        return False, "el flujo necesita al menos 1 nivel"
+        return True, ""
     niveles_orden = sorted(niveles, key=lambda n: int(n["orden"]))
     for idx, n in enumerate(niveles_orden, start=1):
         if int(n["orden"]) != idx:

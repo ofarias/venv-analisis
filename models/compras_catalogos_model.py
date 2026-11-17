@@ -1,4 +1,5 @@
 import pandas as pd
+from mysql.connector.errors import IntegrityError
 from database.conexion import obtener_conexion
 
 def get_tipos_compra_model() -> pd.DataFrame:
@@ -198,6 +199,43 @@ def cambiar_estatus_tipo_compra_model(id_tipo_compra: int, activo: int) -> bool:
         cur.execute(sql, (int(activo), int(id_tipo_compra)))
         conn.commit()
         return True
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def eliminar_tipo_compra_model(id_tipo_compra: int) -> tuple[bool, str]:
+    """Antes de borrar el tipo, limpia sus dependencias de CONFIGURACIÓN
+    (puestos permitidos, flujo y sus niveles) — no tienen valor histórico,
+    están atadas 1:1 al tipo y quedarían huérfanas. Si el tipo ya tiene
+    solicitudes/reglas/campos dinámicos reales asociados, el DELETE final
+    truena por llave foránea y se reporta como "no se puede eliminar"."""
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "delete from compras_tipos_puestos_permitidos where id_tipo_compra = %s",
+            (int(id_tipo_compra),),
+        )
+        cur.execute(
+            "delete n from compras_flujos_niveles n join compras_flujos f on f.id_flujo = n.id_flujo "
+            "where f.id_tipo_compra = %s",
+            (int(id_tipo_compra),),
+        )
+        cur.execute("delete from compras_flujos where id_tipo_compra = %s", (int(id_tipo_compra),))
+        cur.execute("delete from compras_tipos where id_tipo_compra = %s", (int(id_tipo_compra),))
+        conn.commit()
+        return True, "tipo de compra eliminado correctamente."
+
+    except IntegrityError:
+        conn.rollback()
+        return False, (
+            "no se puede eliminar: hay solicitudes de compra (u otros registros) que usan este "
+            "tipo — desactívalo en vez de eliminarlo."
+        )
 
     finally:
         try:

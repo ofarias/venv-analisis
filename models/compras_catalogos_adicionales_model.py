@@ -1,4 +1,5 @@
 import pandas as pd
+from mysql.connector.errors import IntegrityError
 from database.conexion import obtener_conexion
 
 
@@ -141,6 +142,22 @@ def cambiar_estatus_departamento_model(id_departamento: int, activo: int) -> boo
         conn.close()
 
 
+def eliminar_departamento_model(id_departamento: int) -> tuple[bool, str]:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute("delete from compras_departamentos where id_departamento = %s", (int(id_departamento),))
+        conn.commit()
+        return True, "departamento eliminado correctamente."
+
+    except IntegrityError:
+        conn.rollback()
+        return False, "no se puede eliminar: hay solicitudes de compra que usan este departamento — desactívalo en vez de eliminarlo."
+
+    finally:
+        conn.close()
+
+
 # -------------------------
 # formas de pago
 # -------------------------
@@ -275,6 +292,22 @@ def cambiar_estatus_forma_pago_model(id_forma_pago: int, activo: int) -> bool:
         cur.execute(sql, (int(activo), int(id_forma_pago)))
         conn.commit()
         return True
+
+    finally:
+        conn.close()
+
+
+def eliminar_forma_pago_model(id_forma_pago: int) -> tuple[bool, str]:
+    conn = obtener_conexion()
+    try:
+        cur = conn.cursor()
+        cur.execute("delete from compras_formas_pago where id_forma_pago = %s", (int(id_forma_pago),))
+        conn.commit()
+        return True, "forma de pago eliminada correctamente."
+
+    except IntegrityError:
+        conn.rollback()
+        return False, "no se puede eliminar: hay solicitudes de compra que usan esta forma de pago — desactívala en vez de eliminarla."
 
     finally:
         conn.close()

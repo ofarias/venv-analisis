@@ -49,7 +49,7 @@ def mostrar_modulo_compras():
         secciones.append("✅ Autorizaciones")
     if es_admin_compras:
         secciones.append("🧑‍💼 Puestos")
-        secciones.append("⚙️ Flujos de Autorización")
+        secciones.append("⚙️ Flujo de Autorización de Gastos")
     if es_admin_rol:
         secciones.append("🧩 Formularios Dinámicos")
     if es_admin_compras:
@@ -82,7 +82,7 @@ def mostrar_modulo_compras():
         mostrar_tab_autorizaciones_compras()
     elif seccion == "🧑‍💼 Puestos":
         mostrar_tab_puestos()
-    elif seccion == "⚙️ Flujos de Autorización":
+    elif seccion == "⚙️ Flujo de Autorización de Gastos":
         mostrar_tab_flujos_compras()
     elif seccion == "🧩 Formularios Dinámicos":
         mostrar_tab_campos_dinamicos()

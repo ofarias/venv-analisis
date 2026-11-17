@@ -7,15 +7,18 @@ from controllers.compras_catalogos_controller import (
     crear_tipo_compra_ctrl,
     actualizar_tipo_compra_ctrl,
     cambiar_estatus_tipo_compra_ctrl,
+    eliminar_tipo_compra_ctrl,
     obtener_puestos_permitidos_tipo_ctrl,
     obtener_departamentos_ctrl,
     crear_departamento_ctrl,
     actualizar_departamento_ctrl,
     cambiar_estatus_departamento_ctrl,
+    eliminar_departamento_ctrl,
     obtener_formas_pago_ctrl,
     crear_forma_pago_ctrl,
     actualizar_forma_pago_ctrl,
     cambiar_estatus_forma_pago_ctrl,
+    eliminar_forma_pago_ctrl,
 )
 from controllers.compras_puestos_controller import obtener_puestos_ctrl
 
@@ -270,7 +273,7 @@ def _bloque_tipos():
         id_sel = opciones[seleccion]
         row_sel = df[df["id_tipo_compra"] == id_sel].iloc[0]
 
-        x1, x2 = st.columns(2)
+        x1, x2, x3 = st.columns(3)
 
         with x1:
             if st.button("editar tipo", use_container_width=True):
@@ -286,6 +289,24 @@ def _bloque_tipos():
                     id_tipo_compra=int(row_sel["id_tipo_compra"]),
                     activo=nuevo_estatus,
                 )
+                if ok:
+                    st.success(mensaje)
+                    if (
+                        st.session_state.cc_tipo_id is not None
+                        and st.session_state.cc_tipo_id == int(row_sel["id_tipo_compra"])
+                    ):
+                        st.session_state.cc_tipo_limpiar = True
+                    st.rerun()
+                else:
+                    st.error(mensaje)
+
+        with x3:
+            confirmar_del = st.checkbox("confirmo eliminar", key=f"cc_tipo_confirmar_del_{id_sel}")
+            if st.button(
+                "🗑️ eliminar tipo", use_container_width=True,
+                disabled=not confirmar_del, key=f"cc_tipo_btn_del_{id_sel}",
+            ):
+                ok, mensaje = eliminar_tipo_compra_ctrl(int(row_sel["id_tipo_compra"]))
                 if ok:
                     st.success(mensaje)
                     if (
@@ -374,7 +395,7 @@ def _bloque_departamentos():
         id_sel = opciones[seleccion]
         row_sel = df[df["id_departamento"] == id_sel].iloc[0]
 
-        x1, x2 = st.columns(2)
+        x1, x2, x3 = st.columns(3)
 
         with x1:
             if st.button("editar departamento", use_container_width=True):
@@ -390,6 +411,24 @@ def _bloque_departamentos():
                     id_departamento=int(row_sel["id_departamento"]),
                     activo=nuevo_estatus,
                 )
+                if ok:
+                    st.success(mensaje)
+                    if (
+                        st.session_state.cc_dep_id is not None
+                        and st.session_state.cc_dep_id == int(row_sel["id_departamento"])
+                    ):
+                        st.session_state.cc_dep_limpiar = True
+                    st.rerun()
+                else:
+                    st.error(mensaje)
+
+        with x3:
+            confirmar_del = st.checkbox("confirmo eliminar", key=f"cc_dep_confirmar_del_{id_sel}")
+            if st.button(
+                "🗑️ eliminar departamento", use_container_width=True,
+                disabled=not confirmar_del, key=f"cc_dep_btn_del_{id_sel}",
+            ):
+                ok, mensaje = eliminar_departamento_ctrl(int(row_sel["id_departamento"]))
                 if ok:
                     st.success(mensaje)
                     if (
@@ -478,7 +517,7 @@ def _bloque_formas_pago():
         id_sel = opciones[seleccion]
         row_sel = df[df["id_forma_pago"] == id_sel].iloc[0]
 
-        x1, x2 = st.columns(2)
+        x1, x2, x3 = st.columns(3)
 
         with x1:
             if st.button("editar forma de pago", use_container_width=True):
@@ -494,6 +533,24 @@ def _bloque_formas_pago():
                     id_forma_pago=int(row_sel["id_forma_pago"]),
                     activo=nuevo_estatus,
                 )
+                if ok:
+                    st.success(mensaje)
+                    if (
+                        st.session_state.cc_fp_id is not None
+                        and st.session_state.cc_fp_id == int(row_sel["id_forma_pago"])
+                    ):
+                        st.session_state.cc_fp_limpiar = True
+                    st.rerun()
+                else:
+                    st.error(mensaje)
+
+        with x3:
+            confirmar_del = st.checkbox("confirmo eliminar", key=f"cc_fp_confirmar_del_{id_sel}")
+            if st.button(
+                "🗑️ eliminar forma de pago", use_container_width=True,
+                disabled=not confirmar_del, key=f"cc_fp_btn_del_{id_sel}",
+            ):
+                ok, mensaje = eliminar_forma_pago_ctrl(int(row_sel["id_forma_pago"]))
                 if ok:
                     st.success(mensaje)
                     if (
