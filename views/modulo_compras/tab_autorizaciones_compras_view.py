@@ -14,6 +14,14 @@ from controllers.compras_solicitudes_controller import (
     rechazar_lineas_mp_inventario_ctrl,
     obtener_ids_solicitudes_con_lineas_sin_generar_ctrl,
 )
+from controllers.compras_flujos_controller import (
+    obtener_solicitudes_con_nivel_pendiente_ctrl,
+    obtener_niveles_solicitud_ctrl,
+    nivel_pendiente_de_usuario_ctrl,
+    preview_finalizacion_sae_ctrl,
+    autorizar_nivel_ctrl,
+    rechazar_nivel_ctrl,
+)
 from views.modulo_compras.tab_solicitudes_pendientes_view import (
     _mostrar_detalle_mp_inventario,
     _mostrar_detalle_materias_primas,
@@ -139,6 +147,94 @@ def _mostrar_lineas_mp_inventario_pendientes(usuario_id, es_superadmin: bool):
                 st.error(mensaje)
 
 
+def _mostrar_flujos_pendientes(usuario_id, es_superadmin: bool):
+    """Solicitudes cuyo flujo de autorización (ver ⚙️ Flujos de
+    Autorización) tiene un nivel 'pendiente' que le toca a este usuario por
+    su puesto — SuperAdmin/forecastAdmin ven y pueden resolver cualquiera,
+    como respaldo."""
+    ids_pendientes = obtener_solicitudes_con_nivel_pendiente_ctrl(usuario_id, es_superadmin)
+    if not ids_pendientes:
+        st.info("no tienes solicitudes con flujo de autorización pendientes de tu nivel.")
+        return
+
+    df_todas = obtener_solicitudes_pendientes_usuario_ctrl("", ver_todas=True)
+    df_flujo = df_todas[df_todas["id_solicitud_compra"].astype(int).isin(ids_pendientes)]
+    if df_flujo.empty:
+        st.info("no tienes solicitudes con flujo de autorización pendientes de tu nivel.")
+        return
+
+    opciones = {
+        f'{int(row["id_solicitud_compra"])} - {str(row["tipo_compra"] or "").strip()} - '
+        f'{str(row["solicitante"] or "").strip()} - {str(row["fecha_solicitud"] or "").strip()}':
+        int(row["id_solicitud_compra"])
+        for _, row in df_flujo.iterrows()
+    }
+    seleccion = st.selectbox(
+        "selecciona una solicitud para revisar", options=list(opciones.keys()), key="aut_flujo_sel",
+    )
+    id_solicitud = opciones[seleccion]
+
+    niveles = obtener_niveles_solicitud_ctrl(id_solicitud)
+    nivel_actual = next((n for n in niveles if n["estatus"] == "pendiente"), None)
+
+    cab = obtener_cabecera_solicitud_compra_ctrl(id_solicitud)
+    st.markdown("#### avance del flujo")
+    pasos = " → ".join(
+        f"**[{n['orden']}] {n['puesto_nombre']}**" if n["id"] == (nivel_actual or {}).get("id")
+        else f"~~{n['orden']}. {n['puesto_nombre']}~~" if n["estatus"] == "autorizado"
+        else f"{n['orden']}. {n['puesto_nombre']}"
+        for n in niveles
+    )
+    st.markdown(pasos)
+
+    if not nivel_actual:
+        st.warning("esta solicitud no tiene un nivel pendiente (puede ya estar resuelta).")
+        return
+
+    puede_autorizar = es_superadmin or nivel_pendiente_de_usuario_ctrl(id_solicitud, usuario_id) is not None
+    if not puede_autorizar:
+        st.info(f"el nivel pendiente ({nivel_actual['puesto_nombre']}) no te corresponde a ti.")
+        return
+
+    st.markdown("#### detalle — a autorizar")
+    _mostrar_detalle_por_tipo(id_solicitud, cab)
+
+    preview_sae = preview_finalizacion_sae_ctrl(id_solicitud)
+    if preview_sae:
+        st.warning(
+            "⚠️ este es el ÚLTIMO nivel — al autorizar se generará automáticamente la "
+            "Requisición en SAE con estos datos:"
+        )
+        for p in preview_sae:
+            st.caption(f"**proveedor:** {p['proveedor_nombre']} — folio candidato OneCore #{p['folio_candidato']}")
+            st.dataframe(
+                pd.DataFrame([
+                    {"materia prima": l["descr_art"], "cantidad (kg)": l["cant"], "costo USD": l["cost"]}
+                    for l in p["lineas"]
+                ]),
+                hide_index=True, use_container_width=True,
+            )
+            if p["sin_proveedor"] or p["sin_precio"]:
+                st.error("faltan datos (proveedor o precio) en alguna línea — revísalo en Pendientes antes de autorizar.")
+
+    st.divider()
+    motivo = st.text_input("motivo (solo si vas a rechazar)", key=f"aut_flujo_motivo_{id_solicitud}")
+    c1, c2 = st.columns(2)
+    nombre_actual = _get_nombre_actual()
+    with c1:
+        if st.button("✅ autorizar nivel", type="primary", use_container_width=True, key=f"aut_flujo_btn_aprobar_{id_solicitud}"):
+            ok, mensaje = autorizar_nivel_ctrl(id_solicitud, usuario_id, nombre_actual)
+            (st.success if ok else st.error)(mensaje)
+            if ok:
+                st.rerun()
+    with c2:
+        if st.button("❌ rechazar", use_container_width=True, key=f"aut_flujo_btn_rechazar_{id_solicitud}"):
+            ok, mensaje = rechazar_nivel_ctrl(id_solicitud, usuario_id, nombre_actual, motivo)
+            (st.success if ok else st.error)(mensaje)
+            if ok:
+                st.rerun()
+
+
 def mostrar_tab_autorizaciones_compras():
     """Autorización de Solicitudes de Compra — visible para
     SuperAdmin/forecastAdmin (ven todas, como respaldo) y para cualquier
@@ -157,11 +253,15 @@ def mostrar_tab_autorizaciones_compras():
     tipo_mp_inv = obtener_tipo_compra_mp_inventario_ctrl()
     nombre_tipo_mp_inv = str((tipo_mp_inv or {}).get("nombre") or "").strip()
 
-    st.markdown("### materia prima (inventario) — líneas pendientes de autorizar")
+    st.markdown("### flujos de autorización — tu turno")
+    _mostrar_flujos_pendientes(usuario_id, es_superadmin)
+
+    st.divider()
+    st.markdown("### materia prima (inventario) — líneas pendientes de autorizar (circuito anterior, por línea)")
     _mostrar_lineas_mp_inventario_pendientes(usuario_id, es_superadmin)
 
     st.divider()
-    st.markdown("### otras solicitudes de compra pendientes de autorizar")
+    st.markdown("### solicitudes sin flujo configurado — pendientes de autorizar (respaldo)")
 
     df = obtener_solicitudes_pendientes_usuario_ctrl("", ver_todas=True)
     if df.empty:
@@ -169,10 +269,14 @@ def mostrar_tab_autorizaciones_compras():
     else:
         # Materia Prima (Inventario) se autoriza arriba, por línea — su
         # cabecera puede marcar 'enviada' sin que quede nada por revisar
-        # aquí (si todas sus líneas ya se autorizaron solas).
+        # aquí (si todas sus líneas ya se autorizaron solas). Lo que ya
+        # tiene un flujo aplicado se resuelve en "flujos de autorización —
+        # tu turno", no aquí (evita dos vías compitiendo por la misma
+        # solicitud).
         df_enviadas = df[
             (df["estatus"].astype(str).str.strip().str.lower() == "enviada")
             & (df["tipo_compra"].astype(str).str.strip() != nombre_tipo_mp_inv)
+            & df["id_flujo_aplicado"].isna()
         ]
 
         if es_superadmin:

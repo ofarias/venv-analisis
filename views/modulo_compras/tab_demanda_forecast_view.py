@@ -457,19 +457,39 @@ def _renderizar_desglose_mp(desglose: dict, cve_mp: str, nombre_producto: str) -
                             )
 
 
-def mostrar_tab_demanda_forecast() -> None:
-    st.caption(
-        "Necesidad de **materia prima** consolidada de todos los vendedores — los productos "
-        "terminados (con fórmula registrada) se cruzan contra su fórmula y su existencia de "
-        "PT (almacén 18) para traducir su venta en materia prima requerida; esta tabla solo "
-        "muestra materia prima (cve_prod que inicia con \"B\"), nunca producto terminado. "
-        "Usa el forecast de venta/compra ya autorizado de cada vendedor para el mes (o su "
-        "presupuesto ya autorizado si todavía no autoriza ese mes), contra la existencia "
-        "real de materia prima (almacén 17)."
-    )
+def _mostrar_demanda_forecast(
+    usuario_id: int | None, key_prefix: str, mostrar_filtro_vendedor: bool = True,
+) -> None:
+    """Cuerpo compartido de 'Demanda (Forecast)': `usuario_id=None` consolida
+    TODOS los vendedores (pantalla de Compras); un `usuario_id` puntual la
+    restringe a las versiones de forecast de ESE vendedor únicamente
+    (pantalla propia en el módulo Forecast) — ver
+    `mostrar_tab_demanda_forecast` y `mostrar_tab_demanda_forecast_propia`."""
+    if usuario_id is None:
+        st.caption(
+            "Necesidad de **materia prima** consolidada de todos los vendedores — los productos "
+            "terminados (con fórmula registrada) se cruzan contra su fórmula y su existencia de "
+            "PT (almacén 18) para traducir su venta en materia prima requerida; esta tabla solo "
+            "muestra materia prima (cve_prod que inicia con \"B\"), nunca producto terminado. "
+            "Usa el forecast de venta/compra ya autorizado de cada vendedor para el mes (o su "
+            "presupuesto ya autorizado si todavía no autoriza ese mes), contra la existencia "
+            "real de materia prima (almacén 17)."
+        )
+    else:
+        st.caption(
+            "Necesidad de **materia prima** de TU propio forecast — los productos terminados "
+            "(con fórmula registrada) se cruzan contra su fórmula y su existencia de PT "
+            "(almacén 18) para traducir tu venta en materia prima requerida; esta tabla solo "
+            "muestra materia prima (cve_prod que inicia con \"B\"), nunca producto terminado. "
+            "Usa tu forecast de venta/compra ya autorizado para el mes (o tu presupuesto ya "
+            "autorizado si todavía no autorizas ese mes), contra la existencia real de materia "
+            "prima (almacén 17)."
+        )
 
     hoy = date.today()
-    df_versiones = obtener_forecast_versiones_ctrl(usuario_id=0, ver_todas=True)
+    df_versiones = obtener_forecast_versiones_ctrl(
+        usuario_id=(usuario_id or 0), ver_todas=(usuario_id is None),
+    )
     anios_disponibles = sorted(
         {int(a) for a in df_versiones["anio"].dropna().unique()} if df_versiones is not None and not df_versiones.empty else set(),
         reverse=True,
@@ -483,14 +503,14 @@ def mostrar_tab_demanda_forecast() -> None:
 
     col_anio, col_meses = st.columns([1, 3])
     with col_anio:
-        anio_sel = st.selectbox("año", anios_disponibles, index=idx_anio_actual, key="comp_fc_anio")
+        anio_sel = st.selectbox("año", anios_disponibles, index=idx_anio_actual, key=f"{key_prefix}_anio")
     with col_meses:
         # necesidad del mes actual en adelante por defecto — sin meses ya
         # pasados que no aportan nada a la compra
         meses_default = [m for m in range(1, 13) if anio_sel > hoy.year or m >= hoy.month]
         meses_sel = st.multiselect(
             "meses", options=list(range(1, 13)), default=meses_default,
-            format_func=lambda m: _MESES[m].upper(), key="comp_fc_meses",
+            format_func=lambda m: _MESES[m].upper(), key=f"{key_prefix}_meses",
         )
 
     if anio_sel == hoy.year:
@@ -500,8 +520,10 @@ def mostrar_tab_demanda_forecast() -> None:
         st.info("no hay meses vigentes (mes actual en adelante) entre los meses seleccionados")
         return
 
-    with st.spinner("consolidando necesidad de compra de todos los vendedores…"):
-        df = calcular_necesidad_compra_consolidada_ctrl(anio=int(anio_sel), meses=meses_sel)
+    with st.spinner("consolidando necesidad de compra…"):
+        df = calcular_necesidad_compra_consolidada_ctrl(
+            anio=int(anio_sel), meses=meses_sel, usuario_id=usuario_id,
+        )
 
     if df is None or df.empty:
         st.warning(
@@ -550,33 +572,37 @@ def mostrar_tab_demanda_forecast() -> None:
     col_cve, col_prod, col_linea = st.columns(3)
     with col_cve:
         cve_sel = st.multiselect(
-            "cve prod", options=sorted(df["cve_prod"].unique()), default=[], key="comp_fc_cve",
+            "cve prod", options=sorted(df["cve_prod"].unique()), default=[], key=f"{key_prefix}_cve",
         )
     with col_prod:
         prod_sel = st.multiselect(
-            "producto", options=sorted(df["producto"].unique()), default=[], key="comp_fc_prod",
+            "producto", options=sorted(df["producto"].unique()), default=[], key=f"{key_prefix}_prod",
         )
     with col_linea:
         lineas_disponibles = sorted({l for l in df["linea"].unique() if l})
         linea_sel = st.multiselect(
-            "unidad de negocio (línea)", options=lineas_disponibles, default=[], key="comp_fc_linea",
+            "unidad de negocio (línea)", options=lineas_disponibles, default=[], key=f"{key_prefix}_linea",
         )
 
-    col_cliente, col_vendedor, col_origen = st.columns(3)
+    vendedor_sel: list[str] = []
+    if mostrar_filtro_vendedor:
+        col_cliente, col_vendedor, col_origen = st.columns(3)
+        with col_vendedor:
+            vendedores_disponibles = sorted({v for vs in vendedores_por_prod.values() for v in vs})
+            vendedor_sel = st.multiselect(
+                "vendedor", options=vendedores_disponibles, default=[], key=f"{key_prefix}_vendedor",
+            )
+    else:
+        col_cliente, col_origen = st.columns(2)
     with col_cliente:
         clientes_disponibles = sorted({c for cs in clientes_por_prod.values() for c in cs})
         cliente_sel = st.multiselect(
-            "cliente", options=clientes_disponibles, default=[], key="comp_fc_cliente",
-        )
-    with col_vendedor:
-        vendedores_disponibles = sorted({v for vs in vendedores_por_prod.values() for v in vs})
-        vendedor_sel = st.multiselect(
-            "vendedor", options=vendedores_disponibles, default=[], key="comp_fc_vendedor",
+            "cliente", options=clientes_disponibles, default=[], key=f"{key_prefix}_cliente",
         )
     with col_origen:
         origen_sel = st.multiselect(
             "origen", options=["autorizado", "presupuesto (fallback)"],
-            default=[], key="comp_fc_origen",
+            default=[], key=f"{key_prefix}_origen",
             format_func=lambda o: _ORIGEN_BADGE.get(o, o),
         )
 
@@ -622,8 +648,8 @@ def mostrar_tab_demanda_forecast() -> None:
         filtros_partes.append(f"Origen: {', '.join(_ORIGEN_BADGE.get(o, o) for o in origen_sel)}")
     filtros_resumen = " · ".join(filtros_partes)
 
-    pdf_key = f"comp_fc_pdf_bytes_{anio_sel}"
-    if st.button("📄 preparar reporte de necesidad por mes (PDF)", key="comp_fc_btn_pdf"):
+    pdf_key = f"{key_prefix}_pdf_bytes_{anio_sel}"
+    if st.button("📄 preparar reporte de necesidad por mes (PDF)", key=f"{key_prefix}_btn_pdf"):
         with st.spinner("generando PDF…"):
             # solo productos que sí hay que solicitar (Total > 0) — los que
             # ya están cubiertos por su stock actual se excluyen del reporte
@@ -647,7 +673,7 @@ def mostrar_tab_demanda_forecast() -> None:
             data=pdf_bytes,
             file_name=f"necesidad_compra_por_mes_{anio_sel}.pdf",
             mime="application/pdf",
-            key="comp_fc_pdf_dl",
+            key=f"{key_prefix}_pdf_dl",
         )
 
     st.divider()
@@ -662,9 +688,9 @@ def mostrar_tab_demanda_forecast() -> None:
         "solicitud pendiente no se vuelve a proponer."
     )
 
-    preview_key = f"comp_fc_solicitud_preview_{anio_sel}"
-    obs_key = f"comp_fc_solicitud_obs_{anio_sel}"
-    if st.button("🛒 generar solicitud de compra", key="comp_fc_btn_generar_solicitud"):
+    preview_key = f"{key_prefix}_solicitud_preview_{anio_sel}"
+    obs_key = f"{key_prefix}_solicitud_obs_{anio_sel}"
+    if st.button("🛒 generar solicitud de compra", key=f"{key_prefix}_btn_generar_solicitud"):
         df_nec = df_f[
             (pd.to_numeric(df_f["necesidad"], errors="coerce") > 0)
             & (df_f["mes"].isin(meses_ventana))
@@ -846,7 +872,7 @@ def mostrar_tab_demanda_forecast() -> None:
             allow_unsafe_jscode=True,
             enable_enterprise_modules=True,
             height=min(56 + len(df_preview) * 35, 500),
-            key=f"comp_fc_solicitud_grid_{anio_sel}",
+            key=f"{key_prefix}_solicitud_grid_{anio_sel}",
         )
 
         df_actual = pd.DataFrame(grid_resp.get("data", []))
@@ -865,7 +891,7 @@ def mostrar_tab_demanda_forecast() -> None:
         with col_g1:
             if st.button(
                 "💾 guardar solicitud", type="primary", use_container_width=True,
-                key=f"comp_fc_btn_guardar_solicitud_{anio_sel}",
+                key=f"{key_prefix}_btn_guardar_solicitud_{anio_sel}",
             ):
                 df_incluidas = df_actual[df_actual["cve_mp"].astype(str).isin(cves_incluidos)] if not df_actual.empty else df_actual
                 obs_por_prod = st.session_state.get(obs_key) or {}
@@ -909,8 +935,8 @@ def mostrar_tab_demanda_forecast() -> None:
                             fecha_solicitud=date.today(),
                             solicitante=_get_solicitante_actual(),
                             observaciones_generales=(
-                                "Solicitud generada desde Compras → Demanda (Forecast) — "
-                                f"año {anio_sel}, meses {meses_ventana_txt}"
+                                f"Solicitud generada desde {'Compras' if usuario_id is None else 'Forecast'} "
+                                f"→ Demanda (Forecast) — año {anio_sel}, meses {meses_ventana_txt}"
                             ),
                             detalle=detalle,
                         )
@@ -927,7 +953,7 @@ def mostrar_tab_demanda_forecast() -> None:
         with col_g2:
             if st.button(
                 "cancelar", use_container_width=True,
-                key=f"comp_fc_btn_cancelar_solicitud_{anio_sel}",
+                key=f"{key_prefix}_btn_cancelar_solicitud_{anio_sel}",
             ):
                 st.session_state.pop(preview_key, None)
                 st.session_state.pop(obs_key, None)
@@ -1015,7 +1041,7 @@ def mostrar_tab_demanda_forecast() -> None:
         allow_unsafe_jscode=True,
         enable_enterprise_modules=True,
         height=min(56 + len(tabla) * 35, 650),
-        key=f"comp_fc_grid_{anio_sel}",
+        key=f"{key_prefix}_grid_{anio_sel}",
     )
 
     csv = tabla[cols_orden].to_csv(index=False).encode("utf-8")
@@ -1024,7 +1050,7 @@ def mostrar_tab_demanda_forecast() -> None:
         data=csv,
         file_name=f"demanda_forecast_consolidada_{anio_sel}.csv",
         mime="text/csv",
-        key="comp_fc_dl_csv",
+        key=f"{key_prefix}_dl_csv",
     )
 
     st.divider()
@@ -1043,21 +1069,23 @@ def mostrar_tab_demanda_forecast() -> None:
         col_sel, col_btn = st.columns([3, 1])
         with col_sel:
             label_sel = st.selectbox(
-                "producto a desglosar", options=list(opciones_desglose.keys()), key="comp_fc_desglose_sel",
+                "producto a desglosar", options=list(opciones_desglose.keys()), key=f"{key_prefix}_desglose_sel",
             )
         with col_btn:
             st.write("")
             st.write("")
             desglosar_click = st.button(
-                "🔍 desglosar", use_container_width=True, key="comp_fc_desglose_btn",
+                "🔍 desglosar", use_container_width=True, key=f"{key_prefix}_desglose_btn",
             )
 
-        desglose_key = f"comp_fc_desglose_{anio_sel}"
+        desglose_key = f"{key_prefix}_desglose_{anio_sel}"
         if desglosar_click:
             cve_mp_sel = opciones_desglose[label_sel]
             nombre_sel = label_sel.split(" - ", 1)[1] if " - " in label_sel else label_sel
             with st.spinner("calculando desglose…"):
-                desglose = desglosar_necesidad_mp_ctrl(cve_mp_sel, int(anio_sel), meses_sel)
+                desglose = desglosar_necesidad_mp_ctrl(
+                    cve_mp_sel, int(anio_sel), meses_sel, usuario_id=usuario_id,
+                )
             st.session_state[desglose_key] = {
                 "cve_mp": cve_mp_sel, "nombre": nombre_sel, "data": desglose,
             }
@@ -1067,3 +1095,16 @@ def mostrar_tab_demanda_forecast() -> None:
             _renderizar_desglose_mp(
                 desglose_guardado["data"], desglose_guardado["cve_mp"], desglose_guardado["nombre"],
             )
+
+
+def mostrar_tab_demanda_forecast() -> None:
+    """Demanda (Forecast) — consolidada de TODOS los vendedores (Compras)."""
+    _mostrar_demanda_forecast(usuario_id=None, key_prefix="comp_fc", mostrar_filtro_vendedor=True)
+
+
+def mostrar_tab_demanda_forecast_propia(usuario_id: int) -> None:
+    """Copia de 'Demanda (Forecast)' restringida al vendedor que inicia
+    sesión (o al usuario elegido en modo soporte SuperAdmin) — para el
+    módulo Forecast, donde cada vendedor ve únicamente su propia necesidad
+    de compra de materia prima."""
+    _mostrar_demanda_forecast(usuario_id=usuario_id, key_prefix="fc_dp", mostrar_filtro_vendedor=False)

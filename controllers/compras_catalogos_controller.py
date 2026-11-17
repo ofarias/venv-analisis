@@ -5,8 +5,9 @@ from models.compras_catalogos_model import (
     crear_tipo_compra_model,
     actualizar_tipo_compra_model,
     cambiar_estatus_tipo_compra_model,
-    obtener_usuarios_permitidos_tipo_model,
-    guardar_usuarios_permitidos_tipo_model,
+    eliminar_tipo_compra_model,
+    obtener_puestos_permitidos_tipo_model,
+    guardar_puestos_permitidos_tipo_model,
 )
 
 from models.compras_catalogos_adicionales_model import (
@@ -15,11 +16,13 @@ from models.compras_catalogos_adicionales_model import (
     crear_departamento_model,
     actualizar_departamento_model,
     cambiar_estatus_departamento_model,
+    eliminar_departamento_model,
     get_formas_pago_model,
     existe_forma_pago_model,
     crear_forma_pago_model,
     actualizar_forma_pago_model,
     cambiar_estatus_forma_pago_model,
+    eliminar_forma_pago_model,
 )
 
 
@@ -35,7 +38,7 @@ def obtener_tipos_compra_ctrl():
     return df
 
 
-def crear_tipo_compra_ctrl(nombre, descripcion, tipo_formulario, activo=1, usuario_ids=None):
+def crear_tipo_compra_ctrl(nombre, descripcion, tipo_formulario, activo=1, puesto_ids=None):
     nombre = (nombre or "").strip()
     descripcion = (descripcion or "").strip()
     tipo_formulario = (tipo_formulario or "").strip()
@@ -53,11 +56,11 @@ def crear_tipo_compra_ctrl(nombre, descripcion, tipo_formulario, activo=1, usuar
     if not id_tipo_compra:
         return False, "no se pudo crear el tipo de compra."
 
-    guardar_usuarios_permitidos_tipo_model(id_tipo_compra, [int(u) for u in (usuario_ids or [])])
+    guardar_puestos_permitidos_tipo_model(id_tipo_compra, [int(p) for p in (puesto_ids or [])])
     return True, "tipo de compra creado correctamente."
 
 
-def actualizar_tipo_compra_ctrl(id_tipo_compra, nombre, descripcion, tipo_formulario, activo, usuario_ids=None):
+def actualizar_tipo_compra_ctrl(id_tipo_compra, nombre, descripcion, tipo_formulario, activo, puesto_ids=None):
     nombre = (nombre or "").strip()
     descripcion = (descripcion or "").strip()
     tipo_formulario = (tipo_formulario or "").strip()
@@ -75,12 +78,12 @@ def actualizar_tipo_compra_ctrl(id_tipo_compra, nombre, descripcion, tipo_formul
         return False, "ya existe otro tipo de compra con ese nombre."
 
     actualizar_tipo_compra_model(id_tipo_compra, nombre, descripcion, tipo_formulario, activo)
-    guardar_usuarios_permitidos_tipo_model(id_tipo_compra, [int(u) for u in (usuario_ids or [])])
+    guardar_puestos_permitidos_tipo_model(id_tipo_compra, [int(p) for p in (puesto_ids or [])])
     return True, "tipo de compra actualizado correctamente."
 
 
-def obtener_usuarios_permitidos_tipo_ctrl(id_tipo_compra) -> list[int]:
-    return obtener_usuarios_permitidos_tipo_model(int(id_tipo_compra))
+def obtener_puestos_permitidos_tipo_ctrl(id_tipo_compra) -> list[int]:
+    return obtener_puestos_permitidos_tipo_model(int(id_tipo_compra))
 
 
 def cambiar_estatus_tipo_compra_ctrl(id_tipo_compra, activo):
@@ -89,6 +92,13 @@ def cambiar_estatus_tipo_compra_ctrl(id_tipo_compra, activo):
 
     cambiar_estatus_tipo_compra_model(id_tipo_compra, activo)
     return True, "estatus actualizado correctamente."
+
+
+def eliminar_tipo_compra_ctrl(id_tipo_compra):
+    if not id_tipo_compra:
+        return False, "no se recibió el id del tipo de compra."
+
+    return eliminar_tipo_compra_model(id_tipo_compra)
 
 
 # -------------------------
@@ -142,6 +152,13 @@ def cambiar_estatus_departamento_ctrl(id_departamento, activo):
     return True, "estatus actualizado correctamente."
 
 
+def eliminar_departamento_ctrl(id_departamento):
+    if not id_departamento:
+        return False, "no se recibió el id del departamento."
+
+    return eliminar_departamento_model(id_departamento)
+
+
 # -------------------------
 # formas de pago
 # -------------------------
@@ -191,3 +208,10 @@ def cambiar_estatus_forma_pago_ctrl(id_forma_pago, activo):
 
     cambiar_estatus_forma_pago_model(id_forma_pago, activo)
     return True, "estatus actualizado correctamente."
+
+
+def eliminar_forma_pago_ctrl(id_forma_pago):
+    if not id_forma_pago:
+        return False, "no se recibió el id de la forma de pago."
+
+    return eliminar_forma_pago_model(id_forma_pago)
