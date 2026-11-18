@@ -58,11 +58,20 @@ def mostrar_admin_usuarios():
     if usuario_seleccionado:
         datos = usuarios_dict[usuario_seleccionado]
         roles_actuales = obtener_roles_usuario(usuario_seleccionado)
+        # SuperAdmin ya no es una opción seleccionable aquí (solo se asigna
+        # directo en la base de datos) — si el usuario ya lo tiene, se
+        # muestra como aviso y se conserva al guardar, sin ofrecerlo en el
+        # multiselect (si no, Streamlit truena: el default tendría un valor
+        # fuera de las opciones).
+        tiene_superadmin = "SuperAdmin" in roles_actuales
+        roles_actuales_editables = [r for r in roles_actuales if r != "SuperAdmin"]
+        if tiene_superadmin:
+            st.caption("🔒 este usuario tiene el rol SuperAdmin (asignado directo en BD) — se conserva, no se gestiona aquí.")
 
         with st.form("form_editar_usuario"):
             nuevo_nombre = st.text_input("Nombre completo", value=datos["nombre"])
             nuevo_email = st.text_input("Correo electrónico", value=datos["email"])
-            nuevos_roles = st.multiselect("Roles", roles_disponibles, default=roles_actuales)
+            nuevos_roles = st.multiselect("Roles", roles_disponibles, default=roles_actuales_editables)
             nuevo_estatus = st.selectbox("Estatus", ["Activo", "Suspendido", "Baja"], index=["Activo", "Suspendido", "Baja"].index(datos.get("estatus", "Activo")))
             cambiar_password = st.checkbox("¿Cambiar contraseña?")
             if cambiar_password:
@@ -73,20 +82,24 @@ def mostrar_admin_usuarios():
             submit_edit = st.form_submit_button("Guardar cambios")
 
         if submit_edit:
+            # actualizar_roles_usuario reemplaza TODA la lista — si el
+            # usuario ya tenía SuperAdmin, se vuelve a incluir aquí para no
+            # perderlo (el multiselect de arriba nunca lo ofrece).
+            roles_a_guardar = nuevos_roles + (["SuperAdmin"] if tiene_superadmin else [])
             ok = actualizar_usuario(
                 username=usuario_seleccionado,
                 nombre=nuevo_nombre,
                 email=nuevo_email,
-                rol=nuevos_roles[0] if nuevos_roles else "SinRol",
+                rol=roles_a_guardar[0] if roles_a_guardar else "SinRol",
                 nueva_password=nueva_password,
                 estatus=nuevo_estatus
             )
 
             if ok:
-                actualizar_roles_usuario(usuario_seleccionado, nuevos_roles)
+                actualizar_roles_usuario(usuario_seleccionado, roles_a_guardar)
                 # Si el usuario editado es el mismo que el que está autenticado, actualiza session_state
                 if usuario_seleccionado == st.session_state["usuario"]["username"]:
-                    st.session_state["roles"] = nuevos_roles
+                    st.session_state["roles"] = roles_a_guardar
                     #st.write("🔐 Roles actuales en sesión:", st.session_state.get("roles"))
                 registrar_log(st.session_state["usuario"]["username"], "Editar usuario", usuario_seleccionado)
                 st.success("✅ Cambios guardados correctamente.")

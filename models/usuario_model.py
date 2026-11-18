@@ -134,9 +134,12 @@ def obtener_roles_usuario(username):
     return roles
 
 def obtener_roles_disponibles():
+    """Roles que se pueden asignar a un usuario desde la pantalla de
+    administración — "SuperAdmin" queda excluido a propósito: solo se
+    asigna directo en la base de datos, nunca desde esta UI."""
     conn = obtener_conexion()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT nombre FROM roles ORDER BY nombre")
+    cursor.execute("SELECT nombre FROM roles WHERE nombre <> 'SuperAdmin' ORDER BY nombre")
     roles = [r["nombre"] for r in cursor.fetchall()]
     conn.close()
     return roles
