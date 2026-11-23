@@ -5,6 +5,7 @@ import streamlit as st
 from controllers.compras_solicitudes_controller import (
     obtener_tipos_compra_activos_para_usuario_ctrl,
 )
+from controllers.compras_subtipos_controller import obtener_subtipos_activos_para_usuario_ctrl
 from views.modulo_compras.forms.form_producto_view import (
     mostrar_formulario_compra_materias_primas,
 )
@@ -55,19 +56,32 @@ def mostrar_tab_solicitudes_compras():
     id_tipo_compra = opciones[nombre_tipo]
     tipo_formulario = _get_tipo_formulario(id_tipo_compra, tipos)
     st.write(f"has seleccionado el tipo de compra: **{nombre_tipo}** con formulario **{tipo_formulario}**")
+
+    # subtipo: si el tipo tiene subtipos capturados (ver Catálogos -> subtipos),
+    # hay que elegir uno antes de continuar — solo se ofrecen los que el
+    # usuario puede solicitar según su puesto (vacío de puestos = cualquiera).
+    id_subtipo = None
+    subtipos = obtener_subtipos_activos_para_usuario_ctrl(id_tipo_compra, usuario_id) or []
+    if subtipos:
+        opciones_subtipo = {str(s["nombre"]).strip(): int(s["id_subtipo"]) for s in subtipos}
+        nombre_subtipo = st.selectbox(
+            "subtipo", options=list(opciones_subtipo.keys()), key=f"scp_subtipo_{id_tipo_compra}",
+        )
+        id_subtipo = opciones_subtipo[nombre_subtipo]
+
     st.divider()
 
     if tipo_formulario == "MP":
-        mostrar_formulario_compra_materias_primas(id_tipo_compra=id_tipo_compra)
+        mostrar_formulario_compra_materias_primas(id_tipo_compra=id_tipo_compra, id_subtipo=id_subtipo)
 
     elif tipo_formulario == "STD":
-        mostrar_formulario_compra_estandar(id_tipo_compra=id_tipo_compra)
+        mostrar_formulario_compra_estandar(id_tipo_compra=id_tipo_compra, id_subtipo=id_subtipo)
 
     elif tipo_formulario == "MP_INV":
-        mostrar_formulario_compra_mp_inventario(id_tipo_compra=id_tipo_compra)
+        mostrar_formulario_compra_mp_inventario(id_tipo_compra=id_tipo_compra, id_subtipo=id_subtipo)
 
     elif tipo_formulario == "DINAMICO":
-        mostrar_formulario_compra_dinamico(id_tipo_compra=id_tipo_compra)
+        mostrar_formulario_compra_dinamico(id_tipo_compra=id_tipo_compra, id_subtipo=id_subtipo)
 
     else:
         st.warning("este tipo de compra no tiene formulario configurado.")

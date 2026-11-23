@@ -11,6 +11,7 @@ from controllers.compras_tipos_campos_controller import obtener_campos_tipo_ctrl
 def crear_solicitud_dinamica_ctrl(
     *, id_tipo_compra: int, fecha_solicitud, solicitante: str,
     observaciones_generales: str, valores_cabecera: dict, renglones: list[dict],
+    id_subtipo: int | None = None,
 ) -> tuple[bool, str]:
     solicitante = (solicitante or "").strip()
     if not solicitante:
@@ -35,6 +36,7 @@ def crear_solicitud_dinamica_ctrl(
     id_solicitud_compra = crear_solicitud_cabecera_model(
         id_tipo_compra=id_tipo_compra, fecha_solicitud=fecha_solicitud,
         solicitante=solicitante, observaciones_generales=observaciones_generales,
+        id_subtipo=id_subtipo,
     )
     if not id_solicitud_compra:
         return False, "no se pudo crear la cabecera."

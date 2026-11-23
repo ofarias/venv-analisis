@@ -107,7 +107,7 @@ def _normalizar_df_estandar(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def mostrar_formulario_compra_estandar(id_tipo_compra: int):
+def mostrar_formulario_compra_estandar(id_tipo_compra: int, id_subtipo: int | None = None):
     _init_form_estandar_state()
     _aplicar_limpieza_estandar()
 
@@ -314,6 +314,7 @@ def mostrar_formulario_compra_estandar(id_tipo_compra: int):
             id_departamento=id_departamento,
             id_forma_pago=id_forma_pago,
             detalle=detalle_final,
+            id_subtipo=id_subtipo,
         )
 
         if ok:

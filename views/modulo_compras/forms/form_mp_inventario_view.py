@@ -78,7 +78,7 @@ def _normalizar_df_mp_inv(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def mostrar_formulario_compra_mp_inventario(id_tipo_compra: int):
+def mostrar_formulario_compra_mp_inventario(id_tipo_compra: int, id_subtipo: int | None = None):
     _init_form_mp_inv_state()
     _aplicar_limpieza_mp_inv()
 
@@ -201,6 +201,7 @@ def mostrar_formulario_compra_mp_inventario(id_tipo_compra: int):
                 solicitante=solicitante_actual,
                 observaciones_generales=st.session_state.smpi_observaciones,
                 detalle=detalle_final,
+                id_subtipo=id_subtipo,
             )
 
             if ok:

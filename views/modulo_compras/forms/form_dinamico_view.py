@@ -43,7 +43,7 @@ def _fila_vacia(campos_det: list[dict]) -> dict:
     return {c["clave_campo"]: ("" if c["tipo_dato"] != "numero" else 0.0) for c in campos_det}
 
 
-def mostrar_formulario_compra_dinamico(id_tipo_compra: int):
+def mostrar_formulario_compra_dinamico(id_tipo_compra: int, id_subtipo: int | None = None):
     campos_cab = obtener_campos_tipo_ctrl(id_tipo_compra, "cabecera")
     campos_det = obtener_campos_tipo_ctrl(id_tipo_compra, "detalle")
 
@@ -113,6 +113,7 @@ def mostrar_formulario_compra_dinamico(id_tipo_compra: int):
             observaciones_generales=observaciones_generales,
             valores_cabecera=valores_cabecera_serial,
             renglones=renglones,
+            id_subtipo=id_subtipo,
         )
         if ok:
             st.success(mensaje)

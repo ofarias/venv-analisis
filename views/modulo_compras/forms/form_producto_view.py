@@ -190,7 +190,7 @@ def _get_opciones_productos_sae() -> list[str]:
     return opciones
 
 
-def mostrar_formulario_compra_materias_primas(id_tipo_compra: int):
+def mostrar_formulario_compra_materias_primas(id_tipo_compra: int, id_subtipo: int | None = None):
     _init_form_producto_state()
     _aplicar_limpieza()
 
@@ -360,6 +360,7 @@ def mostrar_formulario_compra_materias_primas(id_tipo_compra: int):
                 solicitante=solicitante_actual,
                 observaciones_generales=st.session_state.scp_observaciones_generales,
                 detalle=detalle_final,
+                id_subtipo=id_subtipo,
             )
 
             if ok:

@@ -34,7 +34,8 @@ def crear_solicitud_cabecera_model(
     id_tipo_compra,
     fecha_solicitud,
     solicitante,
-    observaciones_generales
+    observaciones_generales,
+    id_subtipo=None,
 ):
     conn = obtener_conexion()
     try:
@@ -45,16 +46,18 @@ def crear_solicitud_cabecera_model(
                 id_tipo_compra,
                 fecha_solicitud,
                 solicitante,
-                observaciones_generales
+                observaciones_generales,
+                id_subtipo
             )
-            VALUES (%s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s)
         """
 
         cur.execute(sql, (
             id_tipo_compra,
             fecha_solicitud,
             solicitante,
-            observaciones_generales
+            observaciones_generales,
+            int(id_subtipo) if id_subtipo else None,
         ))
 
         conn.commit()

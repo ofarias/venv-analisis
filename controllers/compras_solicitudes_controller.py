@@ -71,7 +71,8 @@ def crear_solicitud_producto_ctrl(
     fecha_solicitud,
     solicitante: str,
     observaciones_generales: str,
-    detalle: list
+    detalle: list,
+    id_subtipo: int | None = None,
 ):
     try:
         solicitante = (solicitante or "").strip()
@@ -93,7 +94,8 @@ def crear_solicitud_producto_ctrl(
             id_tipo_compra=id_tipo_compra,
             fecha_solicitud=fecha_solicitud,
             solicitante=solicitante,
-            observaciones_generales=observaciones_generales
+            observaciones_generales=observaciones_generales,
+            id_subtipo=id_subtipo,
         )
 
         if not id_solicitud:
@@ -346,6 +348,7 @@ def crear_solicitud_estandar_ctrl(
     id_departamento: int,
     id_forma_pago: int,
     detalle: list,
+    id_subtipo: int | None = None,
 ):
     try:
         solicitante = (solicitante or "").strip()
@@ -374,6 +377,7 @@ def crear_solicitud_estandar_ctrl(
             fecha_solicitud=fecha_solicitud,
             solicitante=solicitante,
             observaciones_generales=observaciones_generales,
+            id_subtipo=id_subtipo,
         )
 
         if not id_solicitud_compra:
@@ -426,6 +430,7 @@ def crear_solicitud_mp_inventario_ctrl(
     solicitante: str,
     observaciones_generales: str,
     detalle: list,
+    id_subtipo: int | None = None,
 ):
     try:
         solicitante = (solicitante or "").strip()
@@ -448,6 +453,7 @@ def crear_solicitud_mp_inventario_ctrl(
             fecha_solicitud=fecha_solicitud,
             solicitante=solicitante,
             observaciones_generales=observaciones_generales,
+            id_subtipo=id_subtipo,
         )
 
         if not id_solicitud_compra:

@@ -21,6 +21,14 @@ from controllers.compras_catalogos_controller import (
     eliminar_forma_pago_ctrl,
 )
 from controllers.compras_puestos_controller import obtener_puestos_ctrl
+from controllers.compras_subtipos_controller import (
+    obtener_subtipos_ctrl,
+    crear_subtipo_ctrl,
+    actualizar_subtipo_ctrl,
+    cambiar_estatus_subtipo_ctrl,
+    eliminar_subtipo_ctrl,
+    obtener_puestos_permitidos_subtipo_ctrl,
+)
 
 
 def _init_state():
@@ -69,6 +77,22 @@ def _init_state():
         st.session_state.cc_fp_cargar = None
     if "cc_fp_limpiar" not in st.session_state:
         st.session_state.cc_fp_limpiar = False
+
+    # subtipos
+    if "cc_subtipo_id" not in st.session_state:
+        st.session_state.cc_subtipo_id = None
+    if "cc_subtipo_nombre" not in st.session_state:
+        st.session_state.cc_subtipo_nombre = ""
+    if "cc_subtipo_descripcion" not in st.session_state:
+        st.session_state.cc_subtipo_descripcion = ""
+    if "cc_subtipo_activo" not in st.session_state:
+        st.session_state.cc_subtipo_activo = True
+    if "cc_subtipo_puestos" not in st.session_state:
+        st.session_state.cc_subtipo_puestos = []
+    if "cc_subtipo_cargar" not in st.session_state:
+        st.session_state.cc_subtipo_cargar = None
+    if "cc_subtipo_limpiar" not in st.session_state:
+        st.session_state.cc_subtipo_limpiar = False
 
 
 def _aplicar_pendientes():
@@ -124,6 +148,24 @@ def _aplicar_pendientes():
         st.session_state.cc_fp_activo = data_fp["activo"]
         st.session_state.cc_fp_cargar = None
 
+    if st.session_state.get("cc_subtipo_limpiar", False):
+        st.session_state.cc_subtipo_id = None
+        st.session_state.cc_subtipo_nombre = ""
+        st.session_state.cc_subtipo_descripcion = ""
+        st.session_state.cc_subtipo_activo = True
+        st.session_state.cc_subtipo_puestos = []
+        st.session_state.cc_subtipo_cargar = None
+        st.session_state.cc_subtipo_limpiar = False
+
+    data_subtipo = st.session_state.get("cc_subtipo_cargar")
+    if data_subtipo:
+        st.session_state.cc_subtipo_id = data_subtipo["id"]
+        st.session_state.cc_subtipo_nombre = data_subtipo["nombre"]
+        st.session_state.cc_subtipo_descripcion = data_subtipo["descripcion"]
+        st.session_state.cc_subtipo_activo = data_subtipo["activo"]
+        st.session_state.cc_subtipo_puestos = data_subtipo["puestos"]
+        st.session_state.cc_subtipo_cargar = None
+
 
 def _preparar_tipo(row, nombre_por_puesto_id: dict):
     puestos_ids = obtener_puestos_permitidos_tipo_ctrl(int(row["id_tipo_compra"]))
@@ -152,6 +194,17 @@ def _preparar_forma_pago(row):
         "nombre": row["nombre"] if pd.notna(row["nombre"]) else "",
         "descripcion": row["descripcion"] if pd.notna(row["descripcion"]) else "",
         "activo": bool(row["activo"]),
+    }
+
+
+def _preparar_subtipo(row, nombre_por_puesto_id: dict):
+    puestos_ids = obtener_puestos_permitidos_subtipo_ctrl(int(row["id_subtipo"]))
+    st.session_state.cc_subtipo_cargar = {
+        "id": int(row["id_subtipo"]),
+        "nombre": row["nombre"] if pd.notna(row["nombre"]) else "",
+        "descripcion": row["descripcion"] if pd.notna(row["descripcion"]) else "",
+        "activo": bool(row["activo"]),
+        "puestos": [nombre_por_puesto_id[pid] for pid in puestos_ids if pid in nombre_por_puesto_id],
     }
 
 
@@ -563,6 +616,160 @@ def _bloque_formas_pago():
                     st.error(mensaje)
 
 
+def _bloque_subtipos():
+    st.markdown("### subtipos")
+    st.caption(
+        "Cada subtipo pertenece a un tipo de compra (ej. \"Seguro de GMM\" dentro de "
+        "\"Servicios\") y define qué puesto(s) pueden solicitarlo — la autorización sigue "
+        "siendo la del flujo del tipo de compra padre (ver ⚙️ Flujo de Autorización de "
+        "Gastos), esto solo acota quién puede crear una solicitud de ese subtipo en "
+        "particular. Vacío = cualquiera puede solicitarlo."
+    )
+
+    df_tipos = obtener_tipos_compra_ctrl()
+    if df_tipos.empty:
+        st.info("no hay tipos de compra registrados — crea uno primero en la pestaña 'tipos de compra'.")
+        return
+
+    opciones_tipo = {str(r["nombre"]): int(r["id_tipo_compra"]) for r in df_tipos.to_dict("records")}
+    tipo_sel_nombre = st.selectbox("tipo de compra", options=list(opciones_tipo.keys()), key="cc_subtipo_tipo_sel")
+    id_tipo_sel = opciones_tipo[tipo_sel_nombre]
+
+    df_puestos = obtener_puestos_ctrl()
+    nombres_puestos = sorted(df_puestos["nombre"].dropna().tolist()) if not df_puestos.empty else []
+    id_por_puesto = (
+        dict(zip(df_puestos["nombre"], df_puestos["id_puesto"].astype(int))) if not df_puestos.empty else {}
+    )
+    nombre_por_puesto_id = {v: k for k, v in id_por_puesto.items()}
+
+    df = obtener_subtipos_ctrl(id_tipo_sel)
+
+    c1, c2 = st.columns([1, 2])
+
+    with c1:
+        st.text_input("nombre subtipo", key="cc_subtipo_nombre")
+        st.text_area("descripción subtipo", key="cc_subtipo_descripcion", height=100)
+        st.checkbox("activo subtipo", key="cc_subtipo_activo")
+        st.multiselect(
+            "puestos que pueden solicitarlo", options=nombres_puestos, key="cc_subtipo_puestos",
+            help="déjalo vacío para que cualquier usuario pueda solicitar este subtipo.",
+        )
+
+        b1, b2 = st.columns(2)
+
+        with b1:
+            if st.session_state.cc_subtipo_id is None:
+                if st.button("guardar subtipo", use_container_width=True):
+                    ok, mensaje = crear_subtipo_ctrl(
+                        id_tipo_compra=id_tipo_sel,
+                        nombre=st.session_state.cc_subtipo_nombre,
+                        descripcion=st.session_state.cc_subtipo_descripcion,
+                        puesto_ids=[
+                            id_por_puesto[n] for n in st.session_state.cc_subtipo_puestos
+                            if n in id_por_puesto
+                        ],
+                    )
+                    if ok:
+                        st.success(mensaje)
+                        st.session_state.cc_subtipo_limpiar = True
+                        st.rerun()
+                    else:
+                        st.error(mensaje)
+            else:
+                if st.button("actualizar subtipo", use_container_width=True):
+                    ok, mensaje = actualizar_subtipo_ctrl(
+                        id_subtipo=st.session_state.cc_subtipo_id,
+                        id_tipo_compra=id_tipo_sel,
+                        nombre=st.session_state.cc_subtipo_nombre,
+                        descripcion=st.session_state.cc_subtipo_descripcion,
+                        puesto_ids=[
+                            id_por_puesto[n] for n in st.session_state.cc_subtipo_puestos
+                            if n in id_por_puesto
+                        ],
+                    )
+                    if ok:
+                        st.success(mensaje)
+                        st.session_state.cc_subtipo_limpiar = True
+                        st.rerun()
+                    else:
+                        st.error(mensaje)
+
+        with b2:
+            if st.button("limpiar subtipo", use_container_width=True):
+                st.session_state.cc_subtipo_limpiar = True
+                st.rerun()
+
+        if st.session_state.cc_subtipo_id is not None:
+            st.caption(f"editando id: {st.session_state.cc_subtipo_id}")
+
+    with c2:
+        if df.empty:
+            st.info(f"no hay subtipos registrados para '{tipo_sel_nombre}'.")
+            return
+
+        df_show = df.copy()
+        df_show["puestos_permitidos_nombres"] = df_show["puestos_permitidos_nombres"].fillna("cualquiera")
+        df_show["estatus"] = df_show["activo"].apply(lambda x: "Activo" if int(x) == 1 else "Inactivo")
+
+        st.dataframe(
+            df_show[["id_subtipo", "nombre", "descripcion", "estatus", "puestos_permitidos_nombres"]].rename(
+                columns={"puestos_permitidos_nombres": "puestos permitidos"}
+            ),
+            use_container_width=True, hide_index=True,
+        )
+
+        opciones = {
+            f'{int(row["id_subtipo"])} - {str(row["nombre"] or "").strip()}': int(row["id_subtipo"])
+            for _, row in df.iterrows()
+        }
+
+        seleccion = st.selectbox("selecciona subtipo", options=list(opciones.keys()), key="cc_subtipo_sel")
+        id_sel = opciones[seleccion]
+        row_sel = df[df["id_subtipo"] == id_sel].iloc[0]
+
+        x1, x2, x3 = st.columns(3)
+
+        with x1:
+            if st.button("editar subtipo", use_container_width=True):
+                _preparar_subtipo(row_sel, nombre_por_puesto_id)
+                st.rerun()
+
+        with x2:
+            nuevo_estatus = 0 if int(row_sel["activo"]) == 1 else 1
+            texto = "desactivar subtipo" if int(row_sel["activo"]) == 1 else "activar subtipo"
+
+            if st.button(texto, use_container_width=True):
+                ok = cambiar_estatus_subtipo_ctrl(int(row_sel["id_subtipo"]), bool(nuevo_estatus))
+                if ok:
+                    st.success("estatus actualizado correctamente.")
+                    if (
+                        st.session_state.cc_subtipo_id is not None
+                        and st.session_state.cc_subtipo_id == int(row_sel["id_subtipo"])
+                    ):
+                        st.session_state.cc_subtipo_limpiar = True
+                    st.rerun()
+                else:
+                    st.error("no se pudo actualizar el estatus.")
+
+        with x3:
+            confirmar_del = st.checkbox("confirmo eliminar", key=f"cc_subtipo_confirmar_del_{id_sel}")
+            if st.button(
+                "🗑️ eliminar subtipo", use_container_width=True,
+                disabled=not confirmar_del, key=f"cc_subtipo_btn_del_{id_sel}",
+            ):
+                ok, mensaje = eliminar_subtipo_ctrl(int(row_sel["id_subtipo"]))
+                if ok:
+                    st.success(mensaje)
+                    if (
+                        st.session_state.cc_subtipo_id is not None
+                        and st.session_state.cc_subtipo_id == int(row_sel["id_subtipo"])
+                    ):
+                        st.session_state.cc_subtipo_limpiar = True
+                    st.rerun()
+                else:
+                    st.error(mensaje)
+
+
 def mostrar_tab_catalogos_unificados():
     _init_state()
     _aplicar_pendientes()
@@ -571,6 +778,7 @@ def mostrar_tab_catalogos_unificados():
         "tipos de compra",
         "departamentos",
         "formas de pago",
+        "subtipos",
     ])
 
     with tabs[0]:
@@ -581,3 +789,6 @@ def mostrar_tab_catalogos_unificados():
 
     with tabs[2]:
         _bloque_formas_pago()
+
+    with tabs[3]:
+        _bloque_subtipos()
