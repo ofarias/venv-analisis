@@ -304,15 +304,26 @@ def insertarSAE():
     # cargar ADA
     try:
         df = cargar_documentos_con_mysql(st.secrets, filtros, page, page_size)
-
-        # solo G03
-        if not df.empty:
-            col_usocfdi = next((c for c in df.columns if c.lower() == "usocfdi_"), None)
-            if col_usocfdi:
-                df = df[df[col_usocfdi].astype(str).str.strip().str.upper() == "G03"].copy()
     except Exception as e:
         st.error(f"error al cargar documentos: {e}")
         return
+
+    # uso CFDI: antes era un filtro fijo a "solo G03" — ahora lo elige el
+    # usuario (por default sigue mostrando G03, para no cambiar el
+    # comportamiento de siempre, pero se puede ampliar o quitar).
+    col_usocfdi = next((c for c in df.columns if c.lower() == "usocfdi_"), None) if not df.empty else None
+    if col_usocfdi:
+        serie_uso = df[col_usocfdi].astype(str).str.strip().str.upper()
+        serie_uso = serie_uso.where(serie_uso != "", "(sin uso)")
+        usos_disponibles = sorted(serie_uso.unique())
+        default_uso = ["G03"] if "G03" in usos_disponibles else usos_disponibles
+        uso_sel = st.multiselect(
+            "uso CFDI", options=usos_disponibles, default=default_uso,
+            key="insertasae_uso_cfdi_filtro",
+            help="antes este filtro estaba fijo a G03 — ahora puedes ampliarlo o quitarlo (déjalo vacío para ver todos los usos).",
+        )
+        if uso_sel:
+            df = df[serie_uso.isin(uso_sel)].copy()
 
     if df.empty:
         st.info("sin resultados con los filtros actuales")
