@@ -29,8 +29,10 @@ def pantalla_dashboard():
     eje = 25
     origen = "JAVA"
 
-    tabs = st.tabs(
-        [
+    # Selector en vez de st.tabs: st.tabs ejecuta las 14 secciones en cada
+    # rerun (~80 s, ~3 min con el túnel Firebird lento); así solo corre la
+    # sección elegida.
+    secciones = [
             "Póliza ventas",
             "Póliza Costo Ventas",
             "Pendientes de Contabilizar",
@@ -45,20 +47,25 @@ def pantalla_dashboard():
             "Cobertura de Prorrateo",
             "Proveedor → Ponderaciones",
             "Proveedores (resumen)",
-        ]
+    ]
+    sel = st.segmented_control(
+        "Sección", secciones, default=secciones[0],
+        key="dash_iaspel_seccion", label_visibility="collapsed",
     )
+    sel = sel or secciones[0]  # segmented_control permite deseleccionar
+    sec = secciones.index(sel)
 
-    with tabs[0]:
+    if sec == 0:
         mostrar_tab_poliza_ventas()
-    with tabs[1]:
+    if sec == 1:
         mostrar_tab_poliza_costo_venta()
-    with tabs[2]:
+    if sec == 2:
         mostrar_tab_pendientes_contabilizar()
-    with tabs[3]:
+    if sec == 3:
         mostrar_tab_contabilizados()
-    with tabs[4]:
+    if sec == 4:
         mostrar_tab_prorrateos_mysql()
-    with tabs[5]:
+    if sec == 5:
         st.subheader("Catálogo de prorrateos (y su uso)")
         lim4 = st.number_input(
             "Límite catálogo", 1, 5000, value=200, step=50, key="lim4"
@@ -87,16 +94,24 @@ def pantalla_dashboard():
                 .properties(height=360)
             )
             st.altair_chart(chart4, use_container_width=True)
-    with tabs[6]:
+    if sec == 6:
         mostrar_tab_reporte_cobranza()
-    with tabs[7]:
+    if sec == 7:
         mostrar_tab_reporte_pagos()
-    with tabs[8]:
+    if sec == 8:
         mostrar_tab_rep_ventas_lotes()
-    with tabs[9]:
+
+    # Con st.tabs el Eje/Origen capturado en "Pólizas por Tipo" lo heredaban
+    # las secciones siguientes; se guarda fuera del widget para conservarlo.
+    if sec >= 9:
+        eje = st.session_state.get("dash_eje_sel", eje)
+        origen = st.session_state.get("dash_origen_sel", origen)
+    if sec == 9:
         c1, c2 = st.columns(2)
-        eje = c1.number_input("Eje (2 dígitos)", 0, 99, value=25, step=1)
-        origen = c2.text_input("Origen", "JAVA")
+        eje = c1.number_input("Eje (2 dígitos)", 0, 99, value=int(eje), step=1)
+        origen = c2.text_input("Origen", origen)
+        st.session_state["dash_eje_sel"] = eje
+        st.session_state["dash_origen_sel"] = origen
 
         st.subheader("Pólizas agrupadas por Concepto")
         df = get_polizas_por_tipo(eje, origen)
@@ -132,7 +147,7 @@ def pantalla_dashboard():
                 det = get_detalle_polizas(eje, origen, int(lim), int(off))
                 st.dataframe(det, use_container_width=True)
 
-    with tabs[10]:
+    if sec == 10:
         st.subheader("Pólizas por prorrateo aplicado")
         lim3 = st.number_input("Top N", 1, 2000, value=50, step=10, key="lim3")
         usos = get_usos_prorrateo(eje, origen, int(lim3), 0)
@@ -152,7 +167,7 @@ def pantalla_dashboard():
             )
             st.altair_chart(chart3, use_container_width=True)
 
-    with tabs[11]:
+    if sec == 11:
         st.subheader("Cobertura (pólizas con/ sin regla aplicada)")
         dfc = get_cobertura(eje, origen)
         if dfc.empty:
@@ -176,7 +191,7 @@ def pantalla_dashboard():
     
     
 
-    with tabs[12]:
+    if sec == 12:
         st.subheader("Ponderaciones por Proveedor")
 
         provs = get_proveedores_df()
@@ -210,7 +225,7 @@ def pantalla_dashboard():
                     mime="text/csv",
                 )
 
-    with tabs[13]:
+    if sec == 13:
         st.subheader("Resumen por Proveedor")
 
         # Checkbox para incluir/excluir proveedores sin pólizas
@@ -252,7 +267,7 @@ def pantalla_dashboard():
                     "polizas_con_regla": total_con_regla,
                     "polizas_sin_regla": dfv["polizas_sin_regla"].sum(),
                     "ponderaciones": dfv["ponderaciones"].sum(),
-                    "cobertura_pct": "",
+                    "cobertura_pct": None,  # '' rompía la conversión a Arrow
                     "%_polizas_totales": 100.0,
                     "%_polizas_con_regla": 100.0,
                 }

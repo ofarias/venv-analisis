@@ -127,12 +127,20 @@ def mostrar_tab_reporte_pagos():
         height=520,
     )
 
-    # descarga excel
-    excel_bytes = _to_excel_bytes(df)
-    st.download_button(
-        "descargar excel",
-        data=excel_bytes,
-        file_name=f"reporte_pagos_{corte.isoformat()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="rp_down_excel",
-    )
+    # descarga excel: generarlo tarda ~20 s, solo se arma cuando se pide
+    # (antes se armaba en cada rerun). Se invalida si cambian corte/filtros.
+    firma = (corte, proveedor_like, tuple(buckets_sel), clasif_like, solo_pendiente, moneda_sel)
+    if st.session_state.get("rp_excel_firma") != firma:
+        st.session_state.pop("rp_excel_bytes", None)
+    if st.button("preparar excel", key="rp_prep_excel"):
+        with st.spinner("generando excel..."):
+            st.session_state["rp_excel_bytes"] = _to_excel_bytes(df)
+            st.session_state["rp_excel_firma"] = firma
+    if "rp_excel_bytes" in st.session_state:
+        st.download_button(
+            "descargar excel",
+            data=st.session_state["rp_excel_bytes"],
+            file_name=f"reporte_pagos_{corte.isoformat()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="rp_down_excel",
+        )
